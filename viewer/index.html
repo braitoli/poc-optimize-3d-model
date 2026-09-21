@@ -55,13 +55,19 @@
         </div>
 
         <!-- Target Resolution -->
-        <div class="config-item">
-          <label class="config-label" for="resSelect">Resolution</label>
-          <select class="config-select" id="resSelect">
+        <div class="config-item" style="position: relative;">
+          <label class="config-label" for="resSelect">
+            Resolution
+            <span class="policy-tooltip-trigger" title="Tự động giới hạn (không upscale) nếu texture gốc nhỏ hơn độ phân giải yêu cầu">ⓘ</span>
+          </label>
+          <select class="config-select" id="resSelect" title="Tự động giới hạn (không upscale) nếu texture gốc nhỏ hơn độ phân giải yêu cầu">
             <option value="512">512 × 512</option>
-            <option value="1024" selected>1024 × 1024</option>
-            <option value="2048">2048 × 2048</option>
+            <option value="1024" selected>1024 × 1024 (Default)</option>
+            <option value="2048">2048 × 2048 (Max HD)</option>
           </select>
+          <div class="config-policy-note" id="resPolicyNote" title="Tự động giới hạn (không upscale) nếu texture gốc nhỏ hơn độ phân giải yêu cầu">
+            🔒 Tự động giới hạn (không upscale) nếu texture gốc nhỏ hơn độ phân giải yêu cầu
+          </div>
         </div>
 
         <!-- Format -->
@@ -168,7 +174,7 @@
 
     <!-- Right Pane: Live Performance Metrics & Deep Analysis -->
     <aside class="analytics-pane">
-      <!-- Top 5 KPI Cards -->
+      <!-- Top 6 KPI Cards -->
       <div class="kpi-grid">
         <div class="kpi-card">
           <span class="kpi-label">File Size</span>
@@ -177,6 +183,15 @@
             <span class="kpi-delta positive" id="kpiSizeDelta">-53.0%</span>
           </div>
           <span class="kpi-sub" id="kpiSizeSub">Raw: 1.93 MB</span>
+        </div>
+
+        <div class="kpi-card kpi-card-duration">
+          <span class="kpi-label">⏱️ Step Duration</span>
+          <div class="kpi-val">
+            <span id="kpiDurationVal">1.77s</span>
+            <span class="kpi-delta positive" id="kpiDurationDelta">52.5%</span>
+          </div>
+          <span class="kpi-sub" id="kpiDurationSub">Pipeline: 3.37s</span>
         </div>
 
         <div class="kpi-card">

@@ -80,6 +80,36 @@ function scanModels() {
   return models;
 }
 
+// Allowed Optimization Parameters
+const ALLOWED_RESOLUTIONS = [256, 512, 1024, 2048, 4096];
+const ALLOWED_FORMATS = ['ktx2', 'webp', 'png', 'jpeg', 'jpg'];
+const ALLOWED_UV_MODES = ['direct', 'rechart', 'xatlas'];
+
+function sanitizeOptimizationOptions({ resolution, format, uvMode } = {}) {
+  let res = parseInt(resolution, 10);
+  if (isNaN(res) || res <= 0) {
+    res = 1024;
+  } else if (!ALLOWED_RESOLUTIONS.includes(res)) {
+    if (res <= 384) res = 256;
+    else if (res <= 768) res = 512;
+    else if (res <= 1536) res = 1024;
+    else if (res <= 3072) res = 2048;
+    else res = 4096;
+  }
+
+  let fmt = String(format || 'ktx2').toLowerCase().trim();
+  if (!ALLOWED_FORMATS.includes(fmt)) {
+    fmt = 'ktx2';
+  }
+
+  let uv = String(uvMode || 'direct').toLowerCase().trim();
+  if (!ALLOWED_UV_MODES.includes(uv)) {
+    uv = 'direct';
+  }
+
+  return { resolution: res, format: fmt, uvMode: uv };
+}
+
 // In-Memory Job Management
 const jobs = new Map();
 
@@ -90,6 +120,8 @@ function saveWorkspaceMetrics(job) {
       jobId: job.id,
       status: job.status,
       config: job.config,
+      textureClamped: Boolean(job.textureClamped),
+      textureClampedMessage: job.textureClampedMessage || null,
       totalSteps: job.totalSteps,
       currentStep: job.currentStep,
       error: job.error,
@@ -122,14 +154,40 @@ function emitJobEvent(job, eventName, data) {
       data.name = data.name || data.stepName || `Step ${data.step}`;
       data.stepName = data.name;
 
+      if (job.textureClamped) {
+        data.textureClamped = true;
+        data.textureClampedMessage = job.textureClampedMessage;
+      }
+
+      const durSec = data.durationSeconds !== undefined ? Number(data.durationSeconds) : (data.metrics?.durationSeconds !== undefined ? Number(data.metrics.durationSeconds) : undefined);
+      const durFmt = data.durationFormatted || data.metrics?.durationFormatted || (durSec !== undefined && !isNaN(durSec) ? (durSec < 0.1 ? `${Math.round(durSec * 1000)}ms` : `${durSec.toFixed(2)}s`) : undefined);
+      const totDurSec = data.totalDurationSeconds !== undefined ? Number(data.totalDurationSeconds) : (data.metrics?.totalDurationSeconds !== undefined ? Number(data.metrics.totalDurationSeconds) : undefined);
+
+      if (durSec !== undefined) data.durationSeconds = durSec;
+      if (durFmt !== undefined) data.durationFormatted = durFmt;
+      if (totDurSec !== undefined) data.totalDurationSeconds = totDurSec;
+
+      if (data.metrics) {
+        if (durSec !== undefined) data.metrics.durationSeconds = durSec;
+        if (durFmt !== undefined) data.metrics.durationFormatted = durFmt;
+        if (totDurSec !== undefined) data.metrics.totalDurationSeconds = totDurSec;
+      }
+
       job.metrics[data.step] = {
         step: data.step,
         stepName: data.stepName,
         file: data.file,
         glbUrl: data.glbUrl,
-        ...(data.metrics ? data.metrics : data)
+        ...(data.metrics ? data.metrics : data),
+        ...(durSec !== undefined ? { durationSeconds: durSec, durationFormatted: durFmt } : {}),
+        ...(totDurSec !== undefined ? { totalDurationSeconds: totDurSec } : {}),
+        ...(data.step === 3 && job.textureClamped ? { clamped: true, clampedMessage: job.textureClampedMessage } : {})
       };
     }
+    saveWorkspaceMetrics(job);
+  } else if (normalizedEvent === 'texture_clamped') {
+    job.textureClamped = true;
+    job.textureClampedMessage = data.message || 'Original texture clamped (NO-UPSCALE policy)';
     saveWorkspaceMetrics(job);
   } else if (normalizedEvent === 'job_complete') {
     job.status = 'completed';
@@ -155,21 +213,30 @@ function emitJobEvent(job, eventName, data) {
 }
 
 function startPipelineJob({ jobId, rawGlbPath, workspaceDir, resolution = 1024, format = 'ktx2', uvMode = 'direct' }) {
+  const sanitized = sanitizeOptimizationOptions({ resolution, format, uvMode });
+  const finalResolution = sanitized.resolution;
+  const finalFormat = sanitized.format;
+  const finalUvMode = sanitized.uvMode;
+
   const job = {
     id: jobId,
     workspaceDir,
     status: 'started',
-    config: { resolution, format, uvMode },
+    config: { resolution: finalResolution, format: finalFormat, uvMode: finalUvMode },
     startTime: Date.now(),
     totalSteps: 7,
     currentStep: 0,
     events: [],
     metrics: {},
+    textureClamped: false,
+    textureClampedMessage: null,
     clients: new Set(),
     childProcess: null,
     error: null
   };
   jobs.set(jobId, job);
+
+  console.log(`[Job ${jobId}] Initialized with target resolution=${finalResolution}px, format=${finalFormat}, uvMode=${finalUvMode}`);
 
   emitJobEvent(job, 'job_start', {
     jobId,
@@ -188,10 +255,10 @@ function startPipelineJob({ jobId, rawGlbPath, workspaceDir, resolution = 1024, 
       '-m', 'optimizer.step_pipeline',
       rawGlbPath,
       '--output-dir', workspaceDir,
-      '--resolution', String(resolution),
-      '--format', String(format).toLowerCase()
+      '--resolution', String(finalResolution),
+      '--format', finalFormat
     ];
-    if (uvMode === 'rechart' || uvMode === 'xatlas') {
+    if (finalUvMode === 'rechart' || finalUvMode === 'xatlas') {
       args.push('--rechart-uv');
     }
   } else {
@@ -199,12 +266,12 @@ function startPipelineJob({ jobId, rawGlbPath, workspaceDir, resolution = 1024, 
       '-m', 'optimizer.cli',
       rawGlbPath,
       path.join(workspaceDir, 'step_06_final.glb'),
-      '-r', String(resolution),
-      '-f', String(format).toLowerCase(),
+      '-r', String(finalResolution),
+      '-f', finalFormat,
       '--export-steps', workspaceDir,
       '--step-events'
     ];
-    if (uvMode === 'rechart' || uvMode === 'xatlas') {
+    if (finalUvMode === 'rechart' || finalUvMode === 'xatlas') {
       args.push('--rechart');
     }
   }
@@ -242,13 +309,52 @@ function startPipelineJob({ jobId, rawGlbPath, workspaceDir, resolution = 1024, 
       }
 
       if (payload) {
+        // Inspect payload for texture clamping
+        if (payload.textureClamped || payload.clamped || payload.metrics?.textureClamped || payload.metrics?.clamped) {
+          const clampMsg = payload.clampedMessage || payload.metrics?.clampedMessage || payload.message || 'Original texture clamped (NO-UPSCALE policy)';
+          job.textureClamped = true;
+          job.textureClampedMessage = clampMsg;
+          console.warn(`[Job ${jobId}][NO-UPSCALE] ${clampMsg}`);
+          emitJobEvent(job, 'texture_clamped', {
+            jobId,
+            message: clampMsg,
+            step: payload.step || 3,
+            details: payload.metrics || payload
+          });
+        }
+
         const eventName = payload.event || (payload.step !== undefined ? 'step_complete' : null);
         if (eventName) {
           emitJobEvent(job, eventName, payload);
           continue;
         }
       }
-      console.log(`[Job ${jobId}] ${trimmed}`);
+
+      // Check text logs for NO-UPSCALE policy (e.g. "[Step 3] Original texture... clamped to... (NO-UPSCALE policy)")
+      const isClampedLog = trimmed.includes('NO-UPSCALE') || 
+                           (trimmed.includes('[Step 3]') && trimmed.toLowerCase().includes('clamped')) ||
+                           trimmed.toLowerCase().includes('clamped to');
+
+      if (isClampedLog) {
+        console.warn(`[Job ${jobId}][POLICY] ⚠️ ${trimmed}`);
+        job.textureClamped = true;
+        job.textureClampedMessage = trimmed;
+        emitJobEvent(job, 'texture_clamped', {
+          jobId,
+          message: trimmed,
+          step: 3
+        });
+      } else {
+        console.log(`[Job ${jobId}] ${trimmed}`);
+      }
+
+      // Forward stdout line to SSE clients as a log event
+      emitJobEvent(job, 'log', {
+        jobId,
+        message: trimmed,
+        isClamped: isClampedLog,
+        timestamp: Date.now()
+      });
     }
   });
 
@@ -256,6 +362,18 @@ function startPipelineJob({ jobId, rawGlbPath, workspaceDir, resolution = 1024, 
     const text = chunk.toString('utf-8');
     stderrBuffer += text;
     console.error(`[Job ${jobId} ERR] ${text.trim()}`);
+
+    // Also check stderr for clamping policy warnings
+    if (text.includes('NO-UPSCALE') || text.includes('clamped to')) {
+      const trimmed = text.trim();
+      job.textureClamped = true;
+      job.textureClampedMessage = trimmed;
+      emitJobEvent(job, 'texture_clamped', {
+        jobId,
+        message: trimmed,
+        step: 3
+      });
+    }
   });
 
   proc.on('close', (code) => {
@@ -281,7 +399,9 @@ function startPipelineJob({ jobId, rawGlbPath, workspaceDir, resolution = 1024, 
           jobId,
           status: 'completed',
           totalSteps: 7,
-          metrics: job.metrics
+          metrics: job.metrics,
+          textureClamped: Boolean(job.textureClamped),
+          textureClampedMessage: job.textureClampedMessage
         });
       }
     }
@@ -345,9 +465,16 @@ const server = http.createServer(async (req, res) => {
         const formData = await webReq.formData();
         const file = formData.get('file');
         const samplePath = formData.get('samplePath') || formData.get('sampleUrl');
-        const resolution = parseInt(formData.get('resolution'), 10) || 1024;
-        const format = (formData.get('format') || 'ktx2').toString();
-        const uvMode = (formData.get('uvMode') || 'direct').toString();
+        const rawRes = formData.get('resolution');
+        const rawFmt = formData.get('format');
+        const rawUv = formData.get('uvMode');
+        const { resolution, format, uvMode } = sanitizeOptimizationOptions({
+          resolution: rawRes,
+          format: rawFmt,
+          uvMode: rawUv
+        });
+
+        console.log(`[API /api/upload] Form upload request: res=${resolution} (raw: ${rawRes}), format=${format}, uvMode=${uvMode}`);
 
         if (file && typeof file === 'object' && typeof file.arrayBuffer === 'function') {
           const ab = await file.arrayBuffer();
@@ -389,7 +516,7 @@ const server = http.createServer(async (req, res) => {
         });
 
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ jobId, status: 'started', totalSteps: 7 }));
+        res.end(JSON.stringify({ jobId, status: 'started', totalSteps: 7, config: { resolution, format, uvMode } }));
         return;
       }
 
@@ -401,9 +528,13 @@ const server = http.createServer(async (req, res) => {
           try {
             const data = JSON.parse(body || '{}');
             const samplePath = data.samplePath || data.sampleUrl;
-            const resolution = parseInt(data.resolution, 10) || 1024;
-            const format = String(data.format || 'ktx2');
-            const uvMode = String(data.uvMode || 'direct');
+            const { resolution, format, uvMode } = sanitizeOptimizationOptions({
+              resolution: data.resolution,
+              format: data.format,
+              uvMode: data.uvMode
+            });
+
+            console.log(`[API /api/upload] JSON request: sample=${samplePath}, res=${resolution} (raw: ${data.resolution}), format=${format}, uvMode=${uvMode}`);
 
             if (!samplePath) {
               fs.rmSync(wsDir, { recursive: true, force: true });
@@ -433,7 +564,7 @@ const server = http.createServer(async (req, res) => {
             });
 
             res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ jobId, status: 'started', totalSteps: 7 }));
+            res.end(JSON.stringify({ jobId, status: 'started', totalSteps: 7, config: { resolution, format, uvMode } }));
           } catch (jsonErr) {
             fs.rmSync(wsDir, { recursive: true, force: true });
             res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -487,12 +618,18 @@ const server = http.createServer(async (req, res) => {
             ? metricsData.steps
             : (metricsData.steps ? Object.values(metricsData.steps) : []);
           for (const s of steps) {
+            const durSec = s.durationSeconds !== undefined ? s.durationSeconds : s.metrics?.durationSeconds;
+            const durFmt = s.durationFormatted || s.metrics?.durationFormatted;
+            const totDurSec = s.totalDurationSeconds !== undefined ? s.totalDurationSeconds : s.metrics?.totalDurationSeconds;
             res.write(`event: step_complete\ndata: ${JSON.stringify({
               step: s.step,
               stepName: s.stepName,
               file: s.file,
               glbUrl: s.glbUrl || `/workspaces/${jobId}/${s.file}`,
-              metrics: s
+              durationSeconds: durSec,
+              durationFormatted: durFmt,
+              totalDurationSeconds: totDurSec,
+              metrics: s.metrics || s
             })}\n\n`);
           }
           res.write(`event: job_complete\ndata: ${JSON.stringify({ jobId, status: 'completed' })}\n\n`);
@@ -542,6 +679,8 @@ const server = http.createServer(async (req, res) => {
         currentStep: job.currentStep,
         totalSteps: job.totalSteps,
         config: job.config,
+        textureClamped: Boolean(job.textureClamped),
+        textureClampedMessage: job.textureClampedMessage || null,
         metrics: job.metrics,
         steps: Object.values(job.metrics),
         error: job.error
@@ -627,17 +766,24 @@ const server = http.createServer(async (req, res) => {
           return;
         }
 
+        const sanitized = sanitizeOptimizationOptions({ resolution, format });
         const inputPath = path.resolve(__dirname, input.replace(/^\//, ''));
         const outputFilename = `opt_${Date.now()}_${path.basename(inputPath)}`;
         const outputPath = path.join(__dirname, 'examples', outputFilename);
 
-        const cmd = `"${path.join(__dirname, 'bin', 'optimize-3d')}" "${inputPath}" "${outputPath}" -r ${resolution} -f ${format} --json`;
+        console.log(`[API /api/optimize] Single-shot request: input=${inputPath}, res=${sanitized.resolution}, format=${sanitized.format}`);
+
+        const cmd = `"${path.join(__dirname, 'bin', 'optimize-3d')}" "${inputPath}" "${outputPath}" -r ${sanitized.resolution} -f ${sanitized.format} --json`;
 
         exec(cmd, { cwd: __dirname }, (error, stdout, stderr) => {
           if (error) {
             res.writeHead(500, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: stderr || error.message }));
             return;
+          }
+          const isClamped = stdout.includes('NO-UPSCALE') || stdout.toLowerCase().includes('clamped') || (stderr && stderr.includes('NO-UPSCALE'));
+          if (isClamped) {
+            console.warn(`[API /api/optimize][POLICY] Texture resolution clamped (NO-UPSCALE)`);
           }
           const outStat = fs.statSync(outputPath);
           res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -646,6 +792,7 @@ const server = http.createServer(async (req, res) => {
             outputUrl: `/examples/${outputFilename}`,
             sizeBytes: outStat.size,
             sizeFormatted: formatBytes(outStat.size),
+            textureClamped: isClamped,
             details: stdout
           }));
         });

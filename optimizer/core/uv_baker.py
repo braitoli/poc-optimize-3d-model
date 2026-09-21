@@ -12,6 +12,7 @@ from PIL import Image
 from scipy import ndimage
 import trimesh
 import xatlas
+from optimizer.core.texture_utils import clamp_target_resolution, optimize_mesh_texture_for_export
 
 
 def _sample_texture_bilinear(image_rgb: np.ndarray, uv: np.ndarray) -> np.ndarray:
@@ -254,6 +255,9 @@ def rechart_and_bake_high_density(
         if source_image is None:
             source_image = Image.new("RGB", (target_res, target_res), (200, 200, 200))
 
+    # Defense-in-depth: Never upscale texture
+    target_res = clamp_target_resolution(target_res, source_image.size)
+
     if source_uv is None:
         source_uv = getattr(mesh.visual, "uv", None)
         if source_uv is None or len(source_uv) == 0:
@@ -262,7 +266,16 @@ def rechart_and_bake_high_density(
     has_alpha = source_image.mode in ("RGBA", "LA") or (
         source_image.mode == "P" and "transparency" in source_image.info
     )
+    has_transparency = False
     if has_alpha:
+        if source_image.mode in ("RGBA", "LA"):
+            alpha_arr = np.asarray(source_image.convert("RGBA"))[..., 3]
+            if np.any(alpha_arr < 255):
+                has_transparency = True
+        else:
+            has_transparency = True
+
+    if has_transparency:
         src_img = np.asarray(source_image.convert("RGBA"), dtype=np.uint8)
         channels = 4
         out_mode = "RGBA"
@@ -381,6 +394,11 @@ def rechart_and_bake_high_density(
 
     recharted_mesh.visual = trimesh.visual.TextureVisuals(uv=uv_recharted, material=mat)
 
+    # Attach optimized fast_save texture to mesh material and update dilated_pil
+    opt_img = optimize_mesh_texture_for_export(recharted_mesh)
+    if opt_img is not None:
+        dilated_pil = opt_img
+
     # 8. Compute Texel Density & UV Coverage metrics
     mesh_area = float(mesh.area)
     covered_pixels = int(len(sel))
@@ -431,6 +449,7 @@ def rebake_texture_xatlas(
     if double_sided is None:
         double_sided = True
 
+    target_res = clamp_target_resolution(target_res, source_image.size)
     pack_opts = None
     if target_coverage is not None and target_coverage < 0.99:
         area = mesh.area
@@ -461,10 +480,22 @@ def direct_resample_texture(
     Direct mode: Keeps 100% original UVs, resamples texture with Lanczos and applies 16px dilation.
     Preserves vertex normals, alpha channel, and material properties.
     """
+    # Defense-in-depth: Never upscale texture
+    target_res = clamp_target_resolution(target_res, source_image.size)
+
     has_alpha = source_image.mode in ("RGBA", "LA") or (
         source_image.mode == "P" and "transparency" in source_image.info
     )
+    has_transparency = False
     if has_alpha:
+        if source_image.mode in ("RGBA", "LA"):
+            alpha_arr = np.asarray(source_image.convert("RGBA"))[..., 3]
+            if np.any(alpha_arr < 255):
+                has_transparency = True
+        else:
+            has_transparency = True
+
+    if has_transparency:
         img = source_image.convert("RGBA") if source_image.mode != "RGBA" else source_image
         out_mode = "RGBA"
     else:
@@ -527,5 +558,9 @@ def direct_resample_texture(
             uv=getattr(mesh.visual, "uv", None),
             material=mat
         )
+
+    opt_img = optimize_mesh_texture_for_export(out_mesh)
+    if opt_img is not None:
+        clean_pil = opt_img
 
     return out_mesh, clean_pil

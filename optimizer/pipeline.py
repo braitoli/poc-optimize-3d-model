@@ -34,7 +34,12 @@ from optimizer.core.uv_baker import (
     compute_uv_metrics
 )
 from optimizer.core.palette import extract_palette, embed_gltf_extras
-from optimizer.core.texture_utils import extract_original_texture_info, preserve_mesh_textures
+from optimizer.core.texture_utils import (
+    extract_original_texture_info,
+    preserve_mesh_textures,
+    clamp_target_resolution,
+    optimize_mesh_texture_for_export
+)
 
 MODULE_ROOT = Path(__file__).resolve().parent
 NODE_SCRIPT = MODULE_ROOT / "node" / "optimize_meshopt.mjs"
@@ -155,6 +160,19 @@ def set_doublesided_material(glb_bytes: bytes) -> bytes:
     return header + chunk0 + new_json_bytes + bin_chunk
 
 
+def format_duration(seconds: float) -> str:
+    """Formats a duration in seconds into a friendly human-readable string (e.g. '54ms', '0.24s', '1.53s')."""
+    if seconds < 0.1:
+        ms = round(seconds * 1000)
+        return f"{ms}ms" if ms > 0 else "<1ms"
+    elif seconds < 60.0:
+        return f"{seconds:.2f}s"
+    else:
+        mins = int(seconds // 60)
+        secs = seconds % 60
+        return f"{mins}m {secs:.2f}s"
+
+
 class ModelOptimizer:
     def __init__(
         self,
@@ -182,6 +200,7 @@ class ModelOptimizer:
             print(f"[{ts}] {msg}", flush=True)
 
     def optimize(self, input_path: Path, output_path: Path) -> Dict[str, Any]:
+        t_total_start = time.perf_counter()
         t0 = time.time()
         input_path = Path(input_path).resolve()
         output_path = Path(output_path).resolve()
@@ -210,8 +229,30 @@ class ModelOptimizer:
             else:
                 return f"{size_bytes / (1024 * 1024):.2f} MB"
 
-        def emit_step(step_data: Dict[str, Any]):
+        def emit_step(step_data: Dict[str, Any], t_step_start: Optional[float] = None, explicit_duration: Optional[float] = None):
+            dur_sec = explicit_duration if explicit_duration is not None else (
+                (time.perf_counter() - t_step_start) if t_step_start is not None else 0.0
+            )
+            total_sec = time.perf_counter() - t_total_start
+            step_data["durationSeconds"] = round(dur_sec, 3)
+            step_data["durationFormatted"] = format_duration(dur_sec)
+            step_data["totalDurationSeconds"] = round(total_sec, 3)
+            step_data["durationMs"] = round(dur_sec * 1000, 1)
             steps_list.append(step_data)
+
+            if self.export_steps_dir:
+                try:
+                    payload = {
+                        "success": True,
+                        "model": input_path.name,
+                        "outputDir": str(self.export_steps_dir),
+                        "steps": steps_list,
+                        "lastCompletedStep": step_data.get("step", 0)
+                    }
+                    (self.export_steps_dir / "metrics.json").write_text(json.dumps(payload, indent=2))
+                except Exception:
+                    pass
+
             if self.step_callback:
                 try:
                     self.step_callback(step_data)
@@ -220,6 +261,7 @@ class ModelOptimizer:
 
         try:
             # 1. Load Raw Mesh
+            t_s0 = time.perf_counter()
             self.log("▶️ [Phase 1/5] Loading & Geometric Cleaning...")
             load_path = _decompress_meshopt_if_needed(input_path, tmp_dir)
             raw_mesh = trimesh.load(str(load_path), force="mesh", process=False)
@@ -249,8 +291,9 @@ class ModelOptimizer:
                     "textureRes": "Native",
                     "gpuVramMb": round((raw_size * 2.5) / (1024 * 1024), 2),
                     "modelFile": "step0_raw.glb"
-                })
+                }, t_step_start=t_s0)
 
+            t_s1 = time.perf_counter()
             cleaned_mesh = clean_and_repair_mesh(raw_mesh)
             grounded_mesh, translation = auto_ground_and_center(cleaned_mesh)
             self.log(f"   Grounded base at Y=0, translation applied: {np.round(translation, 4)}")
@@ -280,9 +323,10 @@ class ModelOptimizer:
                     "textureRes": "Native",
                     "gpuVramMb": round((len(s1_bytes) * 2.2) / (1024 * 1024), 2),
                     "modelFile": "step1_clean_ground.glb"
-                })
+                }, t_step_start=t_s1)
 
             # 2. Shell Orient (Visibility Z-Buffer Raycast)
+            t_s2 = time.perf_counter()
             self.log("▶️ [Phase 2/5] Shell Orienting (Visibility Z-Buffer CCW Winding)...")
             orient_stats = {}
             oriented_faces = orient_faces_by_visibility(
@@ -318,9 +362,10 @@ class ModelOptimizer:
                     "textureRes": "Native",
                     "gpuVramMb": round((len(s2_bytes) * 2.2) / (1024 * 1024), 2),
                     "modelFile": "step2_shell_orient.glb"
-                })
+                }, t_step_start=t_s2)
 
             # 3. Extract Texture & UV Processing
+            t_s3 = time.perf_counter()
             self.log(f"▶️ [Phase 3/5] Texture Processing ({self.resolution}x{self.resolution} + 16px Dilation)...")
             raw_uv = getattr(raw_mesh.visual, "uv", None)
             if raw_uv is None:
@@ -332,9 +377,13 @@ class ModelOptimizer:
             if raw_tex_img is None:
                 raw_tex_img = Image.new("RGB", (self.resolution, self.resolution), (200, 200, 200))
 
+            # Enforce NO-UPSCALE policy: clamp requested resolution
+            target_res = clamp_target_resolution(self.resolution, raw_tex_img.size, logger_fn=self.log)
+            self.resolution = target_res
+
             uv_stats = {}
             if self.rechart_uv:
-                self.log("   Re-charting UV islands with xatlas (High-Density Packing)...")
+                self.log(f"   Re-charting UV islands with xatlas (High-Density Packing, {self.resolution}x{self.resolution})...")
                 baked_mesh, dilated_pil = rechart_and_bake_high_density(
                     grounded_mesh,
                     target_res=self.resolution,
@@ -346,7 +395,7 @@ class ModelOptimizer:
                 )
                 self.log(f"   ✓ High-Density UV: {uv_stats.get('uv_coverage_ratio_percent', 0)}% coverage | Texel Density: {uv_stats.get('texel_density_linear', 0)} px/unit")
             else:
-                self.log("   Direct Master UV mode: Resampling Lanczos + 16px dilation...")
+                self.log(f"   Direct Master UV mode: Resampling Lanczos ({self.resolution}x{self.resolution}) + 16px dilation...")
                 baked_mesh, dilated_pil = direct_resample_texture(
                     grounded_mesh,
                     source_image=raw_tex_img,
@@ -354,10 +403,18 @@ class ModelOptimizer:
                     dilation_padding=16
                 )
 
+            # Ensure doubleSided=True so browser viewer does not backface-cull triangles
+            if hasattr(baked_mesh, "visual") and hasattr(baked_mesh.visual, "material") and baked_mesh.visual.material is not None:
+                baked_mesh.visual.material.doubleSided = True
+
+            # Optimize texture before export (defense-in-depth: JPEG if opaque, optimized PNG if alpha)
+            opt_pil = optimize_mesh_texture_for_export(baked_mesh, orig_tex_info=orig_tex_info)
+            if opt_pil is not None:
+                dilated_pil = opt_pil
+
+            tex_fmt = getattr(dilated_pil, "format", "JPEG")
             s3_bytes = None
             if self.export_steps_dir:
-                if hasattr(baked_mesh, "visual") and hasattr(baked_mesh.visual, "material") and baked_mesh.visual.material is not None:
-                    baked_mesh.visual.material.doubleSided = True
                 s3_bytes = trimesh.exchange.gltf.export_glb(trimesh.Scene({"Model": baked_mesh}), include_normals=True)
                 s3_bytes = set_doublesided_material(s3_bytes)
                 s3_path = self.export_steps_dir / "step3_uv_bake.glb"
@@ -376,13 +433,14 @@ class ModelOptimizer:
                     "meshes": 1,
                     "primitives": 1,
                     "bbox": s3_bbox,
-                    "textureFormat": "PNG (Dilated 16px)",
+                    "textureFormat": f"{tex_fmt} (Dilated 16px)",
                     "textureRes": f"{self.resolution}x{self.resolution}",
                     "gpuVramMb": round((self.resolution * self.resolution * 4 * 1.33) / (1024 * 1024), 2),
                     "modelFile": "step3_uv_bake.glb"
-                })
+                }, t_step_start=t_s3)
 
             # 4. Extract Palette
+            t_s4 = time.perf_counter()
             self.log("▶️ [Phase 4/5] Extracting 10-color Dominant Palette...")
             img_rgb = np.asarray(dilated_pil)
             v_uv = baked_mesh.visual.uv % 1.0
@@ -425,9 +483,10 @@ class ModelOptimizer:
                     "primaryColor": palette_data["primaryColor"],
                     "gpuVramMb": round((self.resolution * self.resolution * 4 * 1.33) / (1024 * 1024), 2),
                     "modelFile": "step4_palette.glb"
-                })
+                }, t_step_start=t_s4)
 
             # 5. Invoke Node.js Transform3D Optimizer
+            t_s5 = time.perf_counter()
             self.log("▶️ [Phase 5/5] Node.js Transform3D: Smooth Normals + Meshopt + KTX2 UASTC...")
             intermediate_opt_glb = tmp_dir / "intermediate_opt.glb"
 
@@ -501,9 +560,10 @@ class ModelOptimizer:
                     "primaryColor": palette_data["primaryColor"],
                     "gpuVramMb": round((self.resolution * self.resolution * 4 * 1.33) / (1024 * 1024), 2),
                     "modelFile": "step5_meshopt.glb"
-                })
+                }, t_step_start=t_s5)
 
-            # Embed glTF extras & configure material
+            # 6. Embed glTF extras & configure material (Final Step)
+            t_s6 = time.perf_counter()
             final_bytes = intermediate_opt_glb.read_bytes()
             if not self.double_sided:
                 final_bytes = set_frontside_material(final_bytes)
@@ -523,6 +583,7 @@ class ModelOptimizer:
             output_path.write_bytes(final_bytes)
 
             final_size = len(final_bytes)
+            total_elapsed = time.perf_counter() - t_total_start
             elapsed = time.time() - t0
 
             if self.export_steps_dir:
@@ -548,7 +609,7 @@ class ModelOptimizer:
                     "primaryColor": palette_data["primaryColor"],
                     "gpuVramMb": round((self.resolution * self.resolution * 1.0 * 1.33) / (1024 * 1024), 2),
                     "modelFile": "step6_final.glb"
-                })
+                }, t_step_start=t_s6)
 
             summary = {
                 "input_file": str(input_path),
@@ -563,12 +624,39 @@ class ModelOptimizer:
                 "faces_preserved_percent": round((node_summary.get("trianglesAfter", len(baked_mesh.faces)) / initial_faces) * 100, 2),
                 "palette": palette_data["palette"],
                 "primary_color": palette_data["primaryColor"],
-                "elapsed_seconds": round(elapsed, 2),
+                "elapsed_seconds": round(total_elapsed, 3),
+                "elapsedSeconds": round(total_elapsed, 3),
+                "elapsedFormatted": format_duration(total_elapsed),
+                "totalDurationSeconds": round(total_elapsed, 3),
+                "stepDurations": {
+                    s.get("name", f"step_{s.get('step')}"): {
+                        "step": s["step"],
+                        "durationSeconds": s.get("durationSeconds", 0.0),
+                        "durationFormatted": s.get("durationFormatted", "0s"),
+                        "totalDurationSeconds": s.get("totalDurationSeconds", 0.0),
+                        "seconds": s.get("durationSeconds", 0.0),
+                        "ms": s.get("durationMs", 0.0)
+                    }
+                    for s in steps_list
+                },
                 "steps": steps_list
             }
 
+            if self.export_steps_dir:
+                try:
+                    payload = {
+                        "success": True,
+                        "model": input_path.name,
+                        "outputDir": str(self.export_steps_dir),
+                        "summary": summary,
+                        "steps": steps_list
+                    }
+                    (self.export_steps_dir / "metrics.json").write_text(json.dumps(payload, indent=2))
+                except Exception:
+                    pass
+
             self.log("=" * 65)
-            self.log(f"🎉 OPTIMIZATION COMPLETED IN {elapsed:.2f}s!")
+            self.log(f"🎉 OPTIMIZATION COMPLETED IN {total_elapsed:.2f}s!")
             self.log(f"   Final Size: {summary['output_size_mb']} MB (Saved {summary['saved_percent']}%)")
             self.log(f"   Triangles: {summary['final_faces']:,} / {initial_faces:,} ({summary['faces_preserved_percent']}% preserved)")
             self.log(f"   Output saved to: {output_path}")

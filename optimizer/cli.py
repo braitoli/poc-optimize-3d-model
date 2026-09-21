@@ -24,7 +24,7 @@ def parse_args():
         type=int,
         default=1024,
         choices=[512, 1024, 2048, 4096],
-        help="Target texture dimension"
+        help="Target texture dimension (strictly capped at original texture size, never upscaled)"
     )
     parser.add_argument(
         "-f", "--format",

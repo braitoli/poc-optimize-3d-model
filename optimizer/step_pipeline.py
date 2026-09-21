@@ -39,7 +39,12 @@ from optimizer.core.uv_baker import (
     compute_uv_metrics
 )
 from optimizer.core.palette import extract_palette, embed_gltf_extras
-from optimizer.core.texture_utils import extract_original_texture_info, preserve_mesh_textures
+from optimizer.core.texture_utils import (
+    extract_original_texture_info,
+    preserve_mesh_textures,
+    clamp_target_resolution,
+    optimize_mesh_texture_for_export
+)
 from optimizer.pipeline import set_frontside_material, set_doublesided_material
 
 MODULE_ROOT = Path(__file__).resolve().parent
@@ -64,6 +69,19 @@ def inspect_glb_metrics(glb_path: Path) -> Dict[str, Any]:
                 pass
 
     return json.loads(stdout)
+
+
+def format_duration(seconds: float) -> str:
+    """Formats a duration in seconds into a friendly human-readable string (e.g. '54ms', '0.24s', '1.53s')."""
+    if seconds < 0.1:
+        ms = round(seconds * 1000)
+        return f"{ms}ms" if ms > 0 else "<1ms"
+    elif seconds < 60.0:
+        return f"{seconds:.2f}s"
+    else:
+        mins = int(seconds // 60)
+        secs = seconds % 60
+        return f"{mins}m {secs:.2f}s"
 
 
 class StepPipeline:
@@ -107,7 +125,16 @@ class StepPipeline:
             ts = time.strftime("%H:%M:%S")
             print(f"[{ts}] {msg}", file=sys.stderr, flush=True)
 
-    def _emit_step_event(self, step_idx: int, step_name: str, filename: str, metrics: Dict[str, Any], extra_data: Optional[Dict[str, Any]] = None):
+    def _emit_step_event(
+        self,
+        step_idx: int,
+        step_name: str,
+        filename: str,
+        metrics: Dict[str, Any],
+        extra_data: Optional[Dict[str, Any]] = None,
+        duration_seconds: Optional[float] = None,
+        total_duration_seconds: Optional[float] = None
+    ):
         event_payload = {
             "event": "step_complete",
             "step": step_idx,
@@ -115,6 +142,11 @@ class StepPipeline:
             "file": filename,
             "metrics": metrics
         }
+        if duration_seconds is not None:
+            event_payload["durationSeconds"] = round(duration_seconds, 3)
+            event_payload["durationFormatted"] = format_duration(duration_seconds)
+        if total_duration_seconds is not None:
+            event_payload["totalDurationSeconds"] = round(total_duration_seconds, 3)
         if extra_data:
             event_payload.update(extra_data)
 
@@ -135,19 +167,52 @@ class StepPipeline:
 
         steps_record: List[Dict[str, Any]] = []
 
-        def save_and_record_metrics(step_idx: int, glb_file: Path, extra_info: Optional[Dict[str, Any]] = None, duration_seconds: Optional[float] = None) -> Dict[str, Any]:
+        def save_and_record_metrics(
+            step_idx: int,
+            glb_file: Path,
+            extra_info: Optional[Dict[str, Any]] = None,
+            t_step_start: Optional[float] = None,
+            explicit_duration: Optional[float] = None,
+            duration_seconds: Optional[float] = None,
+            **kwargs
+        ) -> Dict[str, Any]:
             step_def = self.STEP_DEFINITIONS[step_idx]
             metrics = inspect_glb_metrics(glb_file)
+            
+            if duration_seconds is not None:
+                step_duration = duration_seconds
+            elif explicit_duration is not None:
+                step_duration = explicit_duration
+            elif t_step_start is not None:
+                step_duration = time.perf_counter() - t_step_start
+            else:
+                step_duration = 0.0
+            total_duration = time.perf_counter() - t_total_start
+
+            dur_sec = round(step_duration, 3)
+            dur_fmt = format_duration(step_duration)
+            tot_sec = round(total_duration, 3)
+
+            # Enrich metrics dictionary with precise timing indicators
+            metrics["durationSeconds"] = dur_sec
+            metrics["durationFormatted"] = dur_fmt
+            metrics["totalDurationSeconds"] = tot_sec
+            metrics["durationMs"] = round(step_duration * 1000, 1)
+
+            if extra_info:
+                metrics.update(extra_info)
+
             step_entry = {
                 "step": step_idx,
                 "stepName": step_def["name"],
                 "file": step_def["file"],
                 "description": step_def["desc"],
+                "durationSeconds": dur_sec,
+                "durationFormatted": dur_fmt,
+                "totalDurationSeconds": tot_sec,
+                "durationMs": round(step_duration * 1000, 1),
                 "metrics": metrics
             }
-            if duration_seconds is not None:
-                step_entry["durationSeconds"] = round(duration_seconds, 4)
-                step_entry["durationMs"] = round(duration_seconds * 1000, 2)
             if extra_info:
                 step_entry["details"] = extra_info
             steps_record.append(step_entry)
@@ -165,7 +230,15 @@ class StepPipeline:
             metrics_json_path.write_text(json.dumps(payload, indent=2))
 
             # Emit streaming NDJSON event
-            self._emit_step_event(step_idx, step_def["name"], step_def["file"], metrics, extra_info)
+            self._emit_step_event(
+                step_idx,
+                step_def["name"],
+                step_def["file"],
+                metrics,
+                extra_data=extra_info,
+                duration_seconds=dur_sec,
+                total_duration_seconds=tot_sec
+            )
             return metrics
 
         self.log("=" * 68)
@@ -182,12 +255,12 @@ class StepPipeline:
         step0_file = output_dir / "step_00_raw.glb"
         if input_path.resolve() != step0_file.resolve():
             shutil.copy2(input_path, step0_file)
-        m0 = save_and_record_metrics(0, step0_file, duration_seconds=time.perf_counter() - t_s0)
+        m0 = save_and_record_metrics(0, step0_file, t_step_start=t_s0)
         initial_faces = m0["faces"]
         initial_verts = m0["vertices"]
         initial_bytes = m0["fileSizeBytes"]
         orig_tex_info = extract_original_texture_info(step0_file, metrics=m0)
-        self.log(f"   ✓ Step 0 complete: {initial_faces:,} faces, {initial_verts:,} verts, {m0['fileSizeFormatted']} (texture: {orig_tex_info.get('default_format')})")
+        self.log(f"   ✓ Step 0 complete ({m0['durationFormatted']}): {initial_faces:,} faces, {initial_verts:,} verts, {m0['fileSizeFormatted']} (texture: {orig_tex_info.get('default_format')})")
 
         # =====================================================================
         # STEP 1: Cleaner & Auto Grounding (Y=0, X/Z Centered)
@@ -204,8 +277,8 @@ class StepPipeline:
         step1_bytes = trimesh.exchange.gltf.export_glb(step1_scene, include_normals=True)
         step1_file = output_dir / "step_01_cleaned_grounded.glb"
         step1_file.write_bytes(step1_bytes)
-        m1 = save_and_record_metrics(1, step1_file, {"translationApplied": translation.tolist()}, duration_seconds=time.perf_counter() - t_s1)
-        self.log(f"   ✓ Step 1 complete: Grounded at Y=0 (shift: {np.round(translation, 3).tolist()})")
+        m1 = save_and_record_metrics(1, step1_file, {"translationApplied": translation.tolist()}, t_step_start=t_s1)
+        self.log(f"   ✓ Step 1 complete ({m1['durationFormatted']}): Grounded at Y=0 (shift: {np.round(translation, 3).tolist()})")
 
         # =====================================================================
         # STEP 2: Visibility Z-Buffer Shell Orient (Outward CCW Winding)
@@ -228,8 +301,8 @@ class StepPipeline:
         step2_bytes = trimesh.exchange.gltf.export_glb(step2_scene, include_normals=True)
         step2_file = output_dir / "step_02_oriented.glb"
         step2_file.write_bytes(step2_bytes)
-        m2 = save_and_record_metrics(2, step2_file, orient_stats, duration_seconds=time.perf_counter() - t_s2)
-        self.log(f"   ✓ Step 2 complete: Flipped {orient_stats.get('faces_flipped', 0)} faces to outward CCW")
+        m2 = save_and_record_metrics(2, step2_file, orient_stats, t_step_start=t_s2)
+        self.log(f"   ✓ Step 2 complete ({m2['durationFormatted']}): Flipped {orient_stats.get('faces_flipped', 0)} faces to outward CCW")
 
         # =====================================================================
         # STEP 3: Texture Baking / Resampling & 16px Dilation
@@ -246,12 +319,16 @@ class StepPipeline:
         if raw_tex_img is None:
             raw_tex_img = Image.new("RGB", (self.resolution, self.resolution), (200, 200, 200))
 
+        # Enforce NO-UPSCALE policy: clamp requested resolution
+        target_res = clamp_target_resolution(self.resolution, raw_tex_img.size, logger_fn=self.log)
+        self.resolution = target_res
+
         uv_stats = {}
         if self.rechart_uv:
-            self.log("   Re-charting UV islands with xatlas (High-Density Packing)...")
+            self.log(f"   Re-charting UV islands with xatlas (High-Density Packing, {target_res}x{target_res})...")
             baked_mesh, dilated_pil = rechart_and_bake_high_density(
                 grounded_mesh,
-                target_res=self.resolution,
+                target_res=target_res,
                 source_image=raw_tex_img,
                 source_uv=raw_uv,
                 dilation_padding=16,
@@ -260,11 +337,11 @@ class StepPipeline:
             )
             self.log(f"   ✓ High-Density UV: {uv_stats.get('uv_coverage_ratio_percent', 0)}% coverage | Texel Density: {uv_stats.get('texel_density_linear', 0)} px/unit")
         else:
-            self.log("   Direct Master UV mode: Lanczos resample + 16px dilation...")
+            self.log(f"   Direct Master UV mode: Lanczos resample ({target_res}x{target_res}) + 16px dilation...")
             baked_mesh, dilated_pil = direct_resample_texture(
                 grounded_mesh,
                 source_image=raw_tex_img,
-                target_res=self.resolution,
+                target_res=target_res,
                 dilation_padding=16
             )
 
@@ -272,13 +349,23 @@ class StepPipeline:
         if hasattr(baked_mesh, "visual") and hasattr(baked_mesh.visual, "material") and baked_mesh.visual.material is not None:
             baked_mesh.visual.material.doubleSided = True
 
+        # Optimize texture before export (defense-in-depth: format JPEG if opaque, or optimized PNG)
+        opt_pil = optimize_mesh_texture_for_export(baked_mesh, orig_tex_info=orig_tex_info)
+        if opt_pil is not None:
+            dilated_pil = opt_pil
+
         step3_scene = trimesh.Scene({"Model": baked_mesh})
         step3_bytes = trimesh.exchange.gltf.export_glb(step3_scene, include_normals=True)
         step3_bytes = set_doublesided_material(step3_bytes)
         step3_file = output_dir / "step_03_texture_baked.glb"
         step3_file.write_bytes(step3_bytes)
-        m3 = save_and_record_metrics(3, step3_file, {"textureResolution": f"{self.resolution}x{self.resolution}", "dilationPadding": 16}, duration_seconds=time.perf_counter() - t_s3)
-        self.log(f"   ✓ Step 3 complete: Baked texture {dilated_pil.size[0]}x{dilated_pil.size[1]}")
+        tex_fmt = getattr(dilated_pil, "format", "JPEG")
+        m3 = save_and_record_metrics(3, step3_file, {
+            "textureResolution": f"{dilated_pil.size[0]}x{dilated_pil.size[1]}",
+            "textureFormat": tex_fmt,
+            "dilationPadding": 16
+        }, t_step_start=t_s3)
+        self.log(f"   ✓ Step 3 complete ({m3['durationFormatted']}): Baked texture {dilated_pil.size[0]}x{dilated_pil.size[1]} ({tex_fmt})")
 
         # =====================================================================
         # STEP 4: Palette Tagging (10 Dominant Colors via K-Means)
@@ -302,8 +389,8 @@ class StepPipeline:
         m4 = save_and_record_metrics(4, step4_file, {
             "primaryColor": palette_data["primaryColor"],
             "paletteCount": len(palette_data["palette"])
-        }, duration_seconds=time.perf_counter() - t_s4)
-        self.log(f"   ✓ Step 4 complete: Primary color: {palette_data['primaryColor']} | Palette: {palette_data['palette']}")
+        }, t_step_start=t_s4)
+        self.log(f"   ✓ Step 4 complete ({m4['durationFormatted']}): Primary color: {palette_data['primaryColor']} | Palette: {palette_data['palette']}")
 
         # =====================================================================
         # STEP 5: Smooth Normals & EXT_meshopt_compression Geometry
@@ -338,8 +425,8 @@ class StepPipeline:
         if proc5.returncode != 0 or not step5_file.exists():
             raise RuntimeError(f"Step 5 Meshopt geometry compression failed: {proc5.stderr or proc5.stdout}")
 
-        m5 = save_and_record_metrics(5, step5_file, duration_seconds=time.perf_counter() - t_s5)
-        self.log(f"   ✓ Step 5 complete: Geometry compressed ({m5['faces']:,} faces preserved 100%, {m5['fileSizeFormatted']})")
+        m5 = save_and_record_metrics(5, step5_file, t_step_start=t_s5)
+        self.log(f"   ✓ Step 5 complete ({m5['durationFormatted']}): Geometry compressed ({m5['faces']:,} faces preserved 100%, {m5['fileSizeFormatted']})")
 
         # =====================================================================
         # STEP 6: KTX2 / WebP GPU Compression, FrontSide Material, Extras
@@ -398,8 +485,8 @@ class StepPipeline:
         step6_file = output_dir / "step_06_final.glb"
         step6_file.write_bytes(final_bytes)
 
-        m6 = save_and_record_metrics(6, step6_file, duration_seconds=time.perf_counter() - t_s6)
-        self.log(f"   ✓ Step 6 complete: Final GLB ready ({m6['fileSizeFormatted']}, GPU VRAM: {m6['totalGpuVramFormatted']})")
+        m6 = save_and_record_metrics(6, step6_file, t_step_start=t_s6)
+        self.log(f"   ✓ Step 6 complete ({m6['durationFormatted']}): Final GLB ready ({m6['fileSizeFormatted']}, GPU VRAM: {m6['totalGpuVramFormatted']})")
 
         # =====================================================================
         # Pipeline Summary & Finalization
@@ -416,12 +503,18 @@ class StepPipeline:
         summary = {
             "model": input_path.name,
             "outputDir": str(output_dir),
-            "elapsedSeconds": round(total_perf_elapsed, 4),
-            "elapsedMs": round(total_perf_elapsed * 1000, 2),
+            "elapsedSeconds": round(total_perf_elapsed, 3),
+            "elapsedFormatted": format_duration(total_perf_elapsed),
+            "elapsedMs": round(total_perf_elapsed * 1000, 1),
+            "totalDurationSeconds": round(total_perf_elapsed, 3),
+            "totalDurationFormatted": format_duration(total_perf_elapsed),
             "stepDurations": {
                 s["stepName"]: {
                     "step": s["step"],
                     "file": s["file"],
+                    "durationSeconds": s.get("durationSeconds", 0.0),
+                    "durationFormatted": s.get("durationFormatted", "0s"),
+                    "totalDurationSeconds": s.get("totalDurationSeconds", 0.0),
                     "seconds": s.get("durationSeconds", 0.0),
                     "ms": s.get("durationMs", 0.0)
                 }
@@ -474,7 +567,7 @@ def main():
     )
     parser.add_argument("input", help="Path to raw source .glb model")
     parser.add_argument("--output-dir", "-o", required=True, help="Destination directory for 7 GLB step files and metrics.json")
-    parser.add_argument("--resolution", "-r", type=int, default=1024, help="Texture resolution (e.g. 512, 1024, 2048)")
+    parser.add_argument("--resolution", "-r", type=int, default=1024, help="Target texture dimension (strictly capped at original texture size, never upscaled; e.g. 512, 1024, 2048)")
     parser.add_argument("--format", "-f", choices=["ktx2", "webp"], default="ktx2", help="GPU texture compression format")
     parser.add_argument("--rechart-uv", action="store_true", help="Re-chart UVs using xatlas (default: direct master UV)")
     parser.add_argument("--no-smooth-normals", action="store_true", help="Disable angle-weighted normal smoothing across seams")

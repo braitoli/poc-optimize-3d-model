@@ -1,634 +1,82 @@
 {
-  "jobId": "default_sample",
-  "status": "completed",
-  "modelName": "Dinoki Sample Showcase",
-  "totalSteps": 7,
-  "currentStep": 6,
-  "config": {
-    "resolution": 1024,
-    "format": "ktx2",
-    "uvMode": "direct"
-  },
-  "steps": {
-    "0": {
-      "step": 0,
-      "stepName": "Raw Input",
-      "name": "Raw Input",
-      "description": "Original raw unoptimized 3D asset (Dinoki)",
-      "file": "step0_raw.glb",
-      "glbUrl": "/workspaces/default_sample/step0_raw.glb",
-      "fileSize": 2026696,
-      "fileSizeFormatted": "1.93 MB",
-      "faces": 45000,
-      "vertices": 36648,
-      "drawCalls": 1,
-      "meshes": 1,
-      "primitives": 1,
-      "bbox": [
-        1.21027,
-        1.59994,
-        1.15048
-      ],
-      "textureFormat": "JPEG",
-      "textureRes": "1536x1536",
-      "gpuVramMb": 12.0,
-      "facesPreservedPercent": 100.0,
-      "palette": [],
-      "paletteDetails": [],
-      "primaryColor": null,
-      "materials": [
-        {
-          "name": "material_0",
-          "alphaMode": "OPAQUE",
-          "doubleSided": false,
-          "roughnessFactor": 0.9527129914246354,
-          "metallicFactor": 0,
-          "hasBaseColorTexture": true
-        }
-      ]
-    },
-    "1": {
-      "step": 1,
-      "stepName": "Clean & Auto-Ground",
-      "name": "Clean & Auto-Ground",
-      "description": "Base grounded at Y=0, degenerate faces cleaned, 100% geometry preserved",
-      "file": "step1_clean_ground.glb",
-      "glbUrl": "/workspaces/default_sample/step1_clean_ground.glb",
-      "fileSize": 2026752,
-      "fileSizeFormatted": "1.93 MB",
-      "faces": 45000,
-      "vertices": 36648,
-      "drawCalls": 1,
-      "meshes": 1,
-      "primitives": 1,
-      "bbox": [
-        1.21028,
-        1.59995,
-        1.15048
-      ],
-      "textureFormat": "JPEG",
-      "textureRes": "1536x1536",
-      "gpuVramMb": 12.0,
-      "facesPreservedPercent": 100.0,
-      "palette": [],
-      "paletteDetails": [],
-      "primaryColor": null,
-      "materials": [
-        {
-          "name": "material_0",
-          "alphaMode": "OPAQUE",
-          "doubleSided": false,
-          "roughnessFactor": 0.9527129914246354,
-          "metallicFactor": 0,
-          "hasBaseColorTexture": true
-        }
-      ]
-    },
-    "2": {
-      "step": 2,
-      "stepName": "Shell Orienting",
-      "name": "Shell Orienting",
-      "description": "Z-Buffer visibility raycast, flipped faces to CCW FrontSide",
-      "file": "step2_shell_orient.glb",
-      "glbUrl": "/workspaces/default_sample/step2_shell_orient.glb",
-      "fileSize": 2026752,
-      "fileSizeFormatted": "1.93 MB",
-      "faces": 45000,
-      "vertices": 36648,
-      "drawCalls": 1,
-      "meshes": 1,
-      "primitives": 1,
-      "bbox": [
-        1.21028,
-        1.59995,
-        1.15048
-      ],
-      "textureFormat": "JPEG",
-      "textureRes": "1536x1536",
-      "gpuVramMb": 12.0,
-      "facesPreservedPercent": 100.0,
-      "palette": [],
-      "paletteDetails": [],
-      "primaryColor": null,
-      "materials": [
-        {
-          "name": "material_0",
-          "alphaMode": "OPAQUE",
-          "doubleSided": false,
-          "roughnessFactor": 0.9527129914246354,
-          "metallicFactor": 0,
-          "hasBaseColorTexture": true
-        }
-      ]
-    },
-    "3": {
-      "step": 3,
-      "stepName": "UV & Texture Bake",
-      "name": "UV & Texture Bake",
-      "description": "Master UV texture resampled to 1024x1024 with 16px boundary dilation (doubleSided)",
-      "file": "step3_uv_bake.glb",
-      "glbUrl": "/workspaces/default_sample/step3_uv_bake.glb",
-      "fileSize": 3307132,
-      "fileSizeFormatted": "3.15 MB",
-      "faces": 45000,
-      "vertices": 36648,
-      "drawCalls": 1,
-      "meshes": 1,
-      "primitives": 1,
-      "bbox": [
-        1.21028,
-        1.59995,
-        1.15048
-      ],
-      "textureFormat": "PNG",
-      "textureRes": "1024x1024",
-      "gpuVramMb": 5.33,
-      "facesPreservedPercent": 100.0,
-      "palette": [],
-      "paletteDetails": [],
-      "primaryColor": null,
-      "materials": [
-        {
-          "name": "material_0",
-          "alphaMode": "OPAQUE",
-          "doubleSided": true,
-          "roughnessFactor": 0.9527129914246354,
-          "metallicFactor": 0,
-          "hasBaseColorTexture": true
-        }
-      ]
-    },
-    "4": {
-      "step": 4,
-      "stepName": "Palette Extraction",
-      "name": "Palette Extraction",
-      "description": "10 dominant surface colors extracted via KMeans",
-      "file": "step4_palette.glb",
-      "glbUrl": "/workspaces/default_sample/step4_palette.glb",
-      "fileSize": 3307816,
-      "fileSizeFormatted": "3.15 MB",
-      "faces": 45000,
-      "vertices": 36648,
-      "drawCalls": 1,
-      "meshes": 1,
-      "primitives": 1,
-      "bbox": [
-        1.21028,
-        1.59995,
-        1.15048
-      ],
-      "textureFormat": "PNG",
-      "textureRes": "1024x1024",
-      "gpuVramMb": 5.33,
-      "facesPreservedPercent": 100.0,
-      "palette": [
-        "#4d802c",
-        "#39651a",
-        "#0f0f0b",
-        "#6a963a",
-        "#262621",
-        "#284510",
-        "#b45a08",
-        "#453f36",
-        "#b3b19c",
-        "#247179"
-      ],
-      "paletteDetails": [
-        {
-          "hex": "#4d802c",
-          "rgb": [
-            77,
-            128,
-            44
-          ],
-          "weight": 0.1629
-        },
-        {
-          "hex": "#39651a",
-          "rgb": [
-            57,
-            101,
-            26
-          ],
-          "weight": 0.1568
-        },
-        {
-          "hex": "#0f0f0b",
-          "rgb": [
-            15,
-            15,
-            11
-          ],
-          "weight": 0.1184
-        },
-        {
-          "hex": "#6a963a",
-          "rgb": [
-            106,
-            150,
-            58
-          ],
-          "weight": 0.1166
-        },
-        {
-          "hex": "#262621",
-          "rgb": [
-            38,
-            38,
-            33
-          ],
-          "weight": 0.1161
-        },
-        {
-          "hex": "#284510",
-          "rgb": [
-            40,
-            69,
-            16
-          ],
-          "weight": 0.0987
-        },
-        {
-          "hex": "#b45a08",
-          "rgb": [
-            180,
-            90,
-            8
-          ],
-          "weight": 0.0914
-        },
-        {
-          "hex": "#453f36",
-          "rgb": [
-            69,
-            63,
-            54
-          ],
-          "weight": 0.0748
-        },
-        {
-          "hex": "#b3b19c",
-          "rgb": [
-            179,
-            177,
-            156
-          ],
-          "weight": 0.0393
-        },
-        {
-          "hex": "#247179",
-          "rgb": [
-            36,
-            113,
-            121
-          ],
-          "weight": 0.0248
-        }
-      ],
-      "primaryColor": "#4d802c",
-      "materials": [
-        {
-          "name": "material_0",
-          "alphaMode": "OPAQUE",
-          "doubleSided": true,
-          "roughnessFactor": 0.9527129914246354,
-          "metallicFactor": 0,
-          "hasBaseColorTexture": true
-        }
-      ]
-    },
-    "5": {
-      "step": 5,
-      "stepName": "Meshopt Compression",
-      "name": "Meshopt Compression",
-      "description": "Smooth normals, weld, quantize, and EXT_meshopt_compression",
-      "file": "step5_meshopt.glb",
-      "glbUrl": "/workspaces/default_sample/step5_meshopt.glb",
-      "fileSize": 2234504,
-      "fileSizeFormatted": "2.13 MB",
-      "faces": 45000,
-      "vertices": 36648,
-      "drawCalls": 1,
-      "meshes": 1,
-      "primitives": 1,
-      "bbox": [
-        1.2103,
-        1.59995,
-        1.15048
-      ],
-      "textureFormat": "PNG",
-      "textureRes": "1024x1024",
-      "gpuVramMb": 5.33,
-      "facesPreservedPercent": 100.0,
-      "palette": [
-        "#4d802c",
-        "#39651a",
-        "#0f0f0b",
-        "#6a963a",
-        "#262621",
-        "#284510",
-        "#b45a08",
-        "#453f36",
-        "#b3b19c",
-        "#247179"
-      ],
-      "paletteDetails": [
-        {
-          "hex": "#4d802c",
-          "rgb": [
-            77,
-            128,
-            44
-          ],
-          "weight": 0.1629
-        },
-        {
-          "hex": "#39651a",
-          "rgb": [
-            57,
-            101,
-            26
-          ],
-          "weight": 0.1568
-        },
-        {
-          "hex": "#0f0f0b",
-          "rgb": [
-            15,
-            15,
-            11
-          ],
-          "weight": 0.1184
-        },
-        {
-          "hex": "#6a963a",
-          "rgb": [
-            106,
-            150,
-            58
-          ],
-          "weight": 0.1166
-        },
-        {
-          "hex": "#262621",
-          "rgb": [
-            38,
-            38,
-            33
-          ],
-          "weight": 0.1161
-        },
-        {
-          "hex": "#284510",
-          "rgb": [
-            40,
-            69,
-            16
-          ],
-          "weight": 0.0987
-        },
-        {
-          "hex": "#b45a08",
-          "rgb": [
-            180,
-            90,
-            8
-          ],
-          "weight": 0.0914
-        },
-        {
-          "hex": "#453f36",
-          "rgb": [
-            69,
-            63,
-            54
-          ],
-          "weight": 0.0748
-        },
-        {
-          "hex": "#b3b19c",
-          "rgb": [
-            179,
-            177,
-            156
-          ],
-          "weight": 0.0393
-        },
-        {
-          "hex": "#247179",
-          "rgb": [
-            36,
-            113,
-            121
-          ],
-          "weight": 0.0248
-        }
-      ],
-      "primaryColor": "#4d802c",
-      "materials": [
-        {
-          "name": "material_0",
-          "alphaMode": "OPAQUE",
-          "doubleSided": false,
-          "roughnessFactor": 0.9527129914246354,
-          "metallicFactor": 0,
-          "hasBaseColorTexture": true
-        }
-      ]
-    },
-    "6": {
-      "step": 6,
-      "stepName": "KTX2 GPU Compression",
-      "name": "KTX2 GPU Compression",
-      "description": "Basis UASTC L2 GPU mipmaps, frontSide, final extras",
-      "file": "step6_final.glb",
-      "glbUrl": "/workspaces/default_sample/step6_final.glb",
-      "fileSize": 1781924,
-      "fileSizeFormatted": "1.7 MB",
-      "faces": 45000,
-      "vertices": 36648,
-      "drawCalls": 1,
-      "meshes": 1,
-      "primitives": 1,
-      "bbox": [
-        1.2103,
-        1.59995,
-        1.15048
-      ],
-      "textureFormat": "KTX2",
-      "textureRes": "1024x1024",
-      "gpuVramMb": 1.33,
-      "facesPreservedPercent": 100.0,
-      "palette": [
-        "#4d802c",
-        "#39651a",
-        "#0f0f0b",
-        "#6a963a",
-        "#262621",
-        "#284510",
-        "#b45a08",
-        "#453f36",
-        "#b3b19c",
-        "#247179"
-      ],
-      "paletteDetails": [
-        {
-          "hex": "#4d802c",
-          "rgb": [
-            77,
-            128,
-            44
-          ],
-          "weight": 0.1629
-        },
-        {
-          "hex": "#39651a",
-          "rgb": [
-            57,
-            101,
-            26
-          ],
-          "weight": 0.1568
-        },
-        {
-          "hex": "#0f0f0b",
-          "rgb": [
-            15,
-            15,
-            11
-          ],
-          "weight": 0.1184
-        },
-        {
-          "hex": "#6a963a",
-          "rgb": [
-            106,
-            150,
-            58
-          ],
-          "weight": 0.1166
-        },
-        {
-          "hex": "#262621",
-          "rgb": [
-            38,
-            38,
-            33
-          ],
-          "weight": 0.1161
-        },
-        {
-          "hex": "#284510",
-          "rgb": [
-            40,
-            69,
-            16
-          ],
-          "weight": 0.0987
-        },
-        {
-          "hex": "#b45a08",
-          "rgb": [
-            180,
-            90,
-            8
-          ],
-          "weight": 0.0914
-        },
-        {
-          "hex": "#453f36",
-          "rgb": [
-            69,
-            63,
-            54
-          ],
-          "weight": 0.0748
-        },
-        {
-          "hex": "#b3b19c",
-          "rgb": [
-            179,
-            177,
-            156
-          ],
-          "weight": 0.0393
-        },
-        {
-          "hex": "#247179",
-          "rgb": [
-            36,
-            113,
-            121
-          ],
-          "weight": 0.0248
-        }
-      ],
-      "primaryColor": "#4d802c",
-      "materials": [
-        {
-          "name": "material_0",
-          "alphaMode": "OPAQUE",
-          "doubleSided": false,
-          "roughnessFactor": 0.9527129914246354,
-          "metallicFactor": 0,
-          "hasBaseColorTexture": true
-        }
-      ]
-    }
-  },
+  "success": true,
   "summary": {
-    "model": "dinoki_raw.glb",
+    "model": "step0_raw.glb",
     "outputDir": "/Users/lyld/poc-optimize-3d-model/workspaces/default_sample",
-    "elapsedSeconds": 3.3671,
-    "elapsedMs": 3367.08,
+    "elapsedSeconds": 3.418,
+    "elapsedFormatted": "3.42s",
+    "elapsedMs": 3418.3,
+    "totalDurationSeconds": 3.418,
+    "totalDurationFormatted": "3.42s",
     "stepDurations": {
       "raw": {
         "step": 0,
         "file": "step_00_raw.glb",
-        "seconds": 0.0005,
-        "ms": 0.51
+        "durationSeconds": 0.079,
+        "durationFormatted": "79ms",
+        "totalDurationSeconds": 0.079,
+        "seconds": 0.079,
+        "ms": 79.4
       },
       "cleaned_grounded": {
         "step": 1,
         "file": "step_01_cleaned_grounded.glb",
-        "seconds": 0.0438,
-        "ms": 43.78
+        "durationSeconds": 0.123,
+        "durationFormatted": "0.12s",
+        "totalDurationSeconds": 0.214,
+        "seconds": 0.123,
+        "ms": 123.1
       },
       "oriented": {
         "step": 2,
         "file": "step_02_oriented.glb",
-        "seconds": 0.6625,
-        "ms": 662.45
+        "durationSeconds": 0.787,
+        "durationFormatted": "0.79s",
+        "totalDurationSeconds": 1.001,
+        "seconds": 0.787,
+        "ms": 786.7
       },
       "texture_baked": {
         "step": 3,
         "file": "step_03_texture_baked.glb",
-        "seconds": 0.1114,
-        "ms": 111.36
+        "durationSeconds": 0.149,
+        "durationFormatted": "0.15s",
+        "totalDurationSeconds": 1.152,
+        "seconds": 0.149,
+        "ms": 149.3
       },
       "palette_tagged": {
         "step": 4,
         "file": "step_04_palette_tagged.glb",
-        "seconds": 0.0072,
-        "ms": 7.24
+        "durationSeconds": 0.092,
+        "durationFormatted": "92ms",
+        "totalDurationSeconds": 1.245,
+        "seconds": 0.092,
+        "ms": 91.9
       },
       "meshopt": {
         "step": 5,
         "file": "step_05_meshopt.glb",
-        "seconds": 0.1609,
-        "ms": 160.87
+        "durationSeconds": 0.222,
+        "durationFormatted": "0.22s",
+        "totalDurationSeconds": 1.468,
+        "seconds": 0.222,
+        "ms": 222.1
       },
       "final": {
         "step": 6,
         "file": "step_06_final.glb",
-        "seconds": 1.7731,
-        "ms": 1773.08
+        "durationSeconds": 1.946,
+        "durationFormatted": "1.95s",
+        "totalDurationSeconds": 3.416,
+        "seconds": 1.946,
+        "ms": 1946.3
       }
     },
     "initialSizeBytes": 2026696,
-    "finalSizeBytes": 1781924,
-    "savedBytes": 244772,
-    "savedPercent": 12.08,
+    "finalSizeBytes": 1794612,
+    "savedBytes": 232084,
+    "savedPercent": 11.45,
     "initialFaces": 45000,
     "finalFaces": 45000,
     "facesPreservedPercent": 100.0,
@@ -638,18 +86,18 @@
     "initialGpuVramBytes": 12582904,
     "finalGpuVramBytes": 1398128,
     "gpuVramSavedPercent": 88.89,
-    "primaryColor": "#4d802c",
+    "primaryColor": "#457424",
     "palette": [
-      "#4d802c",
-      "#39651a",
-      "#0f0f0b",
-      "#6a963a",
-      "#262621",
-      "#284510",
-      "#b45a08",
-      "#453f36",
-      "#b3b19c",
-      "#247179"
+      "#457424",
+      "#14150f",
+      "#639238",
+      "#2d5113",
+      "#343532",
+      "#c86b0b",
+      "#b2b19c",
+      "#a24a04",
+      "#277077",
+      "#6e3108"
     ],
     "files": [
       "step_00_raw.glb",
@@ -660,5 +108,1498 @@
       "step_05_meshopt.glb",
       "step_06_final.glb"
     ]
-  }
+  },
+  "steps": [
+    {
+      "step": 0,
+      "stepName": "raw",
+      "file": "step_00_raw.glb",
+      "description": "Raw input model ingested & analyzed",
+      "durationSeconds": 0.079,
+      "durationFormatted": "79ms",
+      "totalDurationSeconds": 0.079,
+      "durationMs": 79.4,
+      "metrics": {
+        "fileSizeBytes": 2026696,
+        "fileSizeFormatted": "1.93 MB",
+        "faces": 45000,
+        "vertices": 36648,
+        "meshes": 1,
+        "primitives": 1,
+        "drawCalls": 1,
+        "uvChannels": [
+          {
+            "channel": "TEXCOORD_0",
+            "count": 36648,
+            "min": [
+              -0.43398,
+              -0.48361
+            ],
+            "max": [
+              1.7422,
+              1.7788
+            ],
+            "bounds": {
+              "uMin": -0.43398,
+              "uMax": 1.7422,
+              "vMin": -0.48361,
+              "vMax": 1.7788,
+              "uRange": 2.17618,
+              "vRange": 2.26241
+            },
+            "normalized": false
+          }
+        ],
+        "textures": [
+          {
+            "name": "texture_0",
+            "mimeType": "image/jpeg",
+            "format": "JPEG",
+            "compression": "None",
+            "resolution": [
+              1536,
+              1536
+            ],
+            "resolutionFormatted": "1536x1536",
+            "fileSizeBytes": 312316,
+            "fileSizeFormatted": "305 KB",
+            "slots": [
+              "baseColorTexture"
+            ],
+            "gpuVramUncompressedBytes": 12582912,
+            "gpuVramUncompressedFormatted": "12 MB",
+            "gpuVramKtx2Bytes": 3145728,
+            "gpuVramKtx2Formatted": "3 MB",
+            "estimatedGpuVramBytes": 12582904,
+            "estimatedGpuVramFormatted": "12 MB"
+          }
+        ],
+        "totalGpuVramBytes": 12582904,
+        "totalGpuVramFormatted": "12 MB",
+        "totalGpuVramUncompressedBytes": 12582912,
+        "totalGpuVramUncompressedFormatted": "12 MB",
+        "materials": [
+          {
+            "name": "material_0",
+            "alphaMode": "OPAQUE",
+            "doubleSided": false,
+            "roughnessFactor": 0.9527129914246354,
+            "metallicFactor": 0,
+            "hasBaseColorTexture": true
+          }
+        ],
+        "boundingBox": {
+          "min": [
+            -0.60466,
+            1e-05,
+            -0.57525
+          ],
+          "max": [
+            0.60561,
+            1.59995,
+            0.57523
+          ],
+          "dimensions": [
+            1.21027,
+            1.59994,
+            1.15048
+          ],
+          "center": [
+            0.00048,
+            0.79998,
+            -1e-05
+          ]
+        },
+        "palette": [],
+        "primaryColor": null,
+        "paletteDetails": [],
+        "extensions": {
+          "used": [],
+          "required": []
+        },
+        "extras": {},
+        "durationSeconds": 0.079,
+        "durationFormatted": "79ms",
+        "totalDurationSeconds": 0.079,
+        "durationMs": 79.4
+      }
+    },
+    {
+      "step": 1,
+      "stepName": "cleaned_grounded",
+      "file": "step_01_cleaned_grounded.glb",
+      "description": "Cleaned geometry & grounded at Y=0",
+      "durationSeconds": 0.123,
+      "durationFormatted": "0.12s",
+      "totalDurationSeconds": 0.214,
+      "durationMs": 123.1,
+      "metrics": {
+        "fileSizeBytes": 2026752,
+        "fileSizeFormatted": "1.93 MB",
+        "faces": 45000,
+        "vertices": 36648,
+        "meshes": 1,
+        "primitives": 1,
+        "drawCalls": 1,
+        "uvChannels": [
+          {
+            "channel": "TEXCOORD_0",
+            "count": 36648,
+            "min": [
+              -0.43398,
+              -0.48361
+            ],
+            "max": [
+              1.7422,
+              1.7788
+            ],
+            "bounds": {
+              "uMin": -0.43398,
+              "uMax": 1.7422,
+              "vMin": -0.48361,
+              "vMax": 1.7788,
+              "uRange": 2.17618,
+              "vRange": 2.26241
+            },
+            "normalized": false
+          }
+        ],
+        "textures": [
+          {
+            "name": "texture_0",
+            "mimeType": "image/jpeg",
+            "format": "JPEG",
+            "compression": "None",
+            "resolution": [
+              1536,
+              1536
+            ],
+            "resolutionFormatted": "1536x1536",
+            "fileSizeBytes": 312316,
+            "fileSizeFormatted": "305 KB",
+            "slots": [
+              "baseColorTexture"
+            ],
+            "gpuVramUncompressedBytes": 12582912,
+            "gpuVramUncompressedFormatted": "12 MB",
+            "gpuVramKtx2Bytes": 3145728,
+            "gpuVramKtx2Formatted": "3 MB",
+            "estimatedGpuVramBytes": 12582904,
+            "estimatedGpuVramFormatted": "12 MB"
+          }
+        ],
+        "totalGpuVramBytes": 12582904,
+        "totalGpuVramFormatted": "12 MB",
+        "totalGpuVramUncompressedBytes": 12582912,
+        "totalGpuVramUncompressedFormatted": "12 MB",
+        "materials": [
+          {
+            "name": "material_0",
+            "alphaMode": "OPAQUE",
+            "doubleSided": false,
+            "roughnessFactor": 0.9527129914246354,
+            "metallicFactor": 0,
+            "hasBaseColorTexture": true
+          }
+        ],
+        "boundingBox": {
+          "min": [
+            -0.60514,
+            0,
+            -0.57524
+          ],
+          "max": [
+            0.60514,
+            1.59995,
+            0.57524
+          ],
+          "dimensions": [
+            1.21028,
+            1.59995,
+            1.15048
+          ],
+          "center": [
+            0,
+            0.79997,
+            0
+          ]
+        },
+        "palette": [],
+        "primaryColor": null,
+        "paletteDetails": [],
+        "extensions": {
+          "used": [],
+          "required": []
+        },
+        "extras": {},
+        "durationSeconds": 0.123,
+        "durationFormatted": "0.12s",
+        "totalDurationSeconds": 0.214,
+        "durationMs": 123.1,
+        "translationApplied": [
+          -0.000474780797958374,
+          -8.993165465653874e-06,
+          1.1324882507324219e-05
+        ]
+      },
+      "details": {
+        "translationApplied": [
+          -0.000474780797958374,
+          -8.993165465653874e-06,
+          1.1324882507324219e-05
+        ]
+      }
+    },
+    {
+      "step": 2,
+      "stepName": "oriented",
+      "file": "step_02_oriented.glb",
+      "description": "Visibility-based shell orientation (outward CCW)",
+      "durationSeconds": 0.787,
+      "durationFormatted": "0.79s",
+      "totalDurationSeconds": 1.001,
+      "durationMs": 786.7,
+      "metrics": {
+        "fileSizeBytes": 2026752,
+        "fileSizeFormatted": "1.93 MB",
+        "faces": 45000,
+        "vertices": 36648,
+        "meshes": 1,
+        "primitives": 1,
+        "drawCalls": 1,
+        "uvChannels": [
+          {
+            "channel": "TEXCOORD_0",
+            "count": 36648,
+            "min": [
+              -0.43398,
+              -0.48361
+            ],
+            "max": [
+              1.7422,
+              1.7788
+            ],
+            "bounds": {
+              "uMin": -0.43398,
+              "uMax": 1.7422,
+              "vMin": -0.48361,
+              "vMax": 1.7788,
+              "uRange": 2.17618,
+              "vRange": 2.26241
+            },
+            "normalized": false
+          }
+        ],
+        "textures": [
+          {
+            "name": "texture_0",
+            "mimeType": "image/jpeg",
+            "format": "JPEG",
+            "compression": "None",
+            "resolution": [
+              1536,
+              1536
+            ],
+            "resolutionFormatted": "1536x1536",
+            "fileSizeBytes": 312316,
+            "fileSizeFormatted": "305 KB",
+            "slots": [
+              "baseColorTexture"
+            ],
+            "gpuVramUncompressedBytes": 12582912,
+            "gpuVramUncompressedFormatted": "12 MB",
+            "gpuVramKtx2Bytes": 3145728,
+            "gpuVramKtx2Formatted": "3 MB",
+            "estimatedGpuVramBytes": 12582904,
+            "estimatedGpuVramFormatted": "12 MB"
+          }
+        ],
+        "totalGpuVramBytes": 12582904,
+        "totalGpuVramFormatted": "12 MB",
+        "totalGpuVramUncompressedBytes": 12582912,
+        "totalGpuVramUncompressedFormatted": "12 MB",
+        "materials": [
+          {
+            "name": "material_0",
+            "alphaMode": "OPAQUE",
+            "doubleSided": false,
+            "roughnessFactor": 0.9527129914246354,
+            "metallicFactor": 0,
+            "hasBaseColorTexture": true
+          }
+        ],
+        "boundingBox": {
+          "min": [
+            -0.60514,
+            0,
+            -0.57524
+          ],
+          "max": [
+            0.60514,
+            1.59995,
+            0.57524
+          ],
+          "dimensions": [
+            1.21028,
+            1.59995,
+            1.15048
+          ],
+          "center": [
+            0,
+            0.79997,
+            0
+          ]
+        },
+        "palette": [],
+        "primaryColor": null,
+        "paletteDetails": [],
+        "extensions": {
+          "used": [],
+          "required": []
+        },
+        "extras": {},
+        "durationSeconds": 0.787,
+        "durationFormatted": "0.79s",
+        "totalDurationSeconds": 1.001,
+        "durationMs": 786.7,
+        "orient_views": 48,
+        "orient_resolution": 384,
+        "faces_flipped": 38,
+        "faces_before": 45000,
+        "faces_after": 45000,
+        "connected_components": 41,
+        "components_flipped": 15,
+        "seen_faces": 39319,
+        "zero_seen_faces": 5681
+      },
+      "details": {
+        "orient_views": 48,
+        "orient_resolution": 384,
+        "faces_flipped": 38,
+        "faces_before": 45000,
+        "faces_after": 45000,
+        "connected_components": 41,
+        "components_flipped": 15,
+        "seen_faces": 39319,
+        "zero_seen_faces": 5681
+      }
+    },
+    {
+      "step": 3,
+      "stepName": "texture_baked",
+      "file": "step_03_texture_baked.glb",
+      "description": "Texture resampled with Lanczos + 16px dilation",
+      "durationSeconds": 0.149,
+      "durationFormatted": "0.15s",
+      "totalDurationSeconds": 1.152,
+      "durationMs": 149.3,
+      "metrics": {
+        "fileSizeBytes": 2042416,
+        "fileSizeFormatted": "1.95 MB",
+        "faces": 45000,
+        "vertices": 36648,
+        "meshes": 1,
+        "primitives": 1,
+        "drawCalls": 1,
+        "uvChannels": [
+          {
+            "channel": "TEXCOORD_0",
+            "count": 36648,
+            "min": [
+              -0.43398,
+              -0.48361
+            ],
+            "max": [
+              1.7422,
+              1.7788
+            ],
+            "bounds": {
+              "uMin": -0.43398,
+              "uMax": 1.7422,
+              "vMin": -0.48361,
+              "vMax": 1.7788,
+              "uRange": 2.17618,
+              "vRange": 2.26241
+            },
+            "normalized": false
+          }
+        ],
+        "textures": [
+          {
+            "name": "texture_0",
+            "mimeType": "image/jpeg",
+            "format": "JPEG",
+            "compression": "None",
+            "resolution": [
+              1024,
+              1024
+            ],
+            "resolutionFormatted": "1024x1024",
+            "fileSizeBytes": 327980,
+            "fileSizeFormatted": "320.29 KB",
+            "slots": [
+              "baseColorTexture"
+            ],
+            "gpuVramUncompressedBytes": 5592405,
+            "gpuVramUncompressedFormatted": "5.33 MB",
+            "gpuVramKtx2Bytes": 1398101,
+            "gpuVramKtx2Formatted": "1.33 MB",
+            "estimatedGpuVramBytes": 5592404,
+            "estimatedGpuVramFormatted": "5.33 MB"
+          }
+        ],
+        "totalGpuVramBytes": 5592404,
+        "totalGpuVramFormatted": "5.33 MB",
+        "totalGpuVramUncompressedBytes": 5592405,
+        "totalGpuVramUncompressedFormatted": "5.33 MB",
+        "materials": [
+          {
+            "name": "material_0",
+            "alphaMode": "OPAQUE",
+            "doubleSided": true,
+            "roughnessFactor": 0.9527129914246354,
+            "metallicFactor": 0,
+            "hasBaseColorTexture": true
+          }
+        ],
+        "boundingBox": {
+          "min": [
+            -0.60514,
+            0,
+            -0.57524
+          ],
+          "max": [
+            0.60514,
+            1.59995,
+            0.57524
+          ],
+          "dimensions": [
+            1.21028,
+            1.59995,
+            1.15048
+          ],
+          "center": [
+            0,
+            0.79997,
+            0
+          ]
+        },
+        "palette": [],
+        "primaryColor": null,
+        "paletteDetails": [],
+        "extensions": {
+          "used": [],
+          "required": []
+        },
+        "extras": {},
+        "durationSeconds": 0.149,
+        "durationFormatted": "0.15s",
+        "totalDurationSeconds": 1.152,
+        "durationMs": 149.3,
+        "textureResolution": "1024x1024",
+        "textureFormat": "JPEG",
+        "dilationPadding": 16
+      },
+      "details": {
+        "textureResolution": "1024x1024",
+        "textureFormat": "JPEG",
+        "dilationPadding": 16
+      }
+    },
+    {
+      "step": 4,
+      "stepName": "palette_tagged",
+      "file": "step_04_palette_tagged.glb",
+      "description": "10-color dominant palette extracted & embedded",
+      "durationSeconds": 0.092,
+      "durationFormatted": "92ms",
+      "totalDurationSeconds": 1.245,
+      "durationMs": 91.9,
+      "metrics": {
+        "fileSizeBytes": 2043100,
+        "fileSizeFormatted": "1.95 MB",
+        "faces": 45000,
+        "vertices": 36648,
+        "meshes": 1,
+        "primitives": 1,
+        "drawCalls": 1,
+        "uvChannels": [
+          {
+            "channel": "TEXCOORD_0",
+            "count": 36648,
+            "min": [
+              -0.43398,
+              -0.48361
+            ],
+            "max": [
+              1.7422,
+              1.7788
+            ],
+            "bounds": {
+              "uMin": -0.43398,
+              "uMax": 1.7422,
+              "vMin": -0.48361,
+              "vMax": 1.7788,
+              "uRange": 2.17618,
+              "vRange": 2.26241
+            },
+            "normalized": false
+          }
+        ],
+        "textures": [
+          {
+            "name": "texture_0",
+            "mimeType": "image/jpeg",
+            "format": "JPEG",
+            "compression": "None",
+            "resolution": [
+              1024,
+              1024
+            ],
+            "resolutionFormatted": "1024x1024",
+            "fileSizeBytes": 327980,
+            "fileSizeFormatted": "320.29 KB",
+            "slots": [
+              "baseColorTexture"
+            ],
+            "gpuVramUncompressedBytes": 5592405,
+            "gpuVramUncompressedFormatted": "5.33 MB",
+            "gpuVramKtx2Bytes": 1398101,
+            "gpuVramKtx2Formatted": "1.33 MB",
+            "estimatedGpuVramBytes": 5592404,
+            "estimatedGpuVramFormatted": "5.33 MB"
+          }
+        ],
+        "totalGpuVramBytes": 5592404,
+        "totalGpuVramFormatted": "5.33 MB",
+        "totalGpuVramUncompressedBytes": 5592405,
+        "totalGpuVramUncompressedFormatted": "5.33 MB",
+        "materials": [
+          {
+            "name": "material_0",
+            "alphaMode": "OPAQUE",
+            "doubleSided": true,
+            "roughnessFactor": 0.9527129914246354,
+            "metallicFactor": 0,
+            "hasBaseColorTexture": true
+          }
+        ],
+        "boundingBox": {
+          "min": [
+            -0.60514,
+            0,
+            -0.57524
+          ],
+          "max": [
+            0.60514,
+            1.59995,
+            0.57524
+          ],
+          "dimensions": [
+            1.21028,
+            1.59995,
+            1.15048
+          ],
+          "center": [
+            0,
+            0.79997,
+            0
+          ]
+        },
+        "palette": [
+          "#457424",
+          "#14150f",
+          "#639238",
+          "#2d5113",
+          "#343532",
+          "#c86b0b",
+          "#b2b19c",
+          "#a24a04",
+          "#277077",
+          "#6e3108"
+        ],
+        "primaryColor": "#457424",
+        "paletteDetails": [
+          {
+            "hex": "#457424",
+            "rgb": [
+              69,
+              116,
+              36
+            ],
+            "weight": 0.2048
+          },
+          {
+            "hex": "#14150f",
+            "rgb": [
+              20,
+              21,
+              15
+            ],
+            "weight": 0.1747
+          },
+          {
+            "hex": "#639238",
+            "rgb": [
+              99,
+              146,
+              56
+            ],
+            "weight": 0.1637
+          },
+          {
+            "hex": "#2d5113",
+            "rgb": [
+              45,
+              81,
+              19
+            ],
+            "weight": 0.1634
+          },
+          {
+            "hex": "#343532",
+            "rgb": [
+              52,
+              53,
+              50
+            ],
+            "weight": 0.1218
+          },
+          {
+            "hex": "#c86b0b",
+            "rgb": [
+              200,
+              107,
+              11
+            ],
+            "weight": 0.0484
+          },
+          {
+            "hex": "#b2b19c",
+            "rgb": [
+              178,
+              177,
+              156
+            ],
+            "weight": 0.0397
+          },
+          {
+            "hex": "#a24a04",
+            "rgb": [
+              162,
+              74,
+              4
+            ],
+            "weight": 0.0364
+          },
+          {
+            "hex": "#277077",
+            "rgb": [
+              39,
+              112,
+              119
+            ],
+            "weight": 0.0266
+          },
+          {
+            "hex": "#6e3108",
+            "rgb": [
+              110,
+              49,
+              8
+            ],
+            "weight": 0.0206
+          }
+        ],
+        "extensions": {
+          "used": [],
+          "required": []
+        },
+        "extras": {
+          "palette": [
+            "#457424",
+            "#14150f",
+            "#639238",
+            "#2d5113",
+            "#343532",
+            "#c86b0b",
+            "#b2b19c",
+            "#a24a04",
+            "#277077",
+            "#6e3108"
+          ],
+          "primaryColor": "#457424",
+          "paletteDetails": [
+            {
+              "hex": "#457424",
+              "rgb": [
+                69,
+                116,
+                36
+              ],
+              "weight": 0.2048
+            },
+            {
+              "hex": "#14150f",
+              "rgb": [
+                20,
+                21,
+                15
+              ],
+              "weight": 0.1747
+            },
+            {
+              "hex": "#639238",
+              "rgb": [
+                99,
+                146,
+                56
+              ],
+              "weight": 0.1637
+            },
+            {
+              "hex": "#2d5113",
+              "rgb": [
+                45,
+                81,
+                19
+              ],
+              "weight": 0.1634
+            },
+            {
+              "hex": "#343532",
+              "rgb": [
+                52,
+                53,
+                50
+              ],
+              "weight": 0.1218
+            },
+            {
+              "hex": "#c86b0b",
+              "rgb": [
+                200,
+                107,
+                11
+              ],
+              "weight": 0.0484
+            },
+            {
+              "hex": "#b2b19c",
+              "rgb": [
+                178,
+                177,
+                156
+              ],
+              "weight": 0.0397
+            },
+            {
+              "hex": "#a24a04",
+              "rgb": [
+                162,
+                74,
+                4
+              ],
+              "weight": 0.0364
+            },
+            {
+              "hex": "#277077",
+              "rgb": [
+                39,
+                112,
+                119
+              ],
+              "weight": 0.0266
+            },
+            {
+              "hex": "#6e3108",
+              "rgb": [
+                110,
+                49,
+                8
+              ],
+              "weight": 0.0206
+            }
+          ]
+        },
+        "durationSeconds": 0.092,
+        "durationFormatted": "92ms",
+        "totalDurationSeconds": 1.245,
+        "durationMs": 91.9,
+        "paletteCount": 10
+      },
+      "details": {
+        "primaryColor": "#457424",
+        "paletteCount": 10
+      }
+    },
+    {
+      "step": 5,
+      "stepName": "meshopt",
+      "file": "step_05_meshopt.glb",
+      "description": "Smooth normals, weld, quantize, and EXT_meshopt_compression",
+      "durationSeconds": 0.222,
+      "durationFormatted": "0.22s",
+      "totalDurationSeconds": 1.468,
+      "durationMs": 222.1,
+      "metrics": {
+        "fileSizeBytes": 969788,
+        "fileSizeFormatted": "947.06 KB",
+        "faces": 45000,
+        "vertices": 36648,
+        "meshes": 1,
+        "primitives": 1,
+        "drawCalls": 1,
+        "uvChannels": [
+          {
+            "channel": "TEXCOORD_0",
+            "count": 36648,
+            "min": [
+              -0.43398,
+              -0.48361
+            ],
+            "max": [
+              1.7422,
+              1.7788
+            ],
+            "bounds": {
+              "uMin": -0.43398,
+              "uMax": 1.7422,
+              "vMin": -0.48361,
+              "vMax": 1.7788,
+              "uRange": 2.17618,
+              "vRange": 2.26241
+            },
+            "normalized": false
+          }
+        ],
+        "textures": [
+          {
+            "name": "texture_0",
+            "mimeType": "image/jpeg",
+            "format": "JPEG",
+            "compression": "None",
+            "resolution": [
+              1024,
+              1024
+            ],
+            "resolutionFormatted": "1024x1024",
+            "fileSizeBytes": 327980,
+            "fileSizeFormatted": "320.29 KB",
+            "slots": [
+              "baseColorTexture"
+            ],
+            "gpuVramUncompressedBytes": 5592405,
+            "gpuVramUncompressedFormatted": "5.33 MB",
+            "gpuVramKtx2Bytes": 1398101,
+            "gpuVramKtx2Formatted": "1.33 MB",
+            "estimatedGpuVramBytes": 5592404,
+            "estimatedGpuVramFormatted": "5.33 MB"
+          }
+        ],
+        "totalGpuVramBytes": 5592404,
+        "totalGpuVramFormatted": "5.33 MB",
+        "totalGpuVramUncompressedBytes": 5592405,
+        "totalGpuVramUncompressedFormatted": "5.33 MB",
+        "materials": [
+          {
+            "name": "material_0",
+            "alphaMode": "OPAQUE",
+            "doubleSided": false,
+            "roughnessFactor": 0.9527129914246354,
+            "metallicFactor": 0,
+            "hasBaseColorTexture": true
+          }
+        ],
+        "boundingBox": {
+          "min": [
+            -0.60515,
+            0,
+            -0.57524
+          ],
+          "max": [
+            0.60515,
+            1.59995,
+            0.57524
+          ],
+          "dimensions": [
+            1.2103,
+            1.59995,
+            1.15048
+          ],
+          "center": [
+            0,
+            0.79997,
+            0
+          ]
+        },
+        "palette": [
+          "#457424",
+          "#14150f",
+          "#639238",
+          "#2d5113",
+          "#343532",
+          "#c86b0b",
+          "#b2b19c",
+          "#a24a04",
+          "#277077",
+          "#6e3108"
+        ],
+        "primaryColor": "#457424",
+        "paletteDetails": [
+          {
+            "hex": "#457424",
+            "rgb": [
+              69,
+              116,
+              36
+            ],
+            "weight": 0.2048
+          },
+          {
+            "hex": "#14150f",
+            "rgb": [
+              20,
+              21,
+              15
+            ],
+            "weight": 0.1747
+          },
+          {
+            "hex": "#639238",
+            "rgb": [
+              99,
+              146,
+              56
+            ],
+            "weight": 0.1637
+          },
+          {
+            "hex": "#2d5113",
+            "rgb": [
+              45,
+              81,
+              19
+            ],
+            "weight": 0.1634
+          },
+          {
+            "hex": "#343532",
+            "rgb": [
+              52,
+              53,
+              50
+            ],
+            "weight": 0.1218
+          },
+          {
+            "hex": "#c86b0b",
+            "rgb": [
+              200,
+              107,
+              11
+            ],
+            "weight": 0.0484
+          },
+          {
+            "hex": "#b2b19c",
+            "rgb": [
+              178,
+              177,
+              156
+            ],
+            "weight": 0.0397
+          },
+          {
+            "hex": "#a24a04",
+            "rgb": [
+              162,
+              74,
+              4
+            ],
+            "weight": 0.0364
+          },
+          {
+            "hex": "#277077",
+            "rgb": [
+              39,
+              112,
+              119
+            ],
+            "weight": 0.0266
+          },
+          {
+            "hex": "#6e3108",
+            "rgb": [
+              110,
+              49,
+              8
+            ],
+            "weight": 0.0206
+          }
+        ],
+        "extensions": {
+          "used": [
+            "EXT_meshopt_compression",
+            "KHR_mesh_quantization"
+          ],
+          "required": [
+            "EXT_meshopt_compression",
+            "KHR_mesh_quantization"
+          ]
+        },
+        "extras": {
+          "palette": [
+            "#457424",
+            "#14150f",
+            "#639238",
+            "#2d5113",
+            "#343532",
+            "#c86b0b",
+            "#b2b19c",
+            "#a24a04",
+            "#277077",
+            "#6e3108"
+          ],
+          "primaryColor": "#457424",
+          "paletteDetails": [
+            {
+              "hex": "#457424",
+              "rgb": [
+                69,
+                116,
+                36
+              ],
+              "weight": 0.2048
+            },
+            {
+              "hex": "#14150f",
+              "rgb": [
+                20,
+                21,
+                15
+              ],
+              "weight": 0.1747
+            },
+            {
+              "hex": "#639238",
+              "rgb": [
+                99,
+                146,
+                56
+              ],
+              "weight": 0.1637
+            },
+            {
+              "hex": "#2d5113",
+              "rgb": [
+                45,
+                81,
+                19
+              ],
+              "weight": 0.1634
+            },
+            {
+              "hex": "#343532",
+              "rgb": [
+                52,
+                53,
+                50
+              ],
+              "weight": 0.1218
+            },
+            {
+              "hex": "#c86b0b",
+              "rgb": [
+                200,
+                107,
+                11
+              ],
+              "weight": 0.0484
+            },
+            {
+              "hex": "#b2b19c",
+              "rgb": [
+                178,
+                177,
+                156
+              ],
+              "weight": 0.0397
+            },
+            {
+              "hex": "#a24a04",
+              "rgb": [
+                162,
+                74,
+                4
+              ],
+              "weight": 0.0364
+            },
+            {
+              "hex": "#277077",
+              "rgb": [
+                39,
+                112,
+                119
+              ],
+              "weight": 0.0266
+            },
+            {
+              "hex": "#6e3108",
+              "rgb": [
+                110,
+                49,
+                8
+              ],
+              "weight": 0.0206
+            }
+          ]
+        },
+        "durationSeconds": 0.222,
+        "durationFormatted": "0.22s",
+        "totalDurationSeconds": 1.468,
+        "durationMs": 222.1
+      }
+    },
+    {
+      "step": 6,
+      "stepName": "final",
+      "file": "step_06_final.glb",
+      "description": "GPU texture compression (KTX2/WebP), frontSide, final extras",
+      "durationSeconds": 1.946,
+      "durationFormatted": "1.95s",
+      "totalDurationSeconds": 3.416,
+      "durationMs": 1946.3,
+      "metrics": {
+        "fileSizeBytes": 1794612,
+        "fileSizeFormatted": "1.71 MB",
+        "faces": 45000,
+        "vertices": 36648,
+        "meshes": 1,
+        "primitives": 1,
+        "drawCalls": 1,
+        "uvChannels": [
+          {
+            "channel": "TEXCOORD_0",
+            "count": 36648,
+            "min": [
+              -0.43398,
+              -0.48361
+            ],
+            "max": [
+              1.7422,
+              1.7788
+            ],
+            "bounds": {
+              "uMin": -0.43398,
+              "uMax": 1.7422,
+              "vMin": -0.48361,
+              "vMax": 1.7788,
+              "uRange": 2.17618,
+              "vRange": 2.26241
+            },
+            "normalized": false
+          }
+        ],
+        "textures": [
+          {
+            "name": "texture_0",
+            "mimeType": "image/ktx2",
+            "format": "KTX2",
+            "compression": "UASTC",
+            "resolution": [
+              1024,
+              1024
+            ],
+            "resolutionFormatted": "1024x1024",
+            "fileSizeBytes": 1152563,
+            "fileSizeFormatted": "1.1 MB",
+            "slots": [
+              "baseColorTexture"
+            ],
+            "gpuVramUncompressedBytes": 5592405,
+            "gpuVramUncompressedFormatted": "5.33 MB",
+            "gpuVramKtx2Bytes": 1398101,
+            "gpuVramKtx2Formatted": "1.33 MB",
+            "estimatedGpuVramBytes": 1398128,
+            "estimatedGpuVramFormatted": "1.33 MB"
+          }
+        ],
+        "totalGpuVramBytes": 1398128,
+        "totalGpuVramFormatted": "1.33 MB",
+        "totalGpuVramUncompressedBytes": 5592405,
+        "totalGpuVramUncompressedFormatted": "5.33 MB",
+        "materials": [
+          {
+            "name": "material_0",
+            "alphaMode": "OPAQUE",
+            "doubleSided": false,
+            "roughnessFactor": 0.9527129914246354,
+            "metallicFactor": 0,
+            "hasBaseColorTexture": true
+          }
+        ],
+        "boundingBox": {
+          "min": [
+            -0.60515,
+            0,
+            -0.57524
+          ],
+          "max": [
+            0.60515,
+            1.59995,
+            0.57524
+          ],
+          "dimensions": [
+            1.2103,
+            1.59995,
+            1.15048
+          ],
+          "center": [
+            0,
+            0.79997,
+            0
+          ]
+        },
+        "palette": [
+          "#457424",
+          "#14150f",
+          "#639238",
+          "#2d5113",
+          "#343532",
+          "#c86b0b",
+          "#b2b19c",
+          "#a24a04",
+          "#277077",
+          "#6e3108"
+        ],
+        "primaryColor": "#457424",
+        "paletteDetails": [
+          {
+            "hex": "#457424",
+            "rgb": [
+              69,
+              116,
+              36
+            ],
+            "weight": 0.2048
+          },
+          {
+            "hex": "#14150f",
+            "rgb": [
+              20,
+              21,
+              15
+            ],
+            "weight": 0.1747
+          },
+          {
+            "hex": "#639238",
+            "rgb": [
+              99,
+              146,
+              56
+            ],
+            "weight": 0.1637
+          },
+          {
+            "hex": "#2d5113",
+            "rgb": [
+              45,
+              81,
+              19
+            ],
+            "weight": 0.1634
+          },
+          {
+            "hex": "#343532",
+            "rgb": [
+              52,
+              53,
+              50
+            ],
+            "weight": 0.1218
+          },
+          {
+            "hex": "#c86b0b",
+            "rgb": [
+              200,
+              107,
+              11
+            ],
+            "weight": 0.0484
+          },
+          {
+            "hex": "#b2b19c",
+            "rgb": [
+              178,
+              177,
+              156
+            ],
+            "weight": 0.0397
+          },
+          {
+            "hex": "#a24a04",
+            "rgb": [
+              162,
+              74,
+              4
+            ],
+            "weight": 0.0364
+          },
+          {
+            "hex": "#277077",
+            "rgb": [
+              39,
+              112,
+              119
+            ],
+            "weight": 0.0266
+          },
+          {
+            "hex": "#6e3108",
+            "rgb": [
+              110,
+              49,
+              8
+            ],
+            "weight": 0.0206
+          }
+        ],
+        "extensions": {
+          "used": [
+            "EXT_meshopt_compression",
+            "KHR_mesh_quantization",
+            "KHR_texture_basisu"
+          ],
+          "required": [
+            "EXT_meshopt_compression",
+            "KHR_mesh_quantization",
+            "KHR_texture_basisu"
+          ]
+        },
+        "extras": {
+          "palette": [
+            "#457424",
+            "#14150f",
+            "#639238",
+            "#2d5113",
+            "#343532",
+            "#c86b0b",
+            "#b2b19c",
+            "#a24a04",
+            "#277077",
+            "#6e3108"
+          ],
+          "primaryColor": "#457424",
+          "paletteDetails": [
+            {
+              "hex": "#457424",
+              "rgb": [
+                69,
+                116,
+                36
+              ],
+              "weight": 0.2048
+            },
+            {
+              "hex": "#14150f",
+              "rgb": [
+                20,
+                21,
+                15
+              ],
+              "weight": 0.1747
+            },
+            {
+              "hex": "#639238",
+              "rgb": [
+                99,
+                146,
+                56
+              ],
+              "weight": 0.1637
+            },
+            {
+              "hex": "#2d5113",
+              "rgb": [
+                45,
+                81,
+                19
+              ],
+              "weight": 0.1634
+            },
+            {
+              "hex": "#343532",
+              "rgb": [
+                52,
+                53,
+                50
+              ],
+              "weight": 0.1218
+            },
+            {
+              "hex": "#c86b0b",
+              "rgb": [
+                200,
+                107,
+                11
+              ],
+              "weight": 0.0484
+            },
+            {
+              "hex": "#b2b19c",
+              "rgb": [
+                178,
+                177,
+                156
+              ],
+              "weight": 0.0397
+            },
+            {
+              "hex": "#a24a04",
+              "rgb": [
+                162,
+                74,
+                4
+              ],
+              "weight": 0.0364
+            },
+            {
+              "hex": "#277077",
+              "rgb": [
+                39,
+                112,
+                119
+              ],
+              "weight": 0.0266
+            },
+            {
+              "hex": "#6e3108",
+              "rgb": [
+                110,
+                49,
+                8
+              ],
+              "weight": 0.0206
+            }
+          ],
+          "resolution": "1024x1024",
+          "texture_format": "KTX2",
+          "policy": "STRICT 0-DECIMATION (--ratio 1.0)",
+          "tool": "poc-optimize-3d-model v1.0.0"
+        },
+        "durationSeconds": 1.946,
+        "durationFormatted": "1.95s",
+        "totalDurationSeconds": 3.416,
+        "durationMs": 1946.3
+      }
+    }
+  ],
+  "totalDurationSeconds": 3.42,
+  "totalDurationFormatted": "3.42s",
+  "totalPipelineDurationSeconds": 3.42,
+  "totalPipelineDurationFormatted": "3.42s",
+  "elapsedSeconds": 3.42,
+  "durationFormatted": "3.42s"
 }

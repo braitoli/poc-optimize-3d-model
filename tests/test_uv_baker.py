@@ -23,6 +23,7 @@ from optimizer.core.uv_baker import (
     rechart_and_bake_high_density,
     compute_uv_metrics
 )
+from optimizer.core.texture_utils import clamp_target_resolution
 from optimizer.pipeline import set_doublesided_material
 
 
@@ -45,7 +46,7 @@ class TestUvBaker(unittest.TestCase):
             doubleSided=False  # Originally false
         )
         self.mesh.visual = trimesh.visual.TextureVisuals(uv=self.uv, material=mat)
-        img = Image.new("RGB", (128, 128), (200, 100, 50))
+        img = Image.new("RGB", (256, 256), (200, 100, 50))
 
         out_mesh, clean_pil = direct_resample_texture(
             self.mesh,
@@ -161,7 +162,7 @@ class TestUvBaker(unittest.TestCase):
             doubleSided=True
         )
         self.mesh.visual = trimesh.visual.TextureVisuals(uv=self.uv, material=mat)
-        img = Image.new("RGB", (128, 128), (80, 160, 240))
+        img = Image.new("RGB", (256, 256), (80, 160, 240))
 
         recharted_mesh, dilated_pil, stats = rechart_and_bake_high_density(
             self.mesh,
@@ -198,6 +199,47 @@ class TestUvBaker(unittest.TestCase):
         self.assertIn("texel_density_area", metrics)
         self.assertEqual(metrics["canvas_pixels"], 256 * 256)
         self.assertGreaterEqual(metrics["covered_pixels"], 0)
+
+    def test_no_upscale_clamp_target_resolution_helper(self):
+        # 1536x1536 -> largest POT <= 1536 is 1024
+        self.assertEqual(clamp_target_resolution(2048, (1536, 1536)), 1024)
+        self.assertEqual(clamp_target_resolution(4096, (1536, 1536)), 1024)
+        # 768x768 -> largest POT <= 768 is 512
+        self.assertEqual(clamp_target_resolution(1024, (768, 768)), 512)
+        # 1024x1024 requested 1024 -> keeps 1024
+        self.assertEqual(clamp_target_resolution(1024, (1024, 1024)), 1024)
+        # 1024x1024 requested 2048 -> clamps to 1024
+        self.assertEqual(clamp_target_resolution(2048, (1024, 1024)), 1024)
+        # 2048x1024 requested 2048 -> orig_max is 2048, <= 2048 -> keeps 2048
+        self.assertEqual(clamp_target_resolution(2048, (2048, 1024)), 2048)
+        # 2048x1024 requested 4096 -> clamps to 2048
+        self.assertEqual(clamp_target_resolution(4096, (2048, 1024)), 2048)
+
+    def test_no_upscale_enforced_in_direct_resample(self):
+        img = Image.new("RGB", (128, 128), (200, 100, 50))
+        out_mesh, clean_pil = direct_resample_texture(
+            self.mesh,
+            source_image=img,
+            target_res=256,
+            dilation_padding=8
+        )
+        # 256 > 128 -> clamped to 128 (largest POT <= 128)
+        self.assertEqual(clean_pil.size, (128, 128))
+
+    def test_no_upscale_enforced_in_rechart_and_bake(self):
+        img = Image.new("RGB", (128, 128), (80, 160, 240))
+        recharted_mesh, dilated_pil, stats = rechart_and_bake_high_density(
+            self.mesh,
+            target_res=256,
+            source_image=img,
+            source_uv=self.uv,
+            dilation_padding=16,
+            double_sided=False,
+            return_stats=True
+        )
+        # 256 > 128 -> clamped to 128
+        self.assertEqual(stats["target_resolution"], 128)
+        self.assertEqual(dilated_pil.size, (128, 128))
 
 
 if __name__ == "__main__":

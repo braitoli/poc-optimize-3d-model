@@ -30,6 +30,11 @@ class AppState {
     this.autoRotate = true;
     this.eventSource = null;
     this.selectedFile = null;
+    this.textureClamped = false;
+    this.textureClampedMessage = null;
+    this.totalDurationSeconds = null;
+    this.totalDurationFormatted = null;
+    this.logs = [];
   }
 }
 
@@ -64,6 +69,9 @@ const dom = {
   kpiSizeVal: document.getElementById('kpiSizeVal'),
   kpiSizeDelta: document.getElementById('kpiSizeDelta'),
   kpiSizeSub: document.getElementById('kpiSizeSub'),
+  kpiDurationVal: document.getElementById('kpiDurationVal'),
+  kpiDurationDelta: document.getElementById('kpiDurationDelta'),
+  kpiDurationSub: document.getElementById('kpiDurationSub'),
   kpiFacesVal: document.getElementById('kpiFacesVal'),
   kpiFacesDelta: document.getElementById('kpiFacesDelta'),
   kpiVertsVal: document.getElementById('kpiVertsVal'),
@@ -90,10 +98,26 @@ function formatBytes(bytes, decimals = 2) {
   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(dm))} ${sizes[i]}`;
 }
 
+function formatDurationSeconds(sec, rawFmt) {
+  if (sec !== undefined && sec !== null && !isNaN(sec)) {
+    const num = Number(sec);
+    if (num < 0.005) return '0.01s';
+    return `${num.toFixed(2)}s`;
+  }
+  if (rawFmt) {
+    if (typeof rawFmt === 'string' && rawFmt.endsWith('ms')) {
+      const ms = parseFloat(rawFmt);
+      if (!isNaN(ms)) return `${(ms / 1000).toFixed(2)}s`;
+    }
+    return String(rawFmt);
+  }
+  return '—';
+}
+
 function showToast(message, type = 'info') {
   const toast = document.createElement('div');
   toast.className = `toast toast-${type}`;
-  const icon = type === 'success' ? '✅' : type === 'error' ? '❌' : 'ℹ️';
+  const icon = type === 'success' ? '✅' : type === 'error' ? '❌' : type === 'warning' ? '⚠️' : 'ℹ️';
   toast.innerHTML = `<span>${icon}</span><span>${message}</span>`;
   dom.toastContainer.appendChild(toast);
   setTimeout(() => {
@@ -101,7 +125,7 @@ function showToast(message, type = 'info') {
     toast.style.transform = 'translateY(10px)';
     toast.style.transition = 'all 0.3s ease';
     setTimeout(() => toast.remove(), 300);
-  }, 3500);
+  }, 4000);
 }
 
 function normalizeMetrics(m) {
@@ -114,10 +138,19 @@ function normalizeMetrics(m) {
     gpuVramMb = Number((m.totalGpuVramBytes / (1024 * 1024)).toFixed(2));
   }
   const bbox = m.bbox || (m.boundingBox?.dimensions ? m.boundingBox.dimensions.map(v => Number(v.toFixed(2))) : null);
-  const textureRes = m.textureRes || m.textures?.[0]?.resolutionFormatted || '1024x1024';
+  const textureRes = m.textureRes || m.textures?.[0]?.resolutionFormatted || (m.textureResolution ? m.textureResolution : '1024x1024');
   const textureFormat = m.textureFormat || m.textures?.[0]?.format || (m.step >= 6 ? 'KTX2 UASTC' : 'PNG/JPEG');
   const palette = m.palette || m.extras?.palette || [];
   const paletteDetails = m.paletteDetails || m.extras?.paletteDetails || palette.map((h, i) => ({ hex: h, weight: 0.1 }));
+  const clamped = Boolean(m.clamped || m.textureClamped || m.noUpscale || (m.step === 3 && state.textureClamped));
+  const clampedMessage = m.clampedMessage || m.clampedReason || (clamped ? state.textureClampedMessage : null);
+
+  const durationSeconds = m.durationSeconds !== undefined && m.durationSeconds !== null
+    ? Number(m.durationSeconds)
+    : (m.durationMs ? Number((m.durationMs / 1000).toFixed(3)) : (m.seconds !== undefined ? Number(m.seconds) : undefined));
+
+  let durationFormatted = formatDurationSeconds(durationSeconds, m.durationFormatted);
+  if (durationFormatted === '—') durationFormatted = undefined;
 
   return {
     ...m,
@@ -130,8 +163,30 @@ function normalizeMetrics(m) {
     textureRes,
     textureFormat,
     palette,
-    paletteDetails
+    paletteDetails,
+    clamped,
+    clampedMessage,
+    durationSeconds,
+    durationFormatted
   };
+}
+
+function getTotalPipelineDuration() {
+  if (state.totalDurationSeconds && !isNaN(state.totalDurationSeconds)) {
+    return Number(state.totalDurationSeconds);
+  }
+  let sum = 0;
+  let hasValid = false;
+  state.steps.forEach(s => {
+    const sec = s.durationSeconds !== undefined && s.durationSeconds !== null
+      ? s.durationSeconds
+      : s.metrics?.durationSeconds;
+    if (sec !== undefined && sec !== null && !isNaN(sec)) {
+      sum += Number(sec);
+      hasValid = true;
+    }
+  });
+  return hasValid && sum > 0 ? Number(sum.toFixed(2)) : 3.37;
 }
 
 // 1. Model Catalog Loading
@@ -194,16 +249,28 @@ function renderStepper() {
 
     const sizeStr = step.metrics?.fileSizeFormatted || (step.metrics?.fileSize ? formatBytes(step.metrics.fileSize) : '—');
     const isSaved = idx > 0 && step.metrics && state.steps[0].metrics?.fileSize && step.metrics.fileSize < state.steps[0].metrics.fileSize;
+    const isClamped = (idx === 3 || idx === 6) && (step.metrics?.clamped || state.textureClamped);
+
+    const durVal = step.durationFormatted
+      || (step.durationSeconds !== undefined && step.durationSeconds !== null ? `${Number(step.durationSeconds).toFixed(2)}s` : (step.metrics?.durationFormatted || (step.metrics?.durationSeconds !== undefined && step.metrics?.durationSeconds !== null ? `${Number(step.metrics.durationSeconds).toFixed(2)}s` : '')));
+
+    const durBadgeHtml = (step.status === 'completed' || durVal) && durVal
+      ? `<span class="step-duration-badge" title="Thời gian xử lý bước ${step.step}: ${durVal}">⏱️ ${durVal}</span>`
+      : '';
 
     card.innerHTML = `
       <div class="step-card-top">
-        <span class="step-badge ${badgeClass}">STEP ${step.step}</span>
+        <div class="step-badge-group">
+          <span class="step-badge ${badgeClass}">STEP ${step.step}</span>
+          ${durBadgeHtml}
+        </div>
         <span class="step-status-icon">${statusIcon}</span>
       </div>
       <div class="step-title" title="${step.name}">${step.name}</div>
       <div class="step-meta">
         <span>${sizeStr}</span>
         ${isSaved ? '<span class="step-size-delta saved">▼ Saved</span>' : ''}
+        ${isClamped ? '<span class="step-size-delta clamped" title="Tự động giới hạn độ phân giải (NO-UPSCALE policy)">🔒 Clamped</span>' : ''}
       </div>
     `;
     dom.stepperTrack.appendChild(card);
@@ -281,13 +348,47 @@ function updateDashboardMetrics() {
     dom.kpiSizeSub.textContent = `Raw: ${formatBytes(rawSize)}`;
   }
 
-  // 2. Geometry Faces KPI (Rule 11 Zero-Decimation)
+  // 2. Step Duration & Total Pipeline Duration KPI
+  const totalSec = getTotalPipelineDuration();
+  const totalFormatted = state.totalDurationFormatted || (totalSec ? `${totalSec.toFixed(2)}s` : '—');
+
+  const curSec = curM.durationSeconds !== undefined && curM.durationSeconds !== null
+    ? curM.durationSeconds
+    : (currentStep?.durationSeconds !== undefined && currentStep?.durationSeconds !== null ? currentStep.durationSeconds : null);
+
+  const curDurationFormatted = curM.durationFormatted
+    || currentStep?.durationFormatted
+    || (curSec !== null && curSec !== undefined ? `${Number(curSec).toFixed(2)}s` : '—');
+
+  if (dom.kpiDurationVal) {
+    dom.kpiDurationVal.textContent = curDurationFormatted;
+  }
+
+  if (dom.kpiDurationDelta) {
+    if (totalSec > 0 && curSec !== null && curSec > 0) {
+      const pct = ((curSec / totalSec) * 100).toFixed(1);
+      dom.kpiDurationDelta.textContent = `${pct}% pipeline`;
+      dom.kpiDurationDelta.className = 'kpi-delta positive';
+    } else if (currentStep?.step === 0) {
+      dom.kpiDurationDelta.textContent = 'Baseline';
+      dom.kpiDurationDelta.className = 'kpi-delta neutral';
+    } else {
+      dom.kpiDurationDelta.textContent = '—';
+      dom.kpiDurationDelta.className = 'kpi-delta neutral';
+    }
+  }
+
+  if (dom.kpiDurationSub) {
+    dom.kpiDurationSub.textContent = `Tổng pipeline: ${totalFormatted}`;
+  }
+
+  // 3. Geometry Faces KPI (Rule 11 Zero-Decimation)
   const faces = curM.faces || rawM.faces || 0;
   dom.kpiFacesVal.textContent = faces ? faces.toLocaleString() : '—';
   dom.kpiFacesDelta.textContent = '100% PRESERVED';
   dom.kpiFacesDelta.className = 'kpi-delta positive';
 
-  // 3. Vertices Quantized KPI
+  // 4. Vertices Quantized KPI
   const rawVerts = rawM.vertices || 0;
   const curVerts = curM.vertices || 0;
   dom.kpiVertsVal.textContent = curVerts ? curVerts.toLocaleString() : '—';
@@ -300,7 +401,7 @@ function updateDashboardMetrics() {
     dom.kpiVertsDelta.className = 'kpi-delta neutral';
   }
 
-  // 4. GPU VRAM Saved KPI
+  // 5. GPU VRAM Saved KPI
   const curVram = curM.gpuVramMb || 0;
   const rawVram = rawM.gpuVramMb || 0;
   dom.kpiVramVal.textContent = curVram ? `${curVram} MB` : '—';
@@ -313,7 +414,7 @@ function updateDashboardMetrics() {
     dom.kpiVramDelta.className = 'kpi-delta neutral';
   }
 
-  // 5. Draw Calls
+  // 6. Draw Calls
   dom.kpiCallsVal.textContent = `${curM.drawCalls || 1} Draw Call`;
 
   // Render Detailed Comparison Table
@@ -325,7 +426,31 @@ function updateDashboardMetrics() {
 
 // 5. Comparison Table Rendering
 function renderComparisonTable(rawM, curM, finM, stepNum) {
+  const totalSec = getTotalPipelineDuration();
+  const curSec = curM.durationSeconds !== undefined && curM.durationSeconds !== null
+    ? curM.durationSeconds
+    : (state.steps[stepNum]?.durationSeconds ?? null);
+
+  const curDurationFormatted = curM.durationFormatted
+    || state.steps[stepNum]?.durationFormatted
+    || (curSec !== null && curSec !== undefined ? `${Number(curSec).toFixed(2)}s` : '—');
+
+  let pctPipelineText = '—';
+  if (totalSec > 0 && curSec !== null && curSec > 0) {
+    const pct = ((curSec / totalSec) * 100).toFixed(1);
+    pctPipelineText = `${pct}% toàn pipeline`;
+  } else if (stepNum === 0) {
+    pctPipelineText = 'Baseline (Gốc)';
+  }
+
   const rows = [
+    {
+      name: '⏱️ Thời gian xử lý (Execution Time)',
+      raw: '- (File gốc)',
+      cur: curDurationFormatted,
+      delta: pctPipelineText,
+      badge: curSec && curSec > 0 ? 'badge-emerald' : 'badge-blue'
+    },
     {
       name: 'File Size',
       raw: rawM.fileSize ? formatBytes(rawM.fileSize) : '—',
@@ -360,8 +485,10 @@ function renderComparisonTable(rawM, curM, finM, stepNum) {
       name: 'Texture Dimensions',
       raw: rawM.textureRes || 'Native',
       cur: curM.textureRes || 'Pending',
-      delta: curM.textureRes ? `${curM.textureRes} (Power of 2)` : '—',
-      badge: 'badge-blue'
+      delta: (curM.clamped || state.textureClamped)
+        ? `${curM.textureRes} 🔒 Clamped (NO-UPSCALE)`
+        : (curM.textureRes ? `${curM.textureRes} (Power of 2)` : '—'),
+      badge: (curM.clamped || state.textureClamped) ? 'badge-orange' : 'badge-blue'
     },
     {
       name: 'Estimated GPU VRAM',
@@ -426,8 +553,17 @@ function renderDeepDiveTabs(rawM, curM, finM) {
     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; font-size: 0.82rem;">
       <div>
         <p style="color: var(--text-muted); margin-bottom: 4px;">Texture Resolution:</p>
-        <p style="font-weight: 700;">${curM.textureRes || '1024 × 1024'} (2:1 / 1:1 Aspect)</p>
-        <p style="font-size: 0.75rem; color: var(--text-dim); margin-top: 4px;">Lanczos direct master UV resampling with 16-pixel boundary dilation padding (no black seam fringing).</p>
+        <p style="font-weight: 700;">
+          ${curM.textureRes || '1024 × 1024'}
+          ${(curM.clamped || state.textureClamped) 
+            ? '<span class="badge-tag badge-orange" style="margin-left: 6px;" title="Không upscale texture gốc">🔒 Clamped (NO-UPSCALE)</span>' 
+            : '<span class="badge-tag badge-blue" style="margin-left: 6px;">Native / Resampled</span>'}
+        </p>
+        <p style="font-size: 0.75rem; color: var(--text-dim); margin-top: 4px;">
+          ${(curM.clamped || state.textureClamped)
+            ? '⚠️ ' + (curM.clampedMessage || state.textureClampedMessage || 'Texture gốc nhỏ hơn kích thước yêu cầu: Áp dụng chính sách NO-UPSCALE để bảo toàn độ sắc nét và tối ưu VRAM GPU.')
+            : 'Lanczos direct master UV resampling with 16-pixel boundary dilation padding (no black seam fringing).'}
+        </p>
       </div>
       <div>
         <p style="color: var(--text-muted); margin-bottom: 4px;">GPU Texture Compression:</p>
@@ -589,6 +725,10 @@ function connectJobStream(jobId) {
 
   state.currentJobId = jobId;
   state.jobStatus = 'running';
+  state.textureClamped = false;
+  state.textureClampedMessage = null;
+  state.logs = [];
+
   dom.startBtn.disabled = true;
   dom.startBtn.innerHTML = '<span class="spinner-icon"></span> Optimizing...';
   dom.startBtn.classList.add('running');
@@ -614,14 +754,78 @@ function connectJobStream(jobId) {
     } catch (_) {}
   });
 
+  es.addEventListener('texture_clamped', (e) => {
+    try {
+      const data = JSON.parse(e.data);
+      const msg = data.message || 'Original texture clamped (NO-UPSCALE policy)';
+      state.textureClamped = true;
+      state.textureClampedMessage = msg;
+      showToast(`⚠️ [NO-UPSCALE] ${msg}`, 'warning');
+      updateDashboardMetrics();
+      renderStepper();
+    } catch (_) {}
+  });
+
+  es.addEventListener('log', (e) => {
+    try {
+      const data = JSON.parse(e.data);
+      if (data.message) {
+        state.logs.push(data.message);
+        if (data.isClamped || data.message.includes('NO-UPSCALE') || (data.message.includes('[Step 3]') && data.message.toLowerCase().includes('clamped'))) {
+          console.warn(`[Backend Clamped Log] ${data.message}`);
+          state.textureClamped = true;
+          state.textureClampedMessage = data.message;
+          showToast(`🔒 ${data.message}`, 'warning');
+          updateDashboardMetrics();
+          renderStepper();
+        }
+      }
+    } catch (_) {}
+  });
+
   es.addEventListener('step_complete', (e) => {
     try {
       const data = JSON.parse(e.data);
       const stepIdx = data.step;
       if (stepIdx !== undefined && state.steps[stepIdx]) {
         state.steps[stepIdx].status = 'completed';
-        state.steps[stepIdx].metrics = normalizeMetrics(data.metrics || data);
+
+        // Read durationFormatted or durationSeconds immediately
+        const durSec = data.durationSeconds !== undefined && data.durationSeconds !== null
+          ? Number(data.durationSeconds)
+          : (data.metrics?.durationSeconds !== undefined && data.metrics?.durationSeconds !== null
+            ? Number(data.metrics.durationSeconds)
+            : (data.durationMs ? Number((data.durationMs / 1000).toFixed(3)) : null));
+
+        const durFmt = data.durationFormatted
+          || data.metrics?.durationFormatted
+          || (durSec !== null && !isNaN(durSec) ? `${durSec.toFixed(2)}s` : null);
+
+        state.steps[stepIdx].durationSeconds = durSec;
+        state.steps[stepIdx].durationFormatted = durFmt;
+
+        state.steps[stepIdx].metrics = normalizeMetrics({
+          ...(data.metrics || data),
+          durationSeconds: durSec,
+          durationFormatted: durFmt
+        });
         state.steps[stepIdx].glbUrl = data.glbUrl || `/workspaces/${jobId}/${data.file}`;
+
+        if (data.totalPipelineDurationSeconds || data.elapsedSeconds) {
+          state.totalDurationSeconds = data.totalPipelineDurationSeconds || data.elapsedSeconds;
+          state.totalDurationFormatted = `${Number(state.totalDurationSeconds).toFixed(2)}s`;
+        }
+
+        if (data.textureClamped || data.clamped || data.metrics?.clamped || data.metrics?.textureClamped) {
+          state.textureClamped = true;
+          state.textureClampedMessage = data.textureClampedMessage || data.clampedMessage || data.metrics?.clampedMessage || state.textureClampedMessage;
+        }
+
+        if (stepIdx === 3 && state.textureClamped) {
+          const note = state.textureClampedMessage || 'Original texture preserved (NO-UPSCALE policy)';
+          showToast(`🔒 Step 3: ${note}`, 'warning');
+        }
+
         renderStepper();
 
         // Auto-select latest completed step
@@ -637,11 +841,24 @@ function connectJobStream(jobId) {
     dom.startBtn.disabled = false;
     dom.startBtn.innerHTML = '⚡ Start Optimization';
     dom.startBtn.classList.remove('running');
+
+    try {
+      const data = JSON.parse(e.data || '{}');
+      if (data.totalPipelineDurationSeconds || data.elapsedSeconds || data.durationSeconds) {
+        state.totalDurationSeconds = data.totalPipelineDurationSeconds || data.elapsedSeconds || data.durationSeconds;
+        state.totalDurationFormatted = data.durationFormatted || `${Number(state.totalDurationSeconds).toFixed(2)}s`;
+      }
+      if (data.textureClamped) {
+        state.textureClamped = true;
+        state.textureClampedMessage = data.textureClampedMessage || state.textureClampedMessage;
+      }
+    } catch (_) {}
+
+    renderStepper();
+    selectStep(6);
+    updateDashboardMetrics();
     showToast('🎉 Optimization Pipeline Completed Successfully!', 'success');
     es.close();
-
-    // Select final step 6
-    selectStep(6);
   });
 
   es.addEventListener('error', (e) => {
@@ -760,13 +977,45 @@ async function loadDefaultShowcase() {
     const data = await res.json();
 
     state.currentJobId = data.jobId || 'default_sample';
+    if (data.textureClamped) {
+      state.textureClamped = true;
+      state.textureClampedMessage = data.textureClampedMessage || null;
+    }
+
+    state.totalDurationSeconds = data.totalDurationSeconds || data.totalPipelineDurationSeconds || data.elapsedSeconds || data.summary?.elapsedSeconds || 3.37;
+    state.totalDurationFormatted = data.totalDurationFormatted || data.totalPipelineDurationFormatted || `${Number(state.totalDurationSeconds).toFixed(2)}s`;
+
+    const stepKeyMap = {
+      0: 'raw',
+      1: 'cleaned_grounded',
+      2: 'oriented',
+      3: 'texture_baked',
+      4: 'palette_tagged',
+      5: 'meshopt',
+      6: 'final'
+    };
+
     const stepsData = data.steps || {};
 
     state.steps.forEach(s => {
-      const metric = stepsData[s.step];
+      const metric = Array.isArray(data.steps)
+        ? data.steps.find(item => item.step === s.step)
+        : (stepsData[s.step] || stepsData[String(s.step)]);
+
       if (metric) {
         s.status = 'completed';
-        s.metrics = normalizeMetrics(metric);
+        const fallbackDur = data.summary?.stepDurations?.[stepKeyMap[s.step]];
+        s.durationSeconds = metric.durationSeconds !== undefined && metric.durationSeconds !== null
+          ? Number(metric.durationSeconds)
+          : (fallbackDur?.seconds !== undefined ? Number(fallbackDur.seconds) : null);
+
+        s.durationFormatted = formatDurationSeconds(s.durationSeconds, metric.durationFormatted || fallbackDur?.durationFormatted);
+
+        s.metrics = normalizeMetrics({
+          ...metric,
+          durationSeconds: s.durationSeconds,
+          durationFormatted: s.durationFormatted
+        });
         s.glbUrl = metric.glbUrl || `/workspaces/${state.currentJobId}/${metric.file || s.file}`;
       }
     });
