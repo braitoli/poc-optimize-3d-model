@@ -525,6 +525,21 @@ header {
   color: var(--success);
 }
 
+.step-badge.error {
+  background: rgba(239, 68, 68, 0.2);
+  color: var(--danger);
+}
+
+.step-error-msg {
+  margin-top: 4px;
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: var(--danger);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .step-badge-group {
   display: inline-flex;
   align-items: center;

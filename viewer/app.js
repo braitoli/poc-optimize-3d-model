@@ -116,6 +116,15 @@ function formatDurationSeconds(sec, rawFmt) {
   return '—';
 }
 
+function escapeHtml(text) {
+  return String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 function showToast(message, type = 'info') {
   const toast = document.createElement('div');
   toast.className = `toast toast-${type}`;
@@ -274,6 +283,7 @@ function renderStepper() {
         ${isSaved ? '<span class="step-size-delta saved">▼ Saved</span>' : ''}
         ${isClamped ? '<span class="step-size-delta clamped" title="Tự động giới hạn độ phân giải (NO-UPSCALE policy)">🔒 Clamped</span>' : ''}
       </div>
+      ${step.status === 'error' ? `<div class="step-error-msg" title="${escapeHtml(step.error)}">${escapeHtml(step.error)}</div>` : ''}
     `;
     dom.stepperTrack.appendChild(card);
   });
@@ -299,17 +309,22 @@ function selectStep(stepIndex) {
     dom.pane1Dot.style.background = 'var(--accent-light)';
   }
 
-  // Load Model into Viewport
-  const modelUrl = step.glbUrl || (step.metrics?.glbUrl) || `/workspaces/${state.currentJobId}/${step.file}`;
-  if (modelUrl) {
-    dom.mv1.src = modelUrl;
-    if (state.isSplitView) {
-      dom.mv2.src = modelUrl;
+  // Load Model into Viewport: only a completed step has an output GLB
+  const modelUrl = step.glbUrl;
+  for (const mv of state.isSplitView ? [dom.mv1, dom.mv2] : [dom.mv1]) {
+    if (modelUrl) {
+      mv.src = modelUrl;
+    } else {
+      mv.removeAttribute('src');
     }
   }
 
   // Configure Download Button
   dom.downloadStepBtn.onclick = () => {
+    if (!modelUrl) {
+      showToast(`Step ${step.step} has no output GLB (${step.status})`, 'error');
+      return;
+    }
     const a = document.createElement('a');
     a.href = modelUrl;
     a.download = `step${step.step}_${step.name.toLowerCase().replace(/[^a-z0-9]+/g, '_')}.glb`;
@@ -678,15 +693,17 @@ function setupSplitViewToggle() {
       dom.toggleSplitBtn.classList.add('active');
 
       // Left pane = Step 0 (Raw Baseline)
-      const rawUrl = state.steps[0]?.glbUrl || `/workspaces/${state.currentJobId}/step0_raw.glb`;
-      dom.mv1.src = rawUrl;
+      const rawUrl = state.steps[0]?.glbUrl;
+      if (rawUrl) dom.mv1.src = rawUrl;
+      else dom.mv1.removeAttribute('src');
       dom.pane1Label.textContent = 'Baseline: Step 0 (Raw Model)';
       dom.pane1Dot.style.background = 'var(--warning)';
 
       // Right pane = Step X (Selected Step)
       const curStep = state.steps[state.selectedStepIndex];
-      const curUrl = curStep?.glbUrl || `/workspaces/${state.currentJobId}/${curStep?.file}`;
-      dom.mv2.src = curUrl;
+      const curUrl = curStep?.glbUrl;
+      if (curUrl) dom.mv2.src = curUrl;
+      else dom.mv2.removeAttribute('src');
       dom.pane2Label.textContent = `Active: Step ${curStep.step} (${curStep.name})`;
 
       syncCameras(dom.mv1, dom.mv2);
@@ -730,13 +747,22 @@ function connectJobStream(jobId) {
   state.textureClamped = false;
   state.textureClampedMessage = null;
   state.logs = [];
+  state.totalDurationSeconds = null;
+  state.totalDurationFormatted = null;
 
   dom.startBtn.disabled = true;
   dom.startBtn.innerHTML = '<span class="spinner-icon"></span> Optimizing...';
   dom.startBtn.classList.add('running');
 
-  // Reset steps to pending
-  state.steps.forEach(s => { s.status = 'pending'; });
+  // Reset every step: nothing from a previous job may make a step of this one look completed
+  state.steps.forEach(s => {
+    s.status = 'pending';
+    s.error = null;
+    s.metrics = null;
+    s.glbUrl = null;
+    s.durationSeconds = null;
+    s.durationFormatted = null;
+  });
   renderStepper();
 
   const es = new EventSource(`/api/jobs/${jobId}/stream`);
@@ -864,18 +890,39 @@ function connectJobStream(jobId) {
   });
 
   es.addEventListener('error', (e) => {
-    try {
-      if (e.data) {
-        const data = JSON.parse(e.data);
-        showToast(`Optimization Error: ${data.message || 'Pipeline failed'}`, 'error');
+    if (e.data) {
+      // Server `error` event (live or replayed): message = job.error, step = failed step (or null)
+      let data;
+      try {
+        data = JSON.parse(e.data);
+      } catch (err) {
+        data = { message: `Unreadable error event from server: ${e.data}` };
       }
-    } catch (_) {}
-    state.jobStatus = 'error';
+      markJobFailed(data.message || data.error, data.step);
+    } else {
+      // Native EventSource error: the connection dropped before the job reported an outcome
+      state.jobStatus = 'error';
+      showToast('Lost connection to the job stream: job outcome unknown', 'error');
+    }
     dom.startBtn.disabled = false;
     dom.startBtn.innerHTML = '⚡ Start Optimization';
     dom.startBtn.classList.remove('running');
     es.close();
   });
+}
+
+// A failed job: show its reason and mark the step it failed at (never as completed). Without a
+// step index the first step that did not complete failed; if all did, the final result did.
+function markJobFailed(reason, failedStep) {
+  state.jobStatus = 'error';
+  let idx = Number.isInteger(failedStep) ? failedStep : state.steps.findIndex(s => s.status !== 'completed');
+  if (idx < 0) idx = state.steps.length - 1;
+  if (state.steps[idx]) {
+    state.steps[idx].status = 'error';
+    state.steps[idx].error = reason;
+  }
+  renderStepper();
+  showToast(`Optimization Error: ${escapeHtml(reason)}`, 'error');
 }
 
 // 11. Trigger Optimization Action
@@ -923,7 +970,7 @@ async function startOptimization() {
   } catch (err) {
     dom.startBtn.disabled = false;
     dom.startBtn.innerHTML = '⚡ Start Optimization';
-    showToast(`Failed to start job: ${err.message}`, 'error');
+    showToast(`Failed to start job: ${escapeHtml(err.message)}`, 'error');
   }
 }
 
@@ -976,7 +1023,12 @@ function handleFileSelected(file) {
 async function loadDefaultShowcase() {
   try {
     const res = await fetch('/api/jobs/default_sample/metrics');
-    if (!res.ok) return;
+    if (res.status === 404) return; // no precomputed showcase
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      showToast(`Cannot load the default showcase: ${escapeHtml(errData.error || `HTTP ${res.status}`)}`, 'error');
+      return;
+    }
     const data = await res.json();
 
     state.currentJobId = data.jobId || 'default_sample';
@@ -1022,6 +1074,13 @@ async function loadDefaultShowcase() {
         s.glbUrl = metric.glbUrl || `/workspaces/${state.currentJobId}/${metric.file || s.file}`;
       }
     });
+
+    if (data.status === 'error') {
+      markJobFailed(data.error, data.errorStep);
+      const lastDone = state.steps.map(s => s.status).lastIndexOf('completed');
+      if (lastDone >= 0) selectStep(lastDone);
+      return;
+    }
 
     renderStepper();
     selectStep(6); // default view final optimized step

@@ -8,8 +8,31 @@ import { Readable } from 'node:stream';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const PORT = process.env.PORT || 3000;
+// PORT unset -> 3000; any other value must be an integer 0-65535 (0 = any free port)
+function parsePort(raw) {
+  if (raw === undefined) return 3000;
+  if (!/^\d+$/.test(raw) || Number(raw) > 65535) {
+    console.error(`❌ Invalid PORT '${raw}': expected an integer 0-65535`);
+    process.exit(1);
+  }
+  return Number(raw);
+}
+
+const PORT = parsePort(process.env.PORT);
 const WORKSPACES_DIR = path.join(__dirname, 'workspaces');
+const PYTHON_BIN = path.join(__dirname, '.venv', 'bin', 'python');
+// Output files of the 7 pipeline steps (optimizer/step_pipeline.py StepPipeline.STEP_DEFINITIONS)
+const STEP_FILES = [
+  'step_00_raw.glb',
+  'step_01_cleaned_grounded.glb',
+  'step_02_oriented.glb',
+  'step_03_texture_baked.glb',
+  'step_04_palette_tagged.glb',
+  'step_05_meshopt.glb',
+  'step_06_final.glb'
+];
+const INTERRUPTED_REASON = 'interrupted (server restarted)';
+const STDERR_TAIL_CHARS = 4000;
 
 // Ensure workspaces directory and gitignore
 if (!fs.existsSync(WORKSPACES_DIR)) {
@@ -80,79 +103,112 @@ function scanModels() {
   return models;
 }
 
+// Reads `length` bytes at `position` (readSync may return fewer than asked); returns the count read
+function readFully(fd, length, position) {
+  const buffer = Buffer.alloc(length);
+  let total = 0;
+  while (total < length) {
+    const n = fs.readSync(fd, buffer, total, length - total, position + total);
+    if (n === 0) break;
+    total += n;
+  }
+  return { buffer, bytesRead: total };
+}
+
+// True if any material of the GLB is doubleSided. Reads the whole JSON chunk; throws when the file
+// is not a readable GLB with a valid JSON chunk (the upload is then rejected with a 400).
 function detectGlbDoubleSided(filePath) {
-  let fd = null;
+  const fd = fs.openSync(filePath, 'r');
   try {
-    if (!fs.existsSync(filePath)) return false;
-    fd = fs.openSync(filePath, 'r');
-    const header = Buffer.alloc(20);
-    const readBytes = fs.readSync(fd, header, 0, 20, 0);
-    if (readBytes < 20) return false;
-
-    const magic = header.readUInt32LE(0);
-    const chunkLength = header.readUInt32LE(12);
-    const chunkType = header.readUInt32LE(16);
-
+    const fileSize = fs.fstatSync(fd).size;
+    const { buffer: header, bytesRead } = readFully(fd, 20, 0);
+    if (bytesRead !== 20) {
+      throw new Error(`not a GLB: ${fileSize} bytes, shorter than the 20-byte GLB header`);
+    }
     // GLB magic: 0x46546C67 ('glTF'), Chunk 0 type: 0x4E4F534A ('JSON')
-    if (magic === 0x46546C67 && chunkType === 0x4E4F534A && chunkLength > 0) {
-      const bytesToRead = Math.min(chunkLength, 32 * 1024 * 1024);
-      const jsonBuffer = Buffer.alloc(bytesToRead);
-      fs.readSync(fd, jsonBuffer, 0, bytesToRead, 20);
-
-      const jsonStr = jsonBuffer.toString('utf-8');
-      try {
-        const gltf = JSON.parse(jsonStr);
-        if (Array.isArray(gltf.materials)) {
-          return gltf.materials.some(mat => mat && mat.doubleSided === true);
-        }
-      } catch (_) {
-        return /"doubleSided"\s*:\s*true/.test(jsonStr);
-      }
+    if (header.readUInt32LE(0) !== 0x46546C67) throw new Error('not a GLB: glTF magic header missing');
+    if (header.readUInt32LE(16) !== 0x4E4F534A) throw new Error('first GLB chunk is not a JSON chunk');
+    const chunkLength = header.readUInt32LE(12);
+    if (20 + chunkLength > fileSize) {
+      throw new Error(`truncated GLB: JSON chunk declares ${chunkLength} bytes, only ${fileSize - 20} present`);
     }
-    return false;
-  } catch (err) {
-    console.warn(`[detectGlbDoubleSided] Note: Unable to inspect ${filePath}:`, err.message);
-    return false;
+    const { buffer: jsonBuffer, bytesRead: jsonRead } = readFully(fd, chunkLength, 20);
+    if (jsonRead !== chunkLength) {
+      throw new Error(`read ${jsonRead} of the ${chunkLength}-byte JSON chunk`);
+    }
+    let gltf;
+    try {
+      gltf = JSON.parse(jsonBuffer.toString('utf-8'));
+    } catch (err) {
+      throw new Error(`invalid GLB JSON chunk: ${err.message}`);
+    }
+    if (gltf === null || typeof gltf !== 'object' || Array.isArray(gltf)) {
+      throw new Error('invalid GLB JSON chunk: not a JSON object');
+    }
+    if (gltf.materials === undefined) return false;
+    if (!Array.isArray(gltf.materials)) throw new Error('invalid GLB JSON chunk: "materials" is not an array');
+    return gltf.materials.some(mat => mat && mat.doubleSided === true);
   } finally {
-    if (fd !== null) {
-      try { fs.closeSync(fd); } catch (_) {}
-    }
+    fs.closeSync(fd);
   }
 }
 
-// Allowed Optimization Parameters
-const ALLOWED_FORMATS = ['ktx2', 'webp', 'png', 'jpeg', 'jpg', 'original', 'passthrough'];
-const ALLOWED_UV_MODES = ['rechart', 'xatlas', 'uvatlas'];
+// A client error: the upload is rejected with HTTP 400 and this message
+class BadRequestError extends Error {}
+
+// Allowed Optimization Parameters (the Python CLI accepts exactly these, after the aliases)
+const FORMAT_ALIASES = { passthrough: 'original' };
+const UV_MODE_ALIASES = { rechart: 'xatlas' };
+const ALLOWED_FORMATS = ['ktx2', 'webp', 'original', ...Object.keys(FORMAT_ALIASES)];
+const ALLOWED_UV_MODES = ['xatlas', 'uvatlas', ...Object.keys(UV_MODE_ALIASES)];
 const ALLOWED_DOWNSCALE = ['on', 'off'];
 const ALLOWED_SIZE_MODES = ['exact', 'pot-up', 'pot-down'];
+const OPTION_FIELDS = ['format', 'uvMode', 'downscale', 'sizeMode'];
+const MULTIPART_FIELDS = ['file', 'samplePath', ...OPTION_FIELDS];
+const JSON_FIELDS = ['samplePath', ...OPTION_FIELDS];
 
-// Absent field -> default; any other value must match exactly (never coerced)
+// Absent field -> default; any other value (including null) must match exactly (never coerced)
 function validateChoice(name, value, allowed, defaultValue) {
-  if (value === null || value === undefined) return defaultValue;
+  if (value === undefined) return defaultValue;
   if (!allowed.includes(value)) {
-    throw new Error(`Unsupported ${name} '${value}' (allowed: ${allowed.join(', ')})`);
+    throw new BadRequestError(`Unsupported ${name} '${value}' (allowed: ${allowed.join(', ')})`);
   }
   return value;
 }
 
 function sanitizeOptimizationOptions({ format, uvMode, downscale, sizeMode } = {}) {
-  let fmt = String(format || 'ktx2').toLowerCase().trim();
-  if (fmt === 'passthrough') fmt = 'original';
-  if (!ALLOWED_FORMATS.includes(fmt)) {
-    fmt = 'ktx2';
-  }
-
-  const uv = uvMode ? String(uvMode).toLowerCase().trim() : 'rechart';
-  if (!ALLOWED_UV_MODES.includes(uv)) {
-    throw new Error(`Unsupported uvMode '${uvMode}' (allowed: ${ALLOWED_UV_MODES.join(', ')})`);
-  }
-
+  const fmt = validateChoice('format', format, ALLOWED_FORMATS, 'ktx2');
+  const uv = validateChoice('uvMode', uvMode, ALLOWED_UV_MODES, 'xatlas');
   return {
-    format: fmt,
-    uvMode: uv,
+    format: FORMAT_ALIASES[fmt] || fmt,
+    uvMode: UV_MODE_ALIASES[uv] || uv,
     downscale: validateChoice('downscale', downscale, ALLOWED_DOWNSCALE, 'on'),
     sizeMode: validateChoice('sizeMode', sizeMode, ALLOWED_SIZE_MODES, 'exact')
   };
+}
+
+function rejectUnexpectedFields(names, allowed) {
+  const unexpected = names.filter(name => !allowed.includes(name));
+  if (unexpected.length > 0) {
+    throw new BadRequestError(`Unexpected field(s): ${unexpected.join(', ')} (allowed: ${allowed.join(', ')})`);
+  }
+}
+
+// samplePath must be one of the models /api/models lists (compared by real path)
+function resolveListedModel(samplePath) {
+  const realPathOf = (urlPath) => {
+    try {
+      return fs.realpathSync(path.resolve(__dirname, String(urlPath).replace(/^\/+/, '')));
+    } catch (_) {
+      return null; // does not exist -> cannot be a listed model
+    }
+  };
+  const requested = realPathOf(samplePath);
+  const listed = scanModels().map(m => realPathOf(m.url));
+  if (requested === null || !listed.includes(requested)) {
+    throw new BadRequestError(`samplePath '${samplePath}' is not one of the models listed by /api/models`);
+  }
+  return requested;
 }
 
 // In-Memory Job Management
@@ -170,6 +226,10 @@ function saveWorkspaceMetrics(job) {
       totalSteps: job.totalSteps,
       currentStep: job.currentStep,
       error: job.error,
+      errorType: job.errorType,
+      errorStep: job.errorStep,
+      exitCode: job.exitCode,
+      stderrTail: job.stderrTail,
       steps: job.metrics
     };
     fs.writeFileSync(metricsPath, JSON.stringify(payload, null, 2), 'utf-8');
@@ -179,22 +239,15 @@ function saveWorkspaceMetrics(job) {
 }
 
 function emitJobEvent(job, eventName, data) {
-  // Normalize event names so SSE clients receive standard event names
-  let normalizedEvent = eventName;
-  if (eventName === 'pipeline_complete') normalizedEvent = 'job_complete';
-  if (eventName === 'pipeline_error') normalizedEvent = 'error';
+  const normalizedEvent = eventName;
 
   if (normalizedEvent === 'step_start') {
     job.currentStep = data.step;
   } else if (normalizedEvent === 'step_complete') {
     if (data.step !== undefined) {
       job.currentStep = data.step;
-      const file = data.file || data.modelFile;
-      if (!data.file && file) {
-        data.file = file;
-      }
-      if (!data.glbUrl && file) {
-        data.glbUrl = `/workspaces/${job.id}/${file}`;
+      if (!data.glbUrl) {
+        data.glbUrl = `/workspaces/${job.id}/${data.file}`;
       }
       data.name = data.name || data.stepName || `Step ${data.step}`;
       data.stepName = data.name;
@@ -234,12 +287,8 @@ function emitJobEvent(job, eventName, data) {
     job.textureClamped = true;
     job.textureClampedMessage = data.message || 'Original texture clamped (NO-UPSCALE policy)';
     saveWorkspaceMetrics(job);
-  } else if (normalizedEvent === 'job_complete') {
-    job.status = 'completed';
-    saveWorkspaceMetrics(job);
-  } else if (normalizedEvent === 'error') {
-    job.status = 'error';
-    job.error = data.message || data.error || 'Job execution error';
+  } else if (normalizedEvent === 'job_complete' || normalizedEvent === 'error') {
+    // job.status / job.error are set by the caller (the close handler / failJob)
     saveWorkspaceMetrics(job);
   }
 
@@ -257,23 +306,119 @@ function emitJobEvent(job, eventName, data) {
   }
 }
 
-function startPipelineJob({ jobId, rawGlbPath, workspaceDir, format = 'ktx2', uvMode = 'rechart', downscale = 'on', sizeMode = 'exact' }) {
-  const sanitized = sanitizeOptimizationOptions({ format, uvMode, downscale, sizeMode });
-  const finalFormat = sanitized.format;
-  const finalUvMode = sanitized.uvMode;
-  const finalDownscale = sanitized.downscale;
-  const finalSizeMode = sanitized.sizeMode;
+// The job failed: record the concise reason and tell SSE clients. The first failure wins.
+function failJob(job, { error, errorType = null, step = null }) {
+  if (job.status === 'error') return;
+  job.status = 'error';
+  job.error = error;
+  job.errorType = errorType;
+  job.errorStep = step;
+  console.error(`[Job ${job.id}] ❌ Failed${step !== null ? ` at step ${step}` : ''}: ${error}`);
+  emitJobEvent(job, 'error', { jobId: job.id, message: error, error, errorType, step });
+}
 
-  const isDoubleSided = detectGlbDoubleSided(rawGlbPath);
-  if (isDoubleSided) {
-    console.log(`[Job ${jobId}] Auto-detected doubleSided: true in input model: enabling --double-sided flag`);
+// The pipeline broke its stdout event protocol: fail the job and stop the process
+function failJobProtocol(job, detail) {
+  failJob(job, { error: `Pipeline protocol error: ${detail}`, errorType: 'PipelineProtocolError' });
+  const proc = job.childProcess;
+  if (proc && proc.exitCode === null && proc.signalCode === null) {
+    proc.kill('SIGTERM');
+  }
+}
+
+// A stdout line starting with '{' must be one pipeline event (see optimizer/step_pipeline.py)
+function handlePipelineEvent(job, line) {
+  if (job.status === 'error') return; // already failed: later output changes nothing
+  const excerpt = line.length > 300 ? `${line.slice(0, 300)}…` : line;
+
+  let payload;
+  try {
+    payload = JSON.parse(line);
+  } catch (err) {
+    failJobProtocol(job, `unparseable event line on stdout (${err.message}): ${excerpt}`);
+    return;
+  }
+  if (payload === null || typeof payload !== 'object' || typeof payload.event !== 'string') {
+    failJobProtocol(job, `stdout JSON line without an "event" field: ${excerpt}`);
+    return;
   }
 
+  // Inspect payload for texture clamping
+  if (payload.textureClamped || payload.clamped || payload.metrics?.textureClamped || payload.metrics?.clamped) {
+    const clampMsg = payload.clampedMessage || payload.metrics?.clampedMessage || payload.message || 'Original texture clamped (NO-UPSCALE policy)';
+    job.textureClamped = true;
+    job.textureClampedMessage = clampMsg;
+    console.warn(`[Job ${job.id}][NO-UPSCALE] ${clampMsg}`);
+    emitJobEvent(job, 'texture_clamped', {
+      jobId: job.id,
+      message: clampMsg,
+      step: payload.step || 3,
+      details: payload.metrics || payload
+    });
+  }
+
+  switch (payload.event) {
+    case 'step_complete':
+      if (!Number.isInteger(payload.step) || payload.step < 0 || payload.step >= job.totalSteps ||
+          typeof payload.file !== 'string' || payload.file === '') {
+        failJobProtocol(job, `malformed step_complete event (needs an integer step 0-${job.totalSteps - 1} and a file): ${excerpt}`);
+        return;
+      }
+      emitJobEvent(job, 'step_complete', payload);
+      return;
+    case 'pipeline_complete':
+      // Completed only once the process exits 0 with all step files on disk (see the 'close' handler)
+      job.pipelineComplete = payload;
+      return;
+    case 'pipeline_error':
+      if (typeof payload.error !== 'string' || payload.error.trim() === '' ||
+          !(payload.step === null || Number.isInteger(payload.step))) {
+        failJobProtocol(job, `malformed pipeline_error event (needs an error reason and a step or null): ${excerpt}`);
+        return;
+      }
+      failJob(job, { error: payload.error, errorType: payload.errorType ?? null, step: payload.step });
+      return;
+    default:
+      failJobProtocol(job, `unknown event '${payload.event}': ${excerpt}`);
+  }
+}
+
+// A plain-text stdout line: forwarded to SSE clients as a log event
+function handlePipelineLogLine(job, trimmed) {
+  // Check text logs for NO-UPSCALE policy (e.g. "[Step 3] Original texture... clamped to... (NO-UPSCALE policy)")
+  const isClampedLog = trimmed.includes('NO-UPSCALE') ||
+                       (trimmed.includes('[Step 3]') && trimmed.toLowerCase().includes('clamped')) ||
+                       trimmed.toLowerCase().includes('clamped to');
+
+  if (isClampedLog) {
+    console.warn(`[Job ${job.id}][POLICY] ⚠️ ${trimmed}`);
+    job.textureClamped = true;
+    job.textureClampedMessage = trimmed;
+    emitJobEvent(job, 'texture_clamped', {
+      jobId: job.id,
+      message: trimmed,
+      step: 3
+    });
+  } else {
+    console.log(`[Job ${job.id}] ${trimmed}`);
+  }
+
+  // Forward stdout line to SSE clients as a log event
+  emitJobEvent(job, 'log', {
+    jobId: job.id,
+    message: trimmed,
+    isClamped: isClampedLog,
+    timestamp: Date.now()
+  });
+}
+
+// Options must already be validated (sanitizeOptimizationOptions) and doubleSided detected
+function startPipelineJob({ jobId, rawGlbPath, workspaceDir, format, uvMode, downscale, sizeMode, doubleSided }) {
   const job = {
     id: jobId,
     workspaceDir,
     status: 'started',
-    config: { format: finalFormat, uvMode: finalUvMode, downscale: finalDownscale, sizeMode: finalSizeMode, doubleSided: isDoubleSided },
+    config: { format, uvMode, downscale, sizeMode, doubleSided },
     startTime: Date.now(),
     totalSteps: 7,
     currentStep: 0,
@@ -283,11 +428,19 @@ function startPipelineJob({ jobId, rawGlbPath, workspaceDir, format = 'ktx2', uv
     textureClampedMessage: null,
     clients: new Set(),
     childProcess: null,
-    error: null
+    pipelineComplete: null, // the pipeline_complete event, once received
+    error: null,
+    errorType: null,
+    errorStep: null,
+    exitCode: null,
+    stderrTail: null
   };
   jobs.set(jobId, job);
 
-  console.log(`[Job ${jobId}] Initialized with downscale=${finalDownscale}, sizeMode=${finalSizeMode}, format=${finalFormat}, uvMode=${finalUvMode}`);
+  console.log(`[Job ${jobId}] Initialized with downscale=${downscale}, sizeMode=${sizeMode}, format=${format}, uvMode=${uvMode}`);
+  if (doubleSided) {
+    console.log(`[Job ${jobId}] Auto-detected doubleSided: true in input model: enabling --double-sided flag`);
+  }
 
   emitJobEvent(job, 'job_start', {
     jobId,
@@ -296,105 +449,58 @@ function startPipelineJob({ jobId, rawGlbPath, workspaceDir, format = 'ktx2', uv
     config: job.config
   });
 
-  const venvPython = path.join(__dirname, '.venv', 'bin', 'python');
-  const pythonBin = fs.existsSync(venvPython) ? venvPython : 'python3';
+  if (!fs.existsSync(PYTHON_BIN)) {
+    failJob(job, { error: `Python virtualenv not found: ${PYTHON_BIN} is missing (run ./setup.sh)`, errorType: 'EnvironmentError' });
+    return job;
+  }
 
   const args = [
     '-m', 'optimizer.step_pipeline',
     rawGlbPath,
     '--output-dir', workspaceDir,
-    '--format', finalFormat,
-    '--downscale', finalDownscale,
-    '--size-mode', finalSizeMode
+    '--format', format,
+    '--downscale', downscale,
+    '--size-mode', sizeMode,
+    '--uv-mode', uvMode
   ];
-
-  if (isDoubleSided) {
+  if (doubleSided) {
     args.push('--double-sided');
   }
 
-  args.push('--uv-mode', finalUvMode === 'uvatlas' ? 'uvatlas' : 'xatlas');
+  console.log(`[Job ${jobId}] Spawning pipeline: ${PYTHON_BIN} ${args.join(' ')}`);
 
-  console.log(`[Job ${jobId}] Spawning pipeline: ${pythonBin} ${args.join(' ')}`);
-
-  const proc = spawn(pythonBin, args, {
+  const proc = spawn(PYTHON_BIN, args, {
     cwd: __dirname,
     env: { ...process.env, PYTHONUNBUFFERED: '1' }
   });
   job.childProcess = proc;
   job.status = 'running';
+  saveWorkspaceMetrics(job); // a restart before the first step still finds this job (as interrupted)
 
   let stdoutBuffer = '';
   let stderrBuffer = '';
+  const handleStdoutLine = (line) => {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+    if (trimmed.startsWith('{')) {
+      handlePipelineEvent(job, trimmed);
+    } else {
+      handlePipelineLogLine(job, trimmed);
+    }
+  };
 
+  proc.stdout.setEncoding('utf8');
   proc.stdout.on('data', (chunk) => {
-    stdoutBuffer += chunk.toString('utf-8');
+    stdoutBuffer += chunk;
     const lines = stdoutBuffer.split('\n');
     stdoutBuffer = lines.pop(); // keep partial line in buffer
-
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-
-      let payload = null;
-      if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
-        try {
-          payload = JSON.parse(trimmed);
-        } catch (_) {}
-      }
-
-      if (payload) {
-        // Inspect payload for texture clamping
-        if (payload.textureClamped || payload.clamped || payload.metrics?.textureClamped || payload.metrics?.clamped) {
-          const clampMsg = payload.clampedMessage || payload.metrics?.clampedMessage || payload.message || 'Original texture clamped (NO-UPSCALE policy)';
-          job.textureClamped = true;
-          job.textureClampedMessage = clampMsg;
-          console.warn(`[Job ${jobId}][NO-UPSCALE] ${clampMsg}`);
-          emitJobEvent(job, 'texture_clamped', {
-            jobId,
-            message: clampMsg,
-            step: payload.step || 3,
-            details: payload.metrics || payload
-          });
-        }
-
-        const eventName = payload.event || (payload.step !== undefined ? 'step_complete' : null);
-        if (eventName) {
-          emitJobEvent(job, eventName, payload);
-          continue;
-        }
-      }
-
-      // Check text logs for NO-UPSCALE policy (e.g. "[Step 3] Original texture... clamped to... (NO-UPSCALE policy)")
-      const isClampedLog = trimmed.includes('NO-UPSCALE') || 
-                           (trimmed.includes('[Step 3]') && trimmed.toLowerCase().includes('clamped')) ||
-                           trimmed.toLowerCase().includes('clamped to');
-
-      if (isClampedLog) {
-        console.warn(`[Job ${jobId}][POLICY] ⚠️ ${trimmed}`);
-        job.textureClamped = true;
-        job.textureClampedMessage = trimmed;
-        emitJobEvent(job, 'texture_clamped', {
-          jobId,
-          message: trimmed,
-          step: 3
-        });
-      } else {
-        console.log(`[Job ${jobId}] ${trimmed}`);
-      }
-
-      // Forward stdout line to SSE clients as a log event
-      emitJobEvent(job, 'log', {
-        jobId,
-        message: trimmed,
-        isClamped: isClampedLog,
-        timestamp: Date.now()
-      });
-    }
+    lines.forEach(handleStdoutLine);
   });
 
-  proc.stderr.on('data', (chunk) => {
-    const text = chunk.toString('utf-8');
+  proc.stderr.setEncoding('utf8');
+  proc.stderr.on('data', (text) => {
     stderrBuffer += text;
+    job.stderrTail = stderrBuffer.slice(-STDERR_TAIL_CHARS);
     console.error(`[Job ${jobId} ERR] ${text.trim()}`);
 
     // Also check stderr for clamping policy warnings
@@ -410,47 +516,90 @@ function startPipelineJob({ jobId, rawGlbPath, workspaceDir, format = 'ktx2', uv
     }
   });
 
-  proc.on('close', (code) => {
-    if (stdoutBuffer.trim().startsWith('{') && stdoutBuffer.trim().endsWith('}')) {
-      try {
-        const payload = JSON.parse(stdoutBuffer.trim());
-        if (payload.event) emitJobEvent(job, payload.event, payload);
-      } catch (_) {}
-    }
+  proc.on('close', (code, signal) => {
+    handleStdoutLine(stdoutBuffer); // last line, if it had no trailing newline
+    stdoutBuffer = '';
+    job.exitCode = code;
+    job.stderrTail = stderrBuffer.slice(-STDERR_TAIL_CHARS);
 
-    if (code !== 0 && job.status !== 'completed') {
-      job.status = 'error';
-      job.error = stderrBuffer.trim() || `Step pipeline exited with code ${code}`;
-      emitJobEvent(job, 'error', {
-        jobId,
-        message: job.error,
-        code
-      });
-    } else {
-      if (job.status !== 'completed') {
-        job.status = 'completed';
-        emitJobEvent(job, 'job_complete', {
-          jobId,
-          status: 'completed',
-          totalSteps: 7,
-          metrics: job.metrics,
-          textureClamped: Boolean(job.textureClamped),
-          textureClampedMessage: job.textureClampedMessage
-        });
+    if (job.status !== 'error') {
+      const exit = signal ? `was killed by ${signal}` : `exited with code ${code}`;
+      if (code !== 0) {
+        const lastStderrLine = stderrBuffer.trim().split('\n').pop();
+        const detail = job.pipelineComplete
+          ? ' after pipeline_complete'
+          : ` without a pipeline_error event${lastStderrLine ? `; last stderr line: ${lastStderrLine}` : ''}`;
+        failJob(job, { error: `Step pipeline ${exit}${detail}` });
+      } else if (!job.pipelineComplete) {
+        failJob(job, { error: `Step pipeline ${exit} without a pipeline_complete event` });
+      } else {
+        const missing = STEP_FILES.filter(file => !fs.existsSync(path.join(job.workspaceDir, file)));
+        if (missing.length > 0) {
+          failJob(job, { error: `Pipeline reported completion but step files are missing: ${missing.join(', ')}` });
+        } else {
+          job.status = 'completed';
+          emitJobEvent(job, 'job_complete', {
+            jobId,
+            status: 'completed',
+            totalSteps: 7,
+            summary: job.pipelineComplete.summary,
+            metrics: job.metrics,
+            textureClamped: Boolean(job.textureClamped),
+            textureClampedMessage: job.textureClampedMessage
+          });
+        }
       }
     }
+    saveWorkspaceMetrics(job); // exit code & stderr tail, whatever the outcome
   });
 
   proc.on('error', (err) => {
-    job.status = 'error';
-    job.error = err.message;
-    emitJobEvent(job, 'error', {
-      jobId,
-      message: err.message
-    });
+    failJob(job, { error: `Failed to run the step pipeline (${PYTHON_BIN}): ${err.message}`, errorType: 'SpawnError' });
   });
 
   return job;
+}
+
+// A job this server process did not run, read back from its workspace metrics.json, with the status
+// to report: the stored one, except that a job still started/running on disk was cut off by a server
+// restart. Returns null when there is no metrics.json; throws when it cannot be read or parsed.
+function loadStoredJob(jobId) {
+  const wsDir = path.join(WORKSPACES_DIR, jobId);
+  const metricsFile = path.join(wsDir, 'metrics.json');
+  if (!fs.existsSync(metricsFile)) return null;
+
+  let data;
+  try {
+    data = JSON.parse(fs.readFileSync(metricsFile, 'utf-8'));
+  } catch (err) {
+    throw new Error(`Cannot replay job ${jobId}: metrics.json is invalid (${err.message})`);
+  }
+  if (data === null || typeof data !== 'object' || Array.isArray(data)) {
+    throw new Error(`Cannot replay job ${jobId}: metrics.json is not a JSON object`);
+  }
+
+  const stored = { ...data };
+  if (data.status === undefined) {
+    // Written by the Python pipeline itself (a CLI run, or a server that died while the pipeline
+    // kept running): only its final payload with all step files on disk is a completed run
+    const missing = STEP_FILES.filter(file => !fs.existsSync(path.join(wsDir, file)));
+    if (data.success === true && data.summary && missing.length === 0) {
+      stored.status = 'completed';
+    } else if (data.success === true && data.summary) {
+      stored.status = 'error';
+      stored.error = `step files are missing: ${missing.join(', ')}`;
+    } else {
+      stored.status = 'error';
+      stored.error = INTERRUPTED_REASON;
+    }
+  } else if (data.status === 'started' || data.status === 'running') {
+    stored.status = 'error';
+    stored.error = INTERRUPTED_REASON;
+    stored.errorStep = null;
+  } else if (data.status !== 'completed' && data.status !== 'error') {
+    throw new Error(`Cannot replay job ${jobId}: unknown status '${data.status}' in metrics.json`);
+  }
+  return stored;
 }
 
 const server = http.createServer(async (req, res) => {
@@ -480,152 +629,112 @@ const server = http.createServer(async (req, res) => {
 
   // 2. API: Upload GLB & Start Job
   if (pathname === '/api/upload' && req.method === 'POST') {
+    const jobId = `job_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+    const wsDir = path.join(WORKSPACES_DIR, jobId);
+    let jobStarted = false;
     try {
       const contentType = req.headers['content-type'] || '';
-      const jobId = `job_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
-      const wsDir = path.join(WORKSPACES_DIR, jobId);
-      fs.mkdirSync(wsDir, { recursive: true });
-      const rawGlbPath = path.join(wsDir, 'step_00_raw.glb');
+      let fields;
+      let fileBuffer = null;
 
-      // (A) Multipart Form Data
       if (contentType.includes('multipart/form-data')) {
+        // (A) Multipart Form Data
         const webReq = new Request(`http://${host}${req.url}`, {
           method: req.method,
           headers: req.headers,
           body: Readable.toWeb(req),
           duplex: 'half'
         });
-
-        const formData = await webReq.formData();
-        const file = formData.get('file');
-        const samplePath = formData.get('samplePath') || formData.get('sampleUrl');
-        const rawFmt = formData.get('format');
-        const rawUv = formData.get('uvMode');
-        let options;
+        let formData;
         try {
-          options = sanitizeOptimizationOptions({
-            format: rawFmt,
-            uvMode: rawUv,
-            downscale: formData.get('downscale'),
-            sizeMode: formData.get('sizeMode')
-          });
-        } catch (optErr) {
-          fs.rmSync(wsDir, { recursive: true, force: true });
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: optErr.message }));
-          return;
+          formData = await webReq.formData();
+        } catch (err) {
+          throw new BadRequestError(`Invalid multipart form data: ${err.message}`);
         }
-        const { format, uvMode, downscale, sizeMode } = options;
-
-        console.log(`[API /api/upload] Form upload request: downscale=${downscale}, sizeMode=${sizeMode}, format=${format}, uvMode=${uvMode}`);
-
-        if (file && typeof file === 'object' && typeof file.arrayBuffer === 'function') {
-          const ab = await file.arrayBuffer();
-          const buffer = Buffer.from(ab);
-
-          // Validate GLB magic header "glTF" (0x46546C67)
-          if (buffer.length < 12 || buffer.readUInt32LE(0) !== 0x46546C67) {
-            fs.rmSync(wsDir, { recursive: true, force: true });
-            res.writeHead(400, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: 'Uploaded file is not a valid binary GLB model (glTF magic header missing).' }));
-            return;
+        rejectUnexpectedFields([...new Set(formData.keys())], MULTIPART_FIELDS);
+        fields = {};
+        const seen = new Set();
+        for (const [name, value] of formData.entries()) {
+          if (seen.has(name)) throw new BadRequestError(`Field '${name}' given more than once`);
+          seen.add(name);
+          if (name === 'file') {
+            if (typeof value === 'string') throw new BadRequestError("Field 'file' must be a file upload");
+            fileBuffer = Buffer.from(await value.arrayBuffer());
+          } else {
+            if (typeof value !== 'string') throw new BadRequestError(`Field '${name}' must be a text value`);
+            fields[name] = value;
           }
-
-          fs.writeFileSync(rawGlbPath, buffer);
-        } else if (samplePath) {
-          const cleanPath = samplePath.toString().replace(/^\//, '');
-          const srcAbsPath = path.resolve(__dirname, cleanPath);
-          if (!fs.existsSync(srcAbsPath)) {
-            fs.rmSync(wsDir, { recursive: true, force: true });
-            res.writeHead(404, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: `Sample model not found: ${samplePath}` }));
-            return;
-          }
-          fs.copyFileSync(srcAbsPath, rawGlbPath);
-        } else {
-          fs.rmSync(wsDir, { recursive: true, force: true });
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'No file or samplePath provided in form data' }));
-          return;
         }
-
-        startPipelineJob({
-          jobId,
-          rawGlbPath,
-          workspaceDir: wsDir,
-          format,
-          uvMode,
-          downscale,
-          sizeMode
-        });
-
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ jobId, status: 'started', totalSteps: 7, config: { format, uvMode, downscale, sizeMode } }));
-        return;
-      }
-
-      // (B) JSON Request (e.g. quick sample model run)
-      if (contentType.includes('application/json')) {
+      } else if (contentType.includes('application/json')) {
+        // (B) JSON Request (e.g. quick sample model run)
         let body = '';
-        req.on('data', chunk => { body += chunk; });
-        req.on('end', () => {
-          try {
-            const data = JSON.parse(body || '{}');
-            const samplePath = data.samplePath || data.sampleUrl;
-            const { format, uvMode, downscale, sizeMode } = sanitizeOptimizationOptions({
-              format: data.format,
-              uvMode: data.uvMode,
-              downscale: data.downscale,
-              sizeMode: data.sizeMode
-            });
-
-            console.log(`[API /api/upload] JSON request: sample=${samplePath}, downscale=${downscale}, sizeMode=${sizeMode}, format=${format}, uvMode=${uvMode}`);
-
-            if (!samplePath) {
-              fs.rmSync(wsDir, { recursive: true, force: true });
-              res.writeHead(400, { 'Content-Type': 'application/json' });
-              res.end(JSON.stringify({ error: 'Missing samplePath in JSON request' }));
-              return;
-            }
-
-            const cleanPath = samplePath.toString().replace(/^\//, '');
-            const srcAbsPath = path.resolve(__dirname, cleanPath);
-            if (!fs.existsSync(srcAbsPath)) {
-              fs.rmSync(wsDir, { recursive: true, force: true });
-              res.writeHead(404, { 'Content-Type': 'application/json' });
-              res.end(JSON.stringify({ error: `Sample model not found: ${samplePath}` }));
-              return;
-            }
-
-            fs.copyFileSync(srcAbsPath, rawGlbPath);
-
-            startPipelineJob({
-              jobId,
-              rawGlbPath,
-              workspaceDir: wsDir,
-              format,
-              uvMode,
-              downscale,
-              sizeMode
-            });
-
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ jobId, status: 'started', totalSteps: 7, config: { format, uvMode, downscale, sizeMode } }));
-          } catch (jsonErr) {
-            fs.rmSync(wsDir, { recursive: true, force: true });
-            res.writeHead(400, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: jsonErr.message }));
-          }
-        });
+        req.setEncoding('utf8');
+        for await (const chunk of req) body += chunk;
+        try {
+          fields = JSON.parse(body);
+        } catch (err) {
+          throw new BadRequestError(`Invalid JSON body: ${err.message}`);
+        }
+        if (fields === null || typeof fields !== 'object' || Array.isArray(fields)) {
+          throw new BadRequestError('JSON body must be an object');
+        }
+        rejectUnexpectedFields(Object.keys(fields), JSON_FIELDS);
+      } else {
+        res.writeHead(415, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Unsupported Content-Type. Use multipart/form-data or application/json.' }));
         return;
       }
 
-      res.writeHead(415, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Unsupported Content-Type. Use multipart/form-data or application/json.' }));
-    } catch (uploadErr) {
-      console.error('Upload error:', uploadErr);
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: uploadErr.message }));
+      const options = sanitizeOptimizationOptions(fields);
+      const sources = [
+        fileBuffer !== null ? 'file' : null,
+        fields.samplePath !== undefined ? 'samplePath' : null
+      ].filter(Boolean);
+      if (sources.length === 0) throw new BadRequestError('No file or samplePath provided');
+      if (sources.length > 1) throw new BadRequestError('Provide only one of file / samplePath (got both)');
+
+      let sampleModelPath = null;
+      if (fileBuffer !== null) {
+        // Validate GLB magic header "glTF" (0x46546C67)
+        if (fileBuffer.length < 12 || fileBuffer.readUInt32LE(0) !== 0x46546C67) {
+          throw new BadRequestError('Uploaded file is not a valid binary GLB model (glTF magic header missing).');
+        }
+      } else {
+        sampleModelPath = resolveListedModel(fields.samplePath);
+      }
+
+      console.log(`[API /api/upload] ${sources[0]} request: downscale=${options.downscale}, sizeMode=${options.sizeMode}, format=${options.format}, uvMode=${options.uvMode}`);
+
+      fs.mkdirSync(wsDir, { recursive: true });
+      const rawGlbPath = path.join(wsDir, 'step_00_raw.glb');
+      if (fileBuffer !== null) {
+        fs.writeFileSync(rawGlbPath, fileBuffer);
+      } else {
+        fs.copyFileSync(sampleModelPath, rawGlbPath);
+      }
+
+      let doubleSided;
+      try {
+        doubleSided = detectGlbDoubleSided(rawGlbPath);
+      } catch (err) {
+        throw new BadRequestError(`Invalid GLB input: ${err.message}`);
+      }
+
+      const job = startPipelineJob({ jobId, rawGlbPath, workspaceDir: wsDir, ...options, doubleSided });
+      jobStarted = true;
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ jobId, status: job.status, totalSteps: 7, config: job.config }));
+    } catch (err) {
+      if (!jobStarted) fs.rmSync(wsDir, { recursive: true, force: true });
+      const status = err instanceof BadRequestError ? 400 : 500;
+      if (status === 400) {
+        console.warn(`[API /api/upload] Rejected (400): ${err.message}`);
+      } else {
+        console.error('Upload error:', err);
+      }
+      res.writeHead(status, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message }));
     }
     return;
   }
@@ -653,38 +762,52 @@ const server = http.createServer(async (req, res) => {
     let job = jobs.get(jobId);
 
     if (!job) {
-      // Disk fallback: check if workspace exists with metrics.json
-      const wsDir = path.join(WORKSPACES_DIR, jobId);
-      const metricsFile = path.join(wsDir, 'metrics.json');
-      if (fs.existsSync(metricsFile)) {
-        try {
-          const metricsData = JSON.parse(fs.readFileSync(metricsFile, 'utf-8'));
-          res.write(`event: job_start\ndata: ${JSON.stringify({ jobId, totalSteps: 7 })}\n\n`);
-          const steps = Array.isArray(metricsData.steps)
-            ? metricsData.steps
-            : (metricsData.steps ? Object.values(metricsData.steps) : []);
-          for (const s of steps) {
-            const durSec = s.durationSeconds !== undefined ? s.durationSeconds : s.metrics?.durationSeconds;
-            const durFmt = s.durationFormatted || s.metrics?.durationFormatted;
-            const totDurSec = s.totalDurationSeconds !== undefined ? s.totalDurationSeconds : s.metrics?.totalDurationSeconds;
-            res.write(`event: step_complete\ndata: ${JSON.stringify({
-              step: s.step,
-              stepName: s.stepName,
-              file: s.file,
-              glbUrl: s.glbUrl || `/workspaces/${jobId}/${s.file}`,
-              durationSeconds: durSec,
-              durationFormatted: durFmt,
-              totalDurationSeconds: totDurSec,
-              metrics: s.metrics || s
-            })}\n\n`);
-          }
-          res.write(`event: job_complete\ndata: ${JSON.stringify({ jobId, status: 'completed' })}\n\n`);
-          res.end();
-          return;
-        } catch (_) {}
+      // Job run by an earlier server process: replay it from its workspace metrics.json
+      let stored;
+      try {
+        stored = loadStoredJob(jobId);
+      } catch (err) {
+        console.error(`[SSE] ${err.message}`);
+        res.write(`event: error\ndata: ${JSON.stringify({ jobId, message: err.message, error: err.message, step: null })}\n\n`);
+        res.end();
+        return;
+      }
+      if (!stored) {
+        res.write(`event: error\ndata: ${JSON.stringify({ message: `Job ${jobId} not found`, jobId })}\n\n`);
+        res.end();
+        return;
       }
 
-      res.write(`event: error\ndata: ${JSON.stringify({ message: `Job ${jobId} not found`, jobId })}\n\n`);
+      res.write(`event: job_start\ndata: ${JSON.stringify({ jobId, totalSteps: 7, status: stored.status })}\n\n`);
+      const steps = Array.isArray(stored.steps)
+        ? stored.steps
+        : (stored.steps ? Object.values(stored.steps) : []);
+      for (const s of steps) {
+        const durSec = s.durationSeconds !== undefined ? s.durationSeconds : s.metrics?.durationSeconds;
+        const durFmt = s.durationFormatted || s.metrics?.durationFormatted;
+        const totDurSec = s.totalDurationSeconds !== undefined ? s.totalDurationSeconds : s.metrics?.totalDurationSeconds;
+        res.write(`event: step_complete\ndata: ${JSON.stringify({
+          step: s.step,
+          stepName: s.stepName,
+          file: s.file,
+          glbUrl: s.glbUrl || `/workspaces/${jobId}/${s.file}`,
+          durationSeconds: durSec,
+          durationFormatted: durFmt,
+          totalDurationSeconds: totDurSec,
+          metrics: s.metrics || s
+        })}\n\n`);
+      }
+      if (stored.status === 'completed') {
+        res.write(`event: job_complete\ndata: ${JSON.stringify({ jobId, status: 'completed' })}\n\n`);
+      } else {
+        res.write(`event: error\ndata: ${JSON.stringify({
+          jobId,
+          message: stored.error,
+          error: stored.error,
+          errorType: stored.errorType ?? null,
+          step: stored.errorStep ?? null
+        })}\n\n`);
+      }
       res.end();
       return;
     }
@@ -729,25 +852,29 @@ const server = http.createServer(async (req, res) => {
         textureClampedMessage: job.textureClampedMessage || null,
         metrics: job.metrics,
         steps: Object.values(job.metrics),
-        error: job.error
+        error: job.error,
+        errorType: job.errorType,
+        errorStep: job.errorStep,
+        exitCode: job.exitCode,
+        stderrTail: job.stderrTail
       }, null, 2));
       return;
     }
 
-    // Check disk
-    const wsDir = path.join(WORKSPACES_DIR, jobId);
-    const metricsFile = path.join(wsDir, 'metrics.json');
-    if (fs.existsSync(metricsFile)) {
-      try {
-        const fileContent = fs.readFileSync(metricsFile, 'utf-8');
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(fileContent);
-        return;
-      } catch (err) {
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: err.message }));
-        return;
-      }
+    // Job run by an earlier server process: its workspace metrics.json
+    let stored;
+    try {
+      stored = loadStoredJob(jobId);
+    } catch (err) {
+      console.error(`[API /metrics] ${err.message}`);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message }));
+      return;
+    }
+    if (stored) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(stored, null, 2));
+      return;
     }
 
     res.writeHead(404, { 'Content-Type': 'application/json' });
@@ -842,20 +969,20 @@ const server = http.createServer(async (req, res) => {
 });
 
 function startServer(port) {
+  // Binding the requested port is required: never fall back to another port
   const onError = (err) => {
     if (err.code === 'EADDRINUSE') {
-      console.warn(`⚠️ Port ${port} is currently in use, trying port ${port + 1}...`);
-      server.removeListener('error', onError);
-      startServer(port + 1);
+      console.error(`❌ Port ${port} is already in use; not starting (stop the other server or set PORT).`);
     } else {
-      console.error('Server error:', err);
+      console.error(`❌ Cannot listen on port ${port}:`, err);
     }
+    process.exit(1);
   };
 
   server.once('error', onError);
   server.listen(port, () => {
     server.removeListener('error', onError);
-    const actualPort = server.address()?.port || port;
+    const actualPort = server.address().port;
     console.log(`\n=============================================================`);
     console.log(`🚀 3D Model Optimization Web Server & API is running!`);
     console.log(`📡 Local URL: http://localhost:${actualPort}`);
@@ -870,5 +997,4 @@ function startServer(port) {
   });
 }
 
-const INITIAL_PORT = parseInt(process.env.PORT, 10) || 3000;
-startServer(INITIAL_PORT);
+startServer(PORT);

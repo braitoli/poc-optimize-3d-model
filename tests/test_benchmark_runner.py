@@ -8,13 +8,18 @@ Unit and integration tests for scripts/benchmark_runner.py:
 - Verifies Rule 11 Zero-Decimation geometric integrity check across steps.
 - Verifies Texture resolution & GPU VRAM reduction calculations.
 - Verifies structured JSON generation and disk output.
+- Verifies a failing model is recorded (reason, errorType, step) and the run continues.
 """
 
+import io
 import json
 import subprocess
+import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
+from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / "scripts" / "benchmark_runner.py"
@@ -23,7 +28,9 @@ PYTHON_BIN = REPO_ROOT / ".venv" / "bin" / "python"
 if not PYTHON_BIN.exists():
     PYTHON_BIN = Path("python3")
 
+from scripts import benchmark_runner
 from scripts.benchmark_runner import run_model_benchmark, calculate_geometry_vram, calculate_texture_vram
+from tests.fixtures import create_mock_glb
 
 
 class TestBenchmarkRunner(unittest.TestCase):
@@ -127,6 +134,48 @@ class TestBenchmarkRunner(unittest.TestCase):
         self.assertIn("results", data)
         self.assertEqual(data["results"]["model_key"], "dinoki")
         self.assertTrue(data["results"]["geometry_rule11"]["zero_decimation_verified"])
+        self.assertEqual(data["failures"], [])
+
+    def test_failing_models_are_recorded_and_run_continues(self):
+        """A model that raises is recorded as failed and the next model still runs; exit code 1."""
+        with tempfile.TemporaryDirectory(prefix="test_bench_failures_") as tmpdir:
+            tmp = Path(tmpdir)
+            not_glb = tmp / "not_a_model.glb"
+            not_glb.write_bytes(b"plain text, not a binary glTF container\n" * 8)
+            good = tmp / "mock.glb"
+            create_mock_glb(good)
+            out_json = tmp / "bench.json"
+            models = {
+                "dinoki": {**benchmark_runner.BASELINE_MODELS["dinoki"], "path": not_glb},
+                "koidrax": {**benchmark_runner.BASELINE_MODELS["koidrax"], "path": tmp / "missing.glb"},
+                "vulparon": {**benchmark_runner.BASELINE_MODELS["vulparon"], "path": good},
+            }
+            argv = ["benchmark_runner.py", "--all", "--mode", "optimized", "--format", "webp",
+                    "--json-only", "-o", str(out_json)]
+            with mock.patch.dict(benchmark_runner.BASELINE_MODELS, models), \
+                    mock.patch.object(sys, "argv", argv), \
+                    redirect_stdout(io.StringIO()):
+                with self.assertRaises(SystemExit) as ctx:
+                    benchmark_runner.main()
+            self.assertEqual(ctx.exception.code, 1)
+
+            data = json.loads(out_json.read_text())
+            failures = {f["model_key"]: f for f in data["failures"]}
+            self.assertEqual(list(failures), ["dinoki", "koidrax"])
+            for f in failures.values():
+                self.assertEqual(set(f), {"model_key", "model_path", "mode", "error", "errorType", "step"})
+                self.assertTrue(f["error"])
+                self.assertEqual(f["mode"], "optimized")
+            self.assertEqual(failures["dinoki"]["step"], 0)
+            self.assertEqual(failures["koidrax"]["errorType"], "FileNotFoundError")
+            self.assertIn("missing.glb", failures["koidrax"]["error"])
+            self.assertIsNone(failures["koidrax"]["step"])
+
+            # The model after the failures still ran to completion
+            self.assertEqual(data["models_failed_count"], 2)
+            self.assertEqual(data["models_profiled_count"], 1)
+            self.assertEqual(data["results"]["model_key"], "vulparon")
+            self.assertTrue(data["results"]["geometry_rule11"]["zero_decimation_verified"])
 
 
 if __name__ == "__main__":

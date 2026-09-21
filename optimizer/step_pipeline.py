@@ -13,7 +13,9 @@ Strictly adheres to Rule 11 (Zero-Decimation Policy):
 
 Emits real-time NDJSON events to stdout:
 {"event": "step_complete", "step": X, "stepName": "...", "file": "step_XX_....glb", "metrics": {...}}
-and continuously updates <output_dir>/metrics.json.
+then {"event": "pipeline_complete", "summary": {...}}, and continuously updates <output_dir>/metrics.json.
+On failure the CLI prints {"event": "pipeline_error", "error": "<reason>", "errorType": "<class>", "step": <n|null>}
+as its last stdout line (full traceback on stderr) and exits 1.
 """
 
 import os
@@ -23,6 +25,7 @@ import json
 import shutil
 import argparse
 import subprocess
+import traceback
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 
@@ -40,6 +43,7 @@ from optimizer.core.texture_utils import (
     optimize_mesh_texture_for_export
 )
 from optimizer.core.glb_utils import set_frontside_material, set_doublesided_material, check_glb_double_sided
+from optimizer.core.errors import describe_failure
 
 MODULE_ROOT = Path(__file__).resolve().parent
 INSPECT_SCRIPT = MODULE_ROOT / "inspect_metrics.mjs"
@@ -161,6 +165,17 @@ class StepPipeline:
             print(json.dumps(event_payload), flush=True)
 
     def run(self, input_path: Path, output_dir: Path) -> Dict[str, Any]:
+        """Runs the 7 steps. Any exception that escapes carries the failing step index as `.step`
+        (kept if the raiser already set it, e.g. PipelineAbort(reason, step=...))."""
+        self._current_step = 0
+        try:
+            return self._run_steps(input_path, output_dir)
+        except Exception as e:
+            if getattr(e, "step", None) is None:
+                e.step = self._current_step
+            raise
+
+    def _run_steps(self, input_path: Path, output_dir: Path) -> Dict[str, Any]:
         t_total_start = time.perf_counter()
         t0 = time.time()
         input_path = Path(input_path).resolve()
@@ -284,6 +299,7 @@ class StepPipeline:
         # =====================================================================
         # STEP 1: Cleaner & Auto Grounding (Y=0, X/Z Centered)
         # =====================================================================
+        self._current_step = 1
         self.log("▶️ [Step 1/6] Cleaning Geometry & Auto-Grounding at Y=0...")
         t_s1 = time.perf_counter()
         raw_mesh = trimesh.load(str(input_path), force="mesh", process=False)
@@ -302,6 +318,7 @@ class StepPipeline:
         # =====================================================================
         # STEP 2: Visibility Z-Buffer Shell Orient (Outward CCW Winding)
         # =====================================================================
+        self._current_step = 2
         self.log("▶️ [Step 2/6] Orienting Shells via Visibility Z-Buffer (CCW)...")
         t_s2 = time.perf_counter()
         orient_stats: Dict[str, Any] = {}
@@ -326,6 +343,7 @@ class StepPipeline:
         # =====================================================================
         # STEP 3: Texture Baking / Resampling & 16px Dilation
         # =====================================================================
+        self._current_step = 3
         t_s3 = time.perf_counter()
         raw_uv = getattr(raw_mesh.visual, "uv", None)
         if raw_uv is None:
@@ -440,6 +458,7 @@ class StepPipeline:
         # =====================================================================
         # STEP 4: Palette Tagging (10 Dominant Colors via K-Means)
         # =====================================================================
+        self._current_step = 4
         self.log("▶️ [Step 4/6] Extracting 10 Dominant Colors & Embedding Extras...")
         t_s4 = time.perf_counter()
         img_rgb = np.asarray(dilated_pil)
@@ -465,6 +484,7 @@ class StepPipeline:
         # =====================================================================
         # STEP 5: Smooth Normals & EXT_meshopt_compression Geometry
         # =====================================================================
+        self._current_step = 5
         self.log("▶️ [Step 5/6] Node.js Smooth Normals + Weld + Quantize + Meshopt...")
         t_s5 = time.perf_counter()
         step5_file = output_dir / "step_05_meshopt.glb"
@@ -500,6 +520,7 @@ class StepPipeline:
         # =====================================================================
         # STEP 6: KTX2 / WebP / Original GPU Compression, FrontSide Material, Extras
         # =====================================================================
+        self._current_step = 6
         t_s6 = time.perf_counter()
         is_original_format = self.texture_format in ("original", "passthrough", "raw")
         if is_original_format:
@@ -672,23 +693,23 @@ def main():
 
     args = parser.parse_args()
 
-    pipeline = StepPipeline(
-        texture_format=args.format,
-        uv_mode=args.uv_mode,
-        downscale=(args.downscale == "on"),
-        size_mode=args.size_mode,
-        smooth_normals=args.smooth_normals,
-        double_sided=args.double_sided,
-        preserve_textures=not args.no_preserve_textures,
-        verbose=not args.quiet,
-        stream_events=True
-    )
-
     try:
+        pipeline = StepPipeline(
+            texture_format=args.format,
+            uv_mode=args.uv_mode,
+            downscale=(args.downscale == "on"),
+            size_mode=args.size_mode,
+            smooth_normals=args.smooth_normals,
+            double_sided=args.double_sided,
+            preserve_textures=not args.no_preserve_textures,
+            verbose=not args.quiet,
+            stream_events=True
+        )
         pipeline.run(Path(args.input), Path(args.output_dir))
     except Exception as e:
-        err_payload = {"event": "pipeline_error", "error": str(e)}
-        print(json.dumps(err_payload), file=sys.stderr)
+        # Full traceback for debugging on stderr; one parseable event (reason, type, step) on stdout
+        traceback.print_exc(file=sys.stderr)
+        print(json.dumps({"event": "pipeline_error", **describe_failure(e)}), flush=True)
         sys.exit(1)
 
 

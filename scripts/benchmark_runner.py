@@ -15,6 +15,8 @@ Supports:
   * --mode optimized: Runs with texture preservation fix (preserve_mesh_textures)
   * --mode baseline: Runs baseline without texture preservation (trimesh PNG export)
   * --mode both: Runs both and produces comparative speedup & size reduction analytics
+- A model that fails is recorded under "failures" (model_key, error, errorType, step) and the run
+  continues with the next model; the exit code is 1 if any model failed.
 
 Usage:
   # Quick test on fast dinoki model (both baseline & optimized comparison)
@@ -34,6 +36,7 @@ import json
 import shutil
 import argparse
 import tempfile
+import traceback
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 
@@ -43,6 +46,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from optimizer.step_pipeline import StepPipeline, inspect_glb_metrics
+from optimizer.core.errors import describe_failure
 
 # Standard target model catalog
 BASELINE_MODELS: Dict[str, Dict[str, Any]] = {
@@ -671,58 +675,65 @@ def main() -> None:
 
     comparison_results: List[Dict[str, Any]] = []
     single_results: List[Dict[str, Any]] = []
+    # A model that fails is recorded here (reason, errorType, step) and the run continues
+    failures: List[Dict[str, Any]] = []
 
     for target in targets:
         model_key = target["key"]
         model_path = target["path"]
 
-        if not model_path.exists():
-            print(f"⚠️ Model file not found on disk: {model_path}", file=sys.stderr)
-            continue
-
         if not args.json_only:
             print(f"\n▶️ Processing model '{model_key}' ({model_path.name})...", flush=True)
 
-        if args.mode == "both":
-            comp_data = run_model_comparison(
-                model_key=model_key,
-                model_path=model_path,
-                texture_format=args.format,
-                workdir=args.workdir,
-                clean_workdir=(args.workdir is None),
-                verbose=not args.quiet and not args.json_only
+        try:
+            if args.mode == "both":
+                comp_data = run_model_comparison(
+                    model_key=model_key,
+                    model_path=model_path,
+                    texture_format=args.format,
+                    workdir=args.workdir,
+                    clean_workdir=(args.workdir is None),
+                    verbose=not args.quiet and not args.json_only
+                )
+                comparison_results.append(comp_data)
+            else:
+                preserve = (args.mode == "optimized")
+                res_data = run_model_benchmark(
+                    model_key=model_key,
+                    model_path=model_path,
+                    texture_format=args.format,
+                    preserve_textures=preserve,
+                    workdir=args.workdir,
+                    clean_workdir=(args.workdir is None),
+                    verbose=not args.quiet and not args.json_only
+                )
+                single_results.append(res_data)
+        except Exception as e:
+            traceback.print_exc(file=sys.stderr)
+            failure = {"model_key": model_key, "model_path": str(model_path), "mode": args.mode, **describe_failure(e)}
+            failures.append(failure)
+            at_step = f" at step {failure['step']}" if failure["step"] is not None else ""
+            print(
+                f"❌ Model '{model_key}' failed{at_step}: {failure['error']} ({failure['errorType']}); "
+                f"skipped, continuing with the next model",
+                file=sys.stderr, flush=True
             )
-            comparison_results.append(comp_data)
-        else:
-            preserve = (args.mode == "optimized")
-            res_data = run_model_benchmark(
-                model_key=model_key,
-                model_path=model_path,
-                texture_format=args.format,
-                preserve_textures=preserve,
-                workdir=args.workdir,
-                clean_workdir=(args.workdir is None),
-                verbose=not args.quiet and not args.json_only
-            )
-            single_results.append(res_data)
-
-    if not comparison_results and not single_results:
-        print("Error: No models were successfully benchmarked.", file=sys.stderr)
-        sys.exit(1)
 
     # Prepare structured JSON payload
     payload: Dict[str, Any] = {
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "tool": "poc-optimize-3d-model benchmark_runner",
         "benchmark_mode": args.mode,
-        "models_profiled_count": len(comparison_results) if args.mode == "both" else len(single_results)
+        "models_profiled_count": len(comparison_results) if args.mode == "both" else len(single_results),
+        "models_failed_count": len(failures),
+        "failures": failures
     }
 
     if args.mode == "both":
-        payload["results"] = [c["optimized"] for c in comparison_results] if len(comparison_results) > 1 else comparison_results[0]["optimized"]
-        payload["comparisons"] = comparison_results if len(comparison_results) > 1 else comparison_results[0]
+        payload["results"] = [c["optimized"] for c in comparison_results] if len(comparison_results) != 1 else comparison_results[0]["optimized"]
+        payload["comparisons"] = comparison_results if len(comparison_results) != 1 else comparison_results[0]
     else:
-        payload["results"] = single_results if len(single_results) > 1 else single_results[0]
+        payload["results"] = single_results if len(single_results) != 1 else single_results[0]
 
     # Save to disk if requested
     output_path = Path(args.output).resolve() if args.output else None
@@ -747,6 +758,11 @@ def main() -> None:
         print(json.dumps(payload, indent=2))
     else:
         print(json.dumps(payload, indent=2))
+
+    if failures:
+        failed_keys = ", ".join(f["model_key"] for f in failures)
+        print(f"Error: {len(failures)} of {len(targets)} model(s) failed: {failed_keys}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
