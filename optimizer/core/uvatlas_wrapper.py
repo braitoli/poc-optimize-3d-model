@@ -53,7 +53,7 @@ def uvatlas_unwrap(
     vertices: np.ndarray,
     faces: np.ndarray,
     target_res: int = 1024,
-    gutter: float = 2.0,
+    gutter: float = 4.0,
     max_stretch: float = 0.16667,
     parallel_partitions: int = 1,
     fallback_to_xatlas: bool = True
@@ -65,7 +65,7 @@ def uvatlas_unwrap(
         vertices: (N, 3) float array of 3D vertex positions.
         faces: (M, 3) int array of triangle vertex indices.
         target_res: Target texture canvas size (width = height = target_res).
-        gutter: Spacing between UV islands in pixels.
+        gutter: Spacing between UV islands in pixels (minimum 4.0 px enforced).
         max_stretch: Maximum allowed surface stretch parameter [0.0, 1.0].
         parallel_partitions: Partitions for multithreaded processing (>1 enables parallelization).
         fallback_to_xatlas: If True, falls back to xatlas if UVAtlas fails (e.g. non-manifold mesh).
@@ -76,6 +76,7 @@ def uvatlas_unwrap(
         new_uvs: (K, 2) float array of normalized UV coordinates in [0, 1].
         metadata: Dict containing execution time, chart count, stretch, and engine info.
     """
+    eff_gutter = max(4.0, float(gutter))
     v_arr = np.ascontiguousarray(vertices, dtype=np.float32)
     f_arr = np.ascontiguousarray(faces, dtype=np.int64)
     n_verts_orig = len(v_arr)
@@ -101,7 +102,7 @@ def uvatlas_unwrap(
         # Call UVAtlas Iso-charts parameterization
         max_stretch_out, num_charts, num_partitions = o3d_mesh.compute_uvatlas(
             size=int(target_res),
-            gutter=float(gutter),
+            gutter=float(eff_gutter),
             max_stretch=float(max_stretch),
             parallel_partitions=int(parallel_partitions)
         )

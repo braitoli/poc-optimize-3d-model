@@ -489,7 +489,11 @@ def optimize_mesh_texture_for_export(
 
     def make_fast_save(data_bytes: bytes):
         def fast_save(f, format=None, **kwargs):
-            f.write(data_bytes)
+            if isinstance(f, (str, Path)) or hasattr(f, "__fspath__"):
+                with open(f, "wb") as fp:
+                    fp.write(data_bytes)
+            else:
+                f.write(data_bytes)
         return fast_save
 
     if target_fmt in ("JPEG", "JPG"):

@@ -5,7 +5,7 @@ Master 3D Model Optimization Pipeline.
 Strictly adheres to Rule 11 (Zero-Decimation Policy):
 - Preserves 100% geometric triangles (ratio = 1.0).
 - Visibility z-buffer shell orienting (FrontSide CCW).
-- UV Atlas Re-charting / Direct Lanczos + 16px boundary dilation.
+- UV Atlas Re-charting + 16px boundary dilation.
 - Angle-weighted smooth vertex normals across UV seams (spatial hashing).
 - EXT_meshopt_compression: 14-bit position, 16-bit UV, octahedral normals, GPU cache reorder.
 - Basis Universal KTX2 UASTC Level 2 Mipmaps (or WebP).
@@ -29,7 +29,6 @@ from optimizer.core.cleaner import clean_and_repair_mesh, auto_ground_and_center
 from optimizer.core.shell_orient import orient_faces_by_visibility, DEFAULT_VIEWS, DEFAULT_RESOLUTION
 from optimizer.core.uv_baker import (
     rebake_texture_xatlas,
-    direct_resample_texture,
     rechart_and_bake_high_density,
     compute_uv_metrics
 )
@@ -64,9 +63,15 @@ def set_frontside_material(glb_bytes: bytes) -> bytes:
     json_bytes = glb_bytes[20:20 + chunk_len]
     gltf = json.loads(json_bytes.decode("utf-8"))
 
+    modified = False
     if "materials" in gltf:
         for mat in gltf["materials"]:
-            mat["doubleSided"] = False
+            if mat.get("doubleSided") is not False:
+                mat["doubleSided"] = False
+                modified = True
+
+    if not modified:
+        return glb_bytes
 
     new_json_bytes = json.dumps(gltf, separators=(",", ":")).encode("utf-8")
     pad = (4 - (len(new_json_bytes) % 4)) % 4
@@ -133,19 +138,31 @@ def set_doublesided_material(glb_bytes: bytes) -> bytes:
     import struct
     if len(glb_bytes) < 20:
         return glb_bytes
-    magic, version, _ = struct.unpack("<III", glb_bytes[:12])
-    if magic != 0x46546C67:
-        return glb_bytes
-    json_len, json_type = struct.unpack("<II", glb_bytes[12:20])
-    if json_type != 0x4E4F534A:
+
+    magic, ver, length = struct.unpack("<4sII", glb_bytes[:12])
+    if magic != b"glTF":
         return glb_bytes
 
-    gltf = json.loads(glb_bytes[20:20 + json_len].decode("utf-8"))
+    chunk_len, chunk_type = struct.unpack("<I4s", glb_bytes[12:20])
+    if chunk_type != b"JSON":
+        return glb_bytes
+
+    json_bytes = glb_bytes[20:20 + chunk_len]
+    gltf = json.loads(json_bytes.decode("utf-8"))
+
     modified = False
-    for mat in gltf.get("materials", []):
-        if mat.get("doubleSided") is not True:
-            mat["doubleSided"] = True
-            modified = True
+    if "materials" in gltf and gltf["materials"]:
+        for mat in gltf["materials"]:
+            if mat.get("doubleSided") is not True:
+                mat["doubleSided"] = True
+                modified = True
+    else:
+        gltf["materials"] = [{"name": "default_material", "doubleSided": True}]
+        for mesh in gltf.get("meshes", []):
+            for prim in mesh.get("primitives", []):
+                if "material" not in prim:
+                    prim["material"] = 0
+        modified = True
 
     if not modified:
         return glb_bytes
@@ -154,12 +171,51 @@ def set_doublesided_material(glb_bytes: bytes) -> bytes:
     pad = (4 - (len(new_json_bytes) % 4)) % 4
     new_json_bytes += b" " * pad
 
-    bin_chunk = glb_bytes[20 + json_len:]
+    bin_chunk = glb_bytes[20 + chunk_len:]
     new_total_len = 12 + 8 + len(new_json_bytes) + len(bin_chunk)
 
-    header = struct.pack("<III", magic, version, new_total_len)
-    chunk0 = struct.pack("<II", len(new_json_bytes), json_type)
-    return header + chunk0 + new_json_bytes + bin_chunk
+    out = bytearray()
+    out.extend(struct.pack("<4sII", magic, ver, new_total_len))
+    out.extend(struct.pack("<I4s", len(new_json_bytes), b"JSON"))
+    out.extend(new_json_bytes)
+    out.extend(bin_chunk)
+    return bytes(out)
+
+
+def check_glb_double_sided(glb_input: Union[bytes, Path, str]) -> bool:
+    """Checks if any material in a GLB has doubleSided=True."""
+    import struct
+    try:
+        if isinstance(glb_input, (str, Path)):
+            with open(glb_input, "rb") as f:
+                header = f.read(20)
+                if len(header) < 20:
+                    return False
+                magic, ver, length = struct.unpack("<4sII", header[:12])
+                if magic != b"glTF":
+                    return False
+                chunk_len, chunk_type = struct.unpack("<I4s", header[12:20])
+                if chunk_type != b"JSON":
+                    return False
+                json_bytes = f.read(chunk_len)
+        else:
+            if len(glb_input) < 20:
+                return False
+            magic, ver, length = struct.unpack("<4sII", glb_input[:12])
+            if magic != b"glTF":
+                return False
+            chunk_len, chunk_type = struct.unpack("<I4s", glb_input[12:20])
+            if chunk_type != b"JSON":
+                return False
+            json_bytes = glb_input[20:20 + chunk_len]
+
+        gltf = json.loads(json_bytes.decode("utf-8"))
+        for mat in gltf.get("materials", []):
+            if mat.get("doubleSided") is True:
+                return True
+    except Exception:
+        pass
+    return False
 
 
 def format_duration(seconds: float) -> str:
@@ -180,7 +236,6 @@ class ModelOptimizer:
         self,
         resolution: Union[int, str] = "auto",
         texture_format: str = "ktx2",
-        rechart_uv: bool = False,
         smooth_normals: Optional[bool] = None,
         double_sided: bool = False,
         verbose: bool = True,
@@ -189,9 +244,8 @@ class ModelOptimizer:
     ):
         self.resolution = resolution
         self.texture_format = texture_format.lower()
-        self.rechart_uv = rechart_uv
         if smooth_normals is None:
-            self.smooth_normals = rechart_uv
+            self.smooth_normals = True
         else:
             self.smooth_normals = smooth_normals
         self.double_sided = double_sided
@@ -220,7 +274,7 @@ class ModelOptimizer:
         res_display = f"{self.resolution}x{self.resolution}" if isinstance(self.resolution, int) else f"{self.resolution.upper()} (Adaptive)"
         self.log(f"   Resolution: {res_display}")
         self.log(f"   Texture format: {self.texture_format.upper()}")
-        self.log(f"   UV Re-charting: {'ENABLED (xatlas)' if self.rechart_uv else 'DIRECT MASTER UV'}")
+        self.log("   UV Re-charting: ENABLED (xatlas)")
         self.log(f"   Rule 11 Compliance: STRICT ZERO-DECIMATION (100% faces preserved)")
         self.log("=" * 65)
 
@@ -275,6 +329,13 @@ class ModelOptimizer:
             initial_verts = len(raw_mesh.vertices)
             self.log(f"   Raw mesh: {initial_faces:,} faces, {initial_verts:,} vertices")
 
+            # Auto-detect doubleSided from input materials (or CLI flag)
+            detected_double_sided = check_glb_double_sided(input_path)
+            if detected_double_sided or self.double_sided:
+                if not self.double_sided and detected_double_sided:
+                    self.log("   ℹ️ Auto-detected doubleSided=True from input materials (preserving thin shells & armor)")
+                self.double_sided = True
+
             if self.export_steps_dir:
                 self.export_steps_dir.mkdir(parents=True, exist_ok=True)
                 s0_path = self.export_steps_dir / "step0_raw.glb"
@@ -309,6 +370,8 @@ class ModelOptimizer:
 
             if self.export_steps_dir:
                 s1_bytes = trimesh.exchange.gltf.export_glb(trimesh.Scene({"Model": grounded_mesh}), include_normals=True)
+                if self.double_sided:
+                    s1_bytes = set_doublesided_material(s1_bytes)
                 s1_path = self.export_steps_dir / "step1_clean_ground.glb"
                 s1_path.write_bytes(s1_bytes)
                 s1_bbox = [round(float(x), 3) for x in (grounded_mesh.bounds[1] - grounded_mesh.bounds[0]).tolist()] if hasattr(grounded_mesh, 'bounds') and grounded_mesh.bounds is not None else s0_bbox
@@ -343,11 +406,13 @@ class ModelOptimizer:
                 stats=orient_stats
             )
             grounded_mesh.faces = oriented_faces
-            preserve_mesh_textures(grounded_mesh, orig_tex_info)
             self.log(f"   Flipped {orient_stats.get('faces_flipped', 0):,} faces to outward CCW FrontSide")
+            preserve_mesh_textures(grounded_mesh, orig_tex_info)
 
             if self.export_steps_dir:
                 s2_bytes = trimesh.exchange.gltf.export_glb(trimesh.Scene({"Model": grounded_mesh}), include_normals=True)
+                if self.double_sided:
+                    s2_bytes = set_doublesided_material(s2_bytes)
                 s2_path = self.export_steps_dir / "step2_shell_orient.glb"
                 s2_path.write_bytes(s2_bytes)
                 emit_step({
@@ -417,52 +482,24 @@ class ModelOptimizer:
             self.log(f"▶️ [Phase 3/5] Texture Processing ({target_res}x{target_res} + 16px Dilation)...")
 
             uv_stats = {}
-            if self.rechart_uv:
-                self.log(f"   Re-charting UV islands with xatlas (High-Density Packing, {target_res}x{target_res})...")
-                baked_mesh, dilated_pil = rechart_and_bake_high_density(
-                    grounded_mesh,
-                    target_res=target_res,
-                    source_image=raw_tex_img,
-                    source_uv=raw_uv,
-                    dilation_padding=16,
-                    double_sided=False,
-                    stats=uv_stats
-                )
-                self.log(f"   ✓ High-Density UV: {uv_stats.get('uv_coverage_ratio_percent', 0)}% coverage | Texel Density: {uv_stats.get('texel_density_linear', 0)} px/unit")
-            else:
-                orig_max_dim = max(raw_tex_img.size)
-                is_auto_res = (self.resolution == "auto" or not isinstance(self.resolution, int))
-                user_requested_downscale = (not is_auto_res and isinstance(self.resolution, int) and self.resolution < orig_max_dim)
+            self.log(f"   Re-charting UV islands with xatlas (High-Density Packing, {target_res}x{target_res})...")
+            baked_mesh, dilated_pil = rechart_and_bake_high_density(
+                grounded_mesh,
+                target_res=target_res,
+                source_image=raw_tex_img,
+                source_uv=raw_uv,
+                dilation_padding=16,
+                double_sided=self.double_sided,
+                stats=uv_stats
+            )
+            self.log(f"   ✓ High-Density UV: {uv_stats.get('uv_coverage_ratio_percent', 0)}% coverage | Texel Density: {uv_stats.get('texel_density_linear', 0)} px/unit")
 
-                if not user_requested_downscale:
-                    target_res = orig_max_dim
-                    self.resolution = target_res
-                    self.log(f"   Direct Master UV mode: True Zero-Loss Bitstream Pass-through ({target_res}x{target_res})...")
-                    baked_mesh, dilated_pil = direct_resample_texture(
-                        grounded_mesh,
-                        source_image=raw_tex_img,
-                        target_res=target_res,
-                        dilation_padding=0,
-                        preserve_bitstream=True
-                    )
-                    preserve_mesh_textures(baked_mesh, orig_tex_info)
-                else:
-                    self.log(f"   Direct Master UV mode: Gamma-Correct Linear Resampling ({target_res}x{target_res})...")
-                    baked_mesh, dilated_pil = direct_resample_texture(
-                        grounded_mesh,
-                        source_image=raw_tex_img,
-                        target_res=target_res,
-                        dilation_padding=16,
-                        preserve_bitstream=False
-                    )
-
-            # Ensure doubleSided=True so browser viewer does not backface-cull triangles
+            # Configure material doubleSided
             if hasattr(baked_mesh, "visual") and hasattr(baked_mesh.visual, "material") and baked_mesh.visual.material is not None:
-                baked_mesh.visual.material.doubleSided = True
+                baked_mesh.visual.material.doubleSided = self.double_sided
 
-            # Optimize texture before export (True Zero-Loss: preserve original bitstream if not downscaled)
-            pref_fmt = "ORIGINAL" if (not self.rechart_uv and not user_requested_downscale) else None
-            opt_pil = optimize_mesh_texture_for_export(baked_mesh, orig_tex_info=orig_tex_info, preferred_format=pref_fmt, jpeg_quality=99)
+            # Optimize texture before export (PNG Lossless, same as step_pipeline re-chart path)
+            opt_pil = optimize_mesh_texture_for_export(baked_mesh, orig_tex_info=orig_tex_info, preferred_format="PNG", jpeg_quality=99)
             if opt_pil is not None:
                 dilated_pil = opt_pil
 
@@ -470,7 +507,10 @@ class ModelOptimizer:
             s3_bytes = None
             if self.export_steps_dir:
                 s3_bytes = trimesh.exchange.gltf.export_glb(trimesh.Scene({"Model": baked_mesh}), include_normals=True)
-                s3_bytes = set_doublesided_material(s3_bytes)
+                if self.double_sided:
+                    s3_bytes = set_doublesided_material(s3_bytes)
+                else:
+                    s3_bytes = set_frontside_material(s3_bytes)
                 s3_path = self.export_steps_dir / "step3_uv_bake.glb"
                 s3_path.write_bytes(s3_bytes)
                 s3_bbox = [round(float(x), 3) for x in (baked_mesh.bounds[1] - baked_mesh.bounds[0]).tolist()] if hasattr(baked_mesh, 'bounds') and baked_mesh.bounds is not None else s1_bbox
@@ -478,7 +518,7 @@ class ModelOptimizer:
                     "step": 3,
                     "name": "UV & Texture Bake",
                     "status": "completed",
-                    "description": f"Master UV texture resampled to {target_res}x{target_res} with 16px boundary dilation",
+                    "description": f"xatlas re-charted texture baked at {target_res}x{target_res} with 16px boundary dilation",
                     "fileSize": len(s3_bytes),
                     "fileSizeFormatted": format_file_size(len(s3_bytes)),
                     "faces": len(baked_mesh.faces),
@@ -519,6 +559,10 @@ class ModelOptimizer:
             scene = trimesh.Scene({"Model": baked_mesh})
             if s3_bytes is None:
                 s3_bytes = trimesh.exchange.gltf.export_glb(scene, include_normals=True)
+                if self.double_sided:
+                    s3_bytes = set_doublesided_material(s3_bytes)
+                else:
+                    s3_bytes = set_frontside_material(s3_bytes)
             intermediate_glb.write_bytes(s3_bytes)
 
             if self.export_steps_dir:
@@ -579,7 +623,7 @@ class ModelOptimizer:
             elif self.texture_format == "webp":
                 node_cmd.extend(["--webp", "--webp-quality", "85"])
             else:
-                ktx2_rdo = "0.0" if not self.rechart_uv else "1.0"
+                ktx2_rdo = "1.0"
                 node_cmd.extend(["--ktx2", "--ktx2-mode", "uastc", "--ktx2-level", "2", "--ktx2-rdo", ktx2_rdo])
 
             if not self.double_sided:
@@ -603,6 +647,9 @@ class ModelOptimizer:
                         pass
 
             if self.export_steps_dir and s5_path and s5_path.exists():
+                if self.double_sided:
+                    s5_bytes = set_doublesided_material(s5_path.read_bytes())
+                    s5_path.write_bytes(s5_bytes)
                 s5_size = s5_path.stat().st_size
                 emit_step({
                     "step": 5,
@@ -629,7 +676,9 @@ class ModelOptimizer:
             # 6. Embed glTF extras & configure material (Final Step)
             t_s6 = time.perf_counter()
             final_bytes = intermediate_opt_glb.read_bytes()
-            if not self.double_sided:
+            if self.double_sided:
+                final_bytes = set_doublesided_material(final_bytes)
+            else:
                 final_bytes = set_frontside_material(final_bytes)
 
             extras_payload = {

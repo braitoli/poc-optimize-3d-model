@@ -35,7 +35,6 @@ from optimizer.core.shell_orient import orient_faces_by_visibility, DEFAULT_VIEW
 from optimizer.core.uv_baker import (
     rebake_texture_xatlas,
     rebake_texture_uvatlas,
-    direct_resample_texture,
     rechart_and_bake_high_density,
     compute_uv_metrics,
     can_downscale_texture,
@@ -52,7 +51,7 @@ from optimizer.core.texture_utils import (
     clamp_target_resolution,
     optimize_mesh_texture_for_export
 )
-from optimizer.pipeline import set_frontside_material, set_doublesided_material
+from optimizer.pipeline import set_frontside_material, set_doublesided_material, check_glb_double_sided
 
 MODULE_ROOT = Path(__file__).resolve().parent
 INSPECT_SCRIPT = MODULE_ROOT / "inspect_metrics.mjs"
@@ -111,8 +110,7 @@ class StepPipeline:
         self,
         resolution: Union[int, str] = "auto",
         texture_format: str = "ktx2",
-        rechart_uv: bool = False,
-        uv_mode: Optional[str] = None,
+        uv_mode: str = "xatlas",
         smooth_normals: Optional[bool] = None,
         double_sided: bool = False,
         preserve_textures: bool = True,
@@ -121,19 +119,12 @@ class StepPipeline:
     ):
         self.resolution = resolution
         self.texture_format = texture_format.lower()
-        if uv_mode is not None:
-            self.uv_mode = uv_mode.lower()
-            self.rechart_uv = (self.uv_mode != "direct")
-        elif rechart_uv:
-            self.uv_mode = "xatlas"
-            self.rechart_uv = True
-        else:
-            self.uv_mode = "direct"
-            self.rechart_uv = False
+        self.uv_mode = uv_mode.lower()
+        if self.uv_mode not in ("xatlas", "uvatlas"):
+            raise ValueError(f"Unsupported uv_mode '{uv_mode}' (expected 'xatlas' or 'uvatlas')")
 
         if smooth_normals is None:
-            # Direct Master UV mode: preserve artist's custom vertex normals by default
-            self.smooth_normals = (self.uv_mode != "direct")
+            self.smooth_normals = True
         else:
             self.smooth_normals = smooth_normals
 
@@ -285,6 +276,11 @@ class StepPipeline:
         orig_tex_info = extract_original_texture_info(step0_file, metrics=m0)
         self.log(f"   ✓ Step 0 complete ({m0['durationFormatted']}): {initial_faces:,} faces, {initial_verts:,} verts, {m0['fileSizeFormatted']} (texture: {orig_tex_info.get('default_format')})")
 
+        # Auto-detect doubleSided from input materials (or CLI flag)
+        if check_glb_double_sided(input_path) and not self.double_sided:
+            self.log("   ℹ️ Auto-detected doubleSided=True from input materials (preserving thin shells & armor)")
+            self.double_sided = True
+
         # =====================================================================
         # STEP 1: Cleaner & Auto Grounding (Y=0, X/Z Centered)
         # =====================================================================
@@ -344,120 +340,52 @@ class StepPipeline:
 
         orig_max_dim = max(raw_tex_img.size)
         initial_res = orig_max_dim
-        is_auto_res = (self.resolution == "auto" or not isinstance(self.resolution, int))
-        user_requested_downscale = (not is_auto_res and isinstance(self.resolution, int) and self.resolution < orig_max_dim)
 
         uv_stats: Dict[str, Any] = {}
-        if self.uv_mode in ("xatlas", "uvatlas") or self.rechart_uv:
-            # 1. 1:1 Capacity Check for UV Repacking:
-            # Finds smallest canvas S in {1024, 2048, 4096} preserving 1:1 texel scale
-            repack_res, repack_info = select_repack_canvas_resolution(
+        # 1. 1:1 Capacity Check for UV Repacking:
+        # Finds smallest canvas S in {1024, 2048, 4096} preserving 1:1 texel scale
+        repack_res, repack_info = select_repack_canvas_resolution(
+            grounded_mesh,
+            source_image=raw_tex_img,
+            source_uv=raw_uv,
+            requested_res=self.resolution
+        )
+        initial_res = repack_res
+        self.log(
+            f"▶️ [Step 3/6] Baking Texture ({self.uv_mode.upper()} Canvas {initial_res}x{initial_res})... "
+            f"orig_island_pixels={repack_info['orig_island_pixels']:,.0f} ({repack_info['coverage_ratio']:.1%} coverage) "
+            f"[{repack_info['capacity_reason']}]"
+        )
+
+        if self.uv_mode == "uvatlas":
+            baked_mesh, dilated_pil, uv_stats = rechart_and_bake_high_density(
                 grounded_mesh,
+                target_res=initial_res,
                 source_image=raw_tex_img,
                 source_uv=raw_uv,
-                requested_res=self.resolution
+                dilation_padding=16,
+                double_sided=self.double_sided,
+                stats=uv_stats,
+                return_stats=True,
+                unwrap_method="uvatlas"
             )
-            initial_res = repack_res
-            self.log(
-                f"▶️ [Step 3/6] Baking Texture ({self.uv_mode.upper()} Canvas {initial_res}x{initial_res})... "
-                f"orig_island_pixels={repack_info['orig_island_pixels']:,.0f} ({repack_info['coverage_ratio']:.1%} coverage) "
-                f"[{repack_info['capacity_reason']}]"
-            )
-
-            if self.uv_mode == "uvatlas":
-                baked_mesh, dilated_pil, uv_stats = rechart_and_bake_high_density(
-                    grounded_mesh,
-                    target_res=initial_res,
-                    source_image=raw_tex_img,
-                    source_uv=raw_uv,
-                    dilation_padding=16,
-                    double_sided=self.double_sided,
-                    stats=uv_stats,
-                    return_stats=True,
-                    unwrap_method="uvatlas"
-                )
-            else:
-                baked_mesh, dilated_pil, uv_stats = rechart_and_bake_high_density(
-                    grounded_mesh,
-                    target_res=initial_res,
-                    source_image=raw_tex_img,
-                    source_uv=raw_uv,
-                    dilation_padding=16,
-                    double_sided=self.double_sided,
-                    stats=uv_stats,
-                    return_stats=True,
-                    unwrap_method="xatlas"
-                )
-            final_res = uv_stats.get("final_resolution", dilated_pil.size[0])
-            self.resolution = final_res
-            pref_fmt = "PNG"  # PNG Lossless export for Step 3
-            uv_stats["origIslandPixels"] = repack_info["orig_island_pixels"]
-            uv_stats["capacityReason"] = repack_info["capacity_reason"]
         else:
-            # DIRECT MASTER UV:
-            # Keep 100% original texture without implicit downscaling
-            if not user_requested_downscale:
-                # TRUE ZERO-LOSS DIRECT MASTER UV:
-                # 100% Bit-for-Bit Lossless (0 decode, 0 re-encode, 0 implicit downscale, exact bitstream pass-through)
-                target_res = orig_max_dim
-                self.resolution = target_res
-                self.log(
-                    f"▶️ [Step 3/6] Direct Master UV (True Zero-Loss Pass-through): {raw_tex_img.size[0]}x{raw_tex_img.size[1]} | "
-                    f"100% Bit-for-Bit Lossless Bitstream & UVs Preserved (Zero Implicit Downscale)..."
-                )
-                baked_mesh, dilated_pil = direct_resample_texture(
-                    grounded_mesh,
-                    source_image=raw_tex_img,
-                    target_res=target_res,
-                    dilation_padding=0,
-                    double_sided=self.double_sided,
-                    preserve_bitstream=True
-                )
-                if self.preserve_textures:
-                    preserve_mesh_textures(baked_mesh, orig_tex_info)
-
-                final_res = target_res
-                pref_fmt = "ORIGINAL"
-                uv_stats = {
-                    "downscaled": False,
-                    "originalResolution": f"{orig_max_dim}x{orig_max_dim}",
-                    "finalResolution": f"{orig_max_dim}x{orig_max_dim}",
-                    "bitstreamPassthrough": True,
-                    "uvPreserved100Percent": True,
-                    "uvCoverageRatio": 1.0,
-                    "texelDensityOrig": 0.0,
-                    "texelDensityFinal": 0.0,
-                    "texelDensityDelta": 0.0
-                }
-            else:
-                # User explicitly requested a downscaled resolution:
-                # Gamma-Corrected Linear Resampling + PNG Lossless
-                target_res = self.resolution
-                self.log(
-                    f"▶️ [Step 3/6] Direct Master UV (Gamma-Correct Linear Resampling): {raw_tex_img.size[0]}x{raw_tex_img.size[1]} -> "
-                    f"{target_res}x{target_res} (Specular Highlights Preserved, PNG Lossless)..."
-                )
-                baked_mesh, dilated_pil = direct_resample_texture(
-                    grounded_mesh,
-                    source_image=raw_tex_img,
-                    target_res=target_res,
-                    dilation_padding=16,
-                    double_sided=self.double_sided,
-                    preserve_bitstream=False
-                )
-                final_res = dilated_pil.size[0]
-                pref_fmt = "PNG"  # PNG Lossless export
-                uv_stats = {
-                    "downscaled": True,
-                    "originalResolution": f"{orig_max_dim}x{orig_max_dim}",
-                    "finalResolution": f"{target_res}x{target_res}",
-                    "bitstreamPassthrough": False,
-                    "uvPreserved100Percent": True,
-                    "uvCoverageRatio": 1.0,
-                    "texelDensityOrig": 0.0,
-                    "texelDensityFinal": 0.0,
-                    "texelDensityDelta": 0.0
-                }
+            baked_mesh, dilated_pil, uv_stats = rechart_and_bake_high_density(
+                grounded_mesh,
+                target_res=initial_res,
+                source_image=raw_tex_img,
+                source_uv=raw_uv,
+                dilation_padding=16,
+                double_sided=self.double_sided,
+                stats=uv_stats,
+                return_stats=True,
+                unwrap_method="xatlas"
+            )
+        final_res = uv_stats.get("final_resolution", dilated_pil.size[0])
+        self.resolution = final_res
+        pref_fmt = "PNG"  # PNG Lossless export for Step 3
+        uv_stats["origIslandPixels"] = repack_info["orig_island_pixels"]
+        uv_stats["capacityReason"] = repack_info["capacity_reason"]
 
         # FrontSide rendering (doubleSided=False by default)
         if hasattr(baked_mesh, "visual") and hasattr(baked_mesh.visual, "material") and baked_mesh.visual.material is not None:
@@ -494,7 +422,6 @@ class StepPipeline:
             "texelDensityOrig": uv_stats.get("texelDensityOrig", 0.0),
             "texelDensityFinal": uv_stats.get("texelDensityFinal", 0.0),
             "texelDensityDelta": uv_stats.get("texelDensityDelta", 0.0),
-            "uvPreserved100Percent": (self.uv_mode == "direct"),
             "doubleSided": self.double_sided,
             "uvMetrics": uv_stats
         }
@@ -590,7 +517,7 @@ class StepPipeline:
                 node_cmd_step6.extend(["--webp", "--webp-quality", "85"])
             else:
                 cpu_threads = str(os.cpu_count() or 4)
-                ktx2_rdo = "0.0" if self.uv_mode == "direct" else "1.0"
+                ktx2_rdo = "1.0"
                 ktx2_level = "2"
                 node_cmd_step6.extend([
                     "--ktx2",
@@ -723,14 +650,13 @@ def main():
     parser.add_argument("input", help="Path to raw source .glb model")
     parser.add_argument("--output-dir", "-o", required=True, help="Destination directory for 7 GLB step files and metrics.json")
     parser.add_argument("--resolution", "-r", default="auto", type=parse_resolution_arg, help="Target texture dimension ('auto', 512, 1024, 2048; strictly capped at original texture size, never upscaled)")
-    parser.add_argument("--format", "-f", choices=["ktx2", "webp", "original", "passthrough"], default="ktx2", help="GPU texture compression format ('original' for 100% bit-for-bit lossless pass-through)")
+    parser.add_argument("--format", "-f", choices=["ktx2", "webp", "original", "passthrough"], default="ktx2", help="GPU texture compression format ('original' for 100%% bit-for-bit lossless pass-through)")
     parser.add_argument(
         "--uv-mode",
-        choices=["direct", "xatlas", "uvatlas"],
-        default=None,
-        help="UV unwrapping and layout mode: 'direct' (preserve master UV), 'xatlas' (re-chart with xatlas), 'uvatlas' (Microsoft UVAtlas isochart unwrap)"
+        choices=["xatlas", "uvatlas"],
+        default="xatlas",
+        help="UV unwrapping and layout mode: 'xatlas' (re-chart with xatlas), 'uvatlas' (Microsoft UVAtlas isochart unwrap)"
     )
-    parser.add_argument("--rechart-uv", action="store_true", help="Re-chart UVs using xatlas (backward compatibility alias for --uv-mode xatlas; default: direct master UV)")
     parser.add_argument("--smooth-normals", dest="smooth_normals", action="store_true", default=None, help="Force angle-weighted normal smoothing across seams")
     parser.add_argument("--no-smooth-normals", dest="smooth_normals", action="store_false", default=None, help="Disable angle-weighted normal smoothing across seams")
     parser.add_argument("--double-sided", action="store_true", help="Keep double-sided materials instead of forcing single-sided FrontSide")
@@ -739,15 +665,10 @@ def main():
 
     args = parser.parse_args()
 
-    uv_mode = args.uv_mode
-    if uv_mode is None:
-        uv_mode = "xatlas" if args.rechart_uv else "direct"
-
     pipeline = StepPipeline(
         resolution=args.resolution,
         texture_format=args.format,
-        rechart_uv=args.rechart_uv,
-        uv_mode=uv_mode,
+        uv_mode=args.uv_mode,
         smooth_normals=args.smooth_normals,
         double_sided=args.double_sided,
         preserve_textures=not args.no_preserve_textures,

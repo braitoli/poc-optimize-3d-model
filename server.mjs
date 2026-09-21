@@ -80,10 +80,50 @@ function scanModels() {
   return models;
 }
 
+function detectGlbDoubleSided(filePath) {
+  let fd = null;
+  try {
+    if (!fs.existsSync(filePath)) return false;
+    fd = fs.openSync(filePath, 'r');
+    const header = Buffer.alloc(20);
+    const readBytes = fs.readSync(fd, header, 0, 20, 0);
+    if (readBytes < 20) return false;
+
+    const magic = header.readUInt32LE(0);
+    const chunkLength = header.readUInt32LE(12);
+    const chunkType = header.readUInt32LE(16);
+
+    // GLB magic: 0x46546C67 ('glTF'), Chunk 0 type: 0x4E4F534A ('JSON')
+    if (magic === 0x46546C67 && chunkType === 0x4E4F534A && chunkLength > 0) {
+      const bytesToRead = Math.min(chunkLength, 32 * 1024 * 1024);
+      const jsonBuffer = Buffer.alloc(bytesToRead);
+      fs.readSync(fd, jsonBuffer, 0, bytesToRead, 20);
+
+      const jsonStr = jsonBuffer.toString('utf-8');
+      try {
+        const gltf = JSON.parse(jsonStr);
+        if (Array.isArray(gltf.materials)) {
+          return gltf.materials.some(mat => mat && mat.doubleSided === true);
+        }
+      } catch (_) {
+        return /"doubleSided"\s*:\s*true/.test(jsonStr);
+      }
+    }
+    return false;
+  } catch (err) {
+    console.warn(`[detectGlbDoubleSided] Note: Unable to inspect ${filePath}:`, err.message);
+    return false;
+  } finally {
+    if (fd !== null) {
+      try { fs.closeSync(fd); } catch (_) {}
+    }
+  }
+}
+
 // Allowed Optimization Parameters
 const ALLOWED_RESOLUTIONS = ['auto', 256, 512, 1024, 2048, 4096];
 const ALLOWED_FORMATS = ['ktx2', 'webp', 'png', 'jpeg', 'jpg', 'original', 'passthrough'];
-const ALLOWED_UV_MODES = ['direct', 'rechart', 'xatlas', 'uvatlas'];
+const ALLOWED_UV_MODES = ['rechart', 'xatlas', 'uvatlas'];
 
 function sanitizeOptimizationOptions({ resolution, format, uvMode } = {}) {
   let res;
@@ -110,9 +150,9 @@ function sanitizeOptimizationOptions({ resolution, format, uvMode } = {}) {
     fmt = 'ktx2';
   }
 
-  let uv = String(uvMode || 'direct').toLowerCase().trim();
+  const uv = uvMode ? String(uvMode).toLowerCase().trim() : 'rechart';
   if (!ALLOWED_UV_MODES.includes(uv)) {
-    uv = 'direct';
+    throw new Error(`Unsupported uvMode '${uvMode}' (allowed: ${ALLOWED_UV_MODES.join(', ')})`);
   }
 
   return { resolution: res, format: fmt, uvMode: uv };
@@ -220,17 +260,22 @@ function emitJobEvent(job, eventName, data) {
   }
 }
 
-function startPipelineJob({ jobId, rawGlbPath, workspaceDir, resolution = 'auto', format = 'ktx2', uvMode = 'direct' }) {
+function startPipelineJob({ jobId, rawGlbPath, workspaceDir, resolution = 'auto', format = 'ktx2', uvMode = 'rechart' }) {
   const sanitized = sanitizeOptimizationOptions({ resolution, format, uvMode });
   const finalResolution = sanitized.resolution;
   const finalFormat = sanitized.format;
   const finalUvMode = sanitized.uvMode;
 
+  const isDoubleSided = detectGlbDoubleSided(rawGlbPath);
+  if (isDoubleSided) {
+    console.log(`[Job ${jobId}] Auto-detected doubleSided: true in input model: enabling --double-sided flag`);
+  }
+
   const job = {
     id: jobId,
     workspaceDir,
     status: 'started',
-    config: { resolution: finalResolution, format: finalFormat, uvMode: finalUvMode },
+    config: { resolution: finalResolution, format: finalFormat, uvMode: finalUvMode, doubleSided: isDoubleSided },
     startTime: Date.now(),
     totalSteps: 7,
     currentStep: 0,
@@ -268,23 +313,11 @@ function startPipelineJob({ jobId, rawGlbPath, workspaceDir, resolution = 'auto'
       '--format', finalFormat
     ];
 
-    const stepPipelinePath = path.join(__dirname, 'optimizer', 'step_pipeline.py');
-    const stepPipelineSrc = fs.existsSync(stepPipelinePath) ? fs.readFileSync(stepPipelinePath, 'utf-8') : '';
-    const supportsUvModeFlag = stepPipelineSrc.includes('--uv-mode');
-
-    if (finalUvMode === 'uvatlas') {
-      args.push('--uv-mode', 'uvatlas');
-    } else if (finalUvMode === 'rechart' || finalUvMode === 'xatlas') {
-      if (supportsUvModeFlag) {
-        args.push('--uv-mode', 'xatlas');
-      } else {
-        args.push('--rechart-uv');
-      }
-    } else if (finalUvMode === 'direct') {
-      if (supportsUvModeFlag) {
-        args.push('--uv-mode', 'direct');
-      }
+    if (isDoubleSided) {
+      args.push('--double-sided');
     }
+
+    args.push('--uv-mode', finalUvMode === 'uvatlas' ? 'uvatlas' : 'xatlas');
   } else {
     args = [
       '-m', 'optimizer.cli',
@@ -295,10 +328,11 @@ function startPipelineJob({ jobId, rawGlbPath, workspaceDir, resolution = 'auto'
       '--export-steps', workspaceDir,
       '--step-events'
     ];
+    if (isDoubleSided) {
+      args.push('--double-sided');
+    }
     if (finalUvMode === 'uvatlas') {
       args.push('--uv-mode', 'uvatlas');
-    } else if (finalUvMode === 'rechart' || finalUvMode === 'xatlas') {
-      args.push('--rechart');
     }
   }
 
@@ -494,11 +528,20 @@ const server = http.createServer(async (req, res) => {
         const rawRes = formData.get('resolution');
         const rawFmt = formData.get('format');
         const rawUv = formData.get('uvMode');
-        const { resolution, format, uvMode } = sanitizeOptimizationOptions({
-          resolution: rawRes,
-          format: rawFmt,
-          uvMode: rawUv
-        });
+        let options;
+        try {
+          options = sanitizeOptimizationOptions({
+            resolution: rawRes,
+            format: rawFmt,
+            uvMode: rawUv
+          });
+        } catch (optErr) {
+          fs.rmSync(wsDir, { recursive: true, force: true });
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: optErr.message }));
+          return;
+        }
+        const { resolution, format, uvMode } = options;
 
         console.log(`[API /api/upload] Form upload request: res=${resolution} (raw: ${rawRes}), format=${format}, uvMode=${uvMode}`);
 
@@ -799,7 +842,16 @@ const server = http.createServer(async (req, res) => {
 
         console.log(`[API /api/optimize] Single-shot request: input=${inputPath}, res=${sanitized.resolution}, format=${sanitized.format}`);
 
-        const cmd = `"${path.join(__dirname, 'bin', 'optimize-3d')}" "${inputPath}" "${outputPath}" -r ${sanitized.resolution} -f ${sanitized.format} --json`;
+        const isDoubleSided = detectGlbDoubleSided(inputPath);
+        if (isDoubleSided) {
+          console.log(`[API /api/optimize] Auto-detected doubleSided: true in input model: enabling --double-sided`);
+        }
+
+        let cmd = `"${path.join(__dirname, 'bin', 'optimize-3d')}" "${inputPath}" "${outputPath}" -r ${sanitized.resolution} -f ${sanitized.format}`;
+        if (isDoubleSided) {
+          cmd += ' --double-sided';
+        }
+        cmd += ' --json';
 
         exec(cmd, { cwd: __dirname }, (error, stdout, stderr) => {
           if (error) {

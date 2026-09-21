@@ -7,6 +7,7 @@ Unit and integration tests for:
 """
 
 import json
+import struct
 import subprocess
 import tempfile
 import unittest
@@ -17,6 +18,7 @@ INSPECT_SCRIPT = REPO_ROOT / "optimizer" / "inspect_metrics.mjs"
 SAMPLE_DINOKI = REPO_ROOT / "examples" / "sample_dinoki.glb"
 
 from optimizer.step_pipeline import StepPipeline, inspect_glb_metrics
+from optimizer.pipeline import set_doublesided_material
 
 
 class TestMetricsEngine(unittest.TestCase):
@@ -88,7 +90,6 @@ class TestStepPipeline(unittest.TestCase):
             pipeline = StepPipeline(
                 resolution=512,
                 texture_format="ktx2",
-                rechart_uv=False,
                 smooth_normals=True,
                 double_sided=False,
                 verbose=False,
@@ -150,7 +151,6 @@ class TestStepPipeline(unittest.TestCase):
             pipeline = StepPipeline(
                 resolution="auto",
                 texture_format="webp",
-                rechart_uv=False,
                 smooth_normals=True,
                 double_sided=False,
                 verbose=False,
@@ -167,12 +167,12 @@ class TestStepPipeline(unittest.TestCase):
 
             self.assertEqual(len(metrics_data["steps"]), 7)
 
-            # Step 3 must preserve 100% original texture in direct mode (zero implicit downscale)
+            # Step 3 must re-chart with xatlas on the 1:1 capacity canvas (1536 source -> 1024 max POT, NO-UPSCALE)
             step3 = metrics_data["steps"][3]
-            self.assertIn("1536x1536", step3["metrics"]["textureResolution"])
+            self.assertEqual(step3["metrics"]["uvMode"], "xatlas")
+            self.assertIn("1024x1024", step3["metrics"]["textureResolution"])
             self.assertEqual(step3["metrics"]["faces"], 45000)
-            self.assertFalse(step3["metrics"]["downscaled"])
-            self.assertTrue(step3["metrics"].get("uvPreserved100Percent", False))
+            self.assertGreater(step3["metrics"]["uvCoverageRatio"], 0.0)
             self.assertFalse(step3["metrics"]["materials"][0]["doubleSided"])
 
             # Final step must preserve 100% faces
@@ -186,7 +186,6 @@ class TestStepPipeline(unittest.TestCase):
             pipeline = StepPipeline(
                 resolution=1024,
                 texture_format="webp",
-                rechart_uv=True,
                 smooth_normals=True,
                 double_sided=False,
                 verbose=False,
@@ -214,6 +213,47 @@ class TestStepPipeline(unittest.TestCase):
 
             # Final step must preserve 100% faces
             self.assertEqual(metrics_data["steps"][6]["metrics"]["faces"], 45000)
+
+    def test_auto_detect_double_sided_input(self):
+        """Verify a doubleSided=true source keeps doubleSided on Step 3 and Step 6 without --double-sided."""
+        with tempfile.TemporaryDirectory(prefix="test_double_sided_pipeline_") as tmpdir:
+            tmp = Path(tmpdir)
+            ds_input = tmp / "sample_dinoki_double_sided.glb"
+            ds_input.write_bytes(set_doublesided_material(SAMPLE_DINOKI.read_bytes()))
+            out_dir = tmp / "out"
+
+            pipeline = StepPipeline(
+                resolution=512,
+                texture_format="ktx2",
+                smooth_normals=True,
+                double_sided=False,
+                verbose=False,
+                stream_events=False
+            )
+
+            result = pipeline.run(ds_input, out_dir)
+            self.assertTrue(result["success"])
+
+            for step_file in ("step_03_texture_baked.glb", "step_06_final.glb"):
+                materials = _read_glb_json(out_dir / step_file).get("materials", [])
+                self.assertTrue(len(materials) > 0, f"No materials in {step_file}")
+                for mat in materials:
+                    self.assertIs(mat.get("doubleSided"), True, f"{step_file} material must keep doubleSided=True")
+
+            # 100% triangles preserved across all steps
+            metrics_data = json.loads((out_dir / "metrics.json").read_text())
+            self.assertEqual(len(metrics_data["steps"]), 7)
+            initial_faces = metrics_data["steps"][0]["metrics"]["faces"]
+            for step_info in metrics_data["steps"]:
+                self.assertEqual(step_info["metrics"]["faces"], initial_faces, f"Face count changed at {step_info['file']}")
+
+
+def _read_glb_json(glb_path: Path) -> dict:
+    """Parses the JSON chunk of a GLB file."""
+    data = glb_path.read_bytes()
+    chunk_len, chunk_type = struct.unpack("<I4s", data[12:20])
+    assert chunk_type == b"JSON", f"First chunk of {glb_path.name} is not JSON"
+    return json.loads(data[20:20 + chunk_len].decode("utf-8"))
 
 
 if __name__ == "__main__":

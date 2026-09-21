@@ -169,13 +169,14 @@ def ensure_manifold_zero_decimation(
 def unwrap_mesh_uvatlas_open3d(
     mesh: trimesh.Trimesh,
     target_res: int = 1024,
-    gutter: float = 2.0,
+    gutter: float = 4.0,
     max_stretch: float = 0.1667,
     parallel_partitions: Optional[int] = None
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, Dict[str, Any]]:
     """
     Executes Microsoft UVAtlas unwrap using Open3D's C++ tensor pipeline.
     Preserves 100% faces and ensures all UV coordinates are strictly inside [0, 1].
+    Enforces gutter >= 4.0 to guarantee adequate chart margin and prevent seam cracks.
 
     Returns:
         vertices_unwrapped: (N, 3) 3D vertex positions
@@ -191,6 +192,9 @@ def unwrap_mesh_uvatlas_open3d(
 
     t_start = time.perf_counter()
     n_faces = len(mesh.faces)
+
+    # Enforce minimum gutter >= 4.0 to eliminate seam cracks under bilinear/mip filtering
+    eff_gutter = max(4.0, float(gutter))
 
     # Adaptive parallel_partitions based on face count
     if parallel_partitions is None:
@@ -219,7 +223,7 @@ def unwrap_mesh_uvatlas_open3d(
     try:
         res = tmesh.compute_uvatlas(
             size=int(target_res),
-            gutter=float(gutter),
+            gutter=float(eff_gutter),
             max_stretch=float(max_stretch),
             parallel_partitions=int(parallel_partitions)
         )
@@ -229,7 +233,7 @@ def unwrap_mesh_uvatlas_open3d(
         try:
             res = tmesh.compute_uvatlas(
                 size=int(target_res),
-                gutter=float(gutter),
+                gutter=float(eff_gutter),
                 max_stretch=0.33,
                 parallel_partitions=1
             )
@@ -269,6 +273,7 @@ def unwrap_mesh_uvatlas_open3d(
 
     stats = {
         "uvatlas_backend": "open3d",
+        "uvatlas_gutter": float(eff_gutter),
         "uvatlas_stretch": round(float(actual_stretch), 4),
         "uvatlas_chart_count": int(chart_count),
         "uvatlas_partition_count": int(partition_count),
@@ -285,13 +290,15 @@ def unwrap_mesh_uvatlas_cli(
     mesh: trimesh.Trimesh,
     cli_path: str,
     target_res: int = 1024,
-    gutter: float = 2.0,
+    gutter: float = 4.0,
     max_stretch: float = 0.1667
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, Dict[str, Any]]:
     """
     Executes Microsoft UVAtlas unwrap using native CLI binary (uvatlas / uvatlastool).
+    Enforces gutter >= 4.0 to guarantee adequate chart margin.
     """
     t_start = time.perf_counter()
+    eff_gutter = max(4.0, float(gutter))
     with tempfile.TemporaryDirectory() as tmp_dir:
         tmp_in = os.path.join(tmp_dir, "input.obj")
         tmp_out = os.path.join(tmp_dir, "output.obj")
@@ -304,7 +311,7 @@ def unwrap_mesh_uvatlas_cli(
             "-o", tmp_out,
             "-w", str(int(target_res)),
             "-h", str(int(target_res)),
-            "-g", str(float(gutter)),
+            "-g", str(float(eff_gutter)),
             "-st", str(float(max_stretch)),
             "-y",
             tmp_in
@@ -326,6 +333,7 @@ def unwrap_mesh_uvatlas_cli(
 
         stats = {
             "uvatlas_backend": f"cli:{cli_path}",
+            "uvatlas_gutter": float(eff_gutter),
             "uvatlas_total_sec": round(t_total, 3),
             "zero_decimation_faces_preserved": len(out_mesh.faces) == len(mesh.faces)
         }
@@ -336,13 +344,14 @@ def unwrap_mesh_uvatlas_cli(
 def unwrap_mesh_uvatlas(
     mesh: trimesh.Trimesh,
     target_res: int = 1024,
-    gutter: float = 2.0,
+    gutter: float = 4.0,
     max_stretch: float = 0.1667,
     parallel_partitions: Optional[int] = None
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, Dict[str, Any]]:
     """
     Unified entry point for Microsoft UVAtlas unwrapping.
     Automatically prioritizes Open3D tensor pipeline, falling back to CLI tool.
+    Guarantees gutter >= 4.0 margin between UV charts.
     """
     avail, backend = is_uvatlas_available()
     if not avail:
@@ -351,11 +360,13 @@ def unwrap_mesh_uvatlas(
             "(pip install open3d) or place the uvatlas / uvatlastool binary in PATH."
         )
 
+    eff_gutter = max(4.0, float(gutter))
+
     if backend == "open3d":
         return unwrap_mesh_uvatlas_open3d(
             mesh=mesh,
             target_res=target_res,
-            gutter=gutter,
+            gutter=eff_gutter,
             max_stretch=max_stretch,
             parallel_partitions=parallel_partitions
         )
@@ -365,7 +376,7 @@ def unwrap_mesh_uvatlas(
             mesh=mesh,
             cli_path=cli_path,
             target_res=target_res,
-            gutter=gutter,
+            gutter=eff_gutter,
             max_stretch=max_stretch
         )
     else:

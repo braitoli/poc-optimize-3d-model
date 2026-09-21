@@ -19,7 +19,6 @@ from optimizer.core.texture_utils import (
     optimize_mesh_texture_for_export,
     can_downscale_texture,
     maximize_uv_space,
-    resample_texture_linear_gamma,
     apply_bitstream_passthrough
 )
 
@@ -651,7 +650,8 @@ def rechart_and_bake_high_density(
     return_stats: bool = False,
     min_downscale_res: int = 1024,
     td_threshold_ratio: float = 0.85,
-    unwrap_method: str = "xatlas"
+    unwrap_method: str = "xatlas",
+    uvatlas_gutter: float = 4.0
 ) -> Tuple[trimesh.Trimesh, Image.Image] | Tuple[trimesh.Trimesh, Image.Image, Dict[str, Any]]:
     """
     4-Stage Adaptive UV & Resolution Optimization Pipeline:
@@ -704,63 +704,73 @@ def rechart_and_bake_high_density(
 
     # =========================================================================
     # BƯỚC A: Tổ chức lại UV gom vào hình vuông [0, 1] x [0, 1]
+    # Padding (xatlas) / gutter (UVAtlas) are pixels of the pack canvas `res`,
+    # so Bước A is re-run at the final resolution if Bước B downscales.
     # =========================================================================
-    unwrap_meta: Dict[str, Any] = {}
-    use_xatlas = (unwrap_method != "uvatlas")
-    if unwrap_method == "uvatlas":
-        try:
-            vertices_recharted, faces_recharted, uv_recharted, vmapping, unwrap_meta = unwrap_mesh_uvatlas(
-                mesh=mesh,
-                target_res=initial_res,
-                gutter=2.0
+    def _unwrap(res: int):
+        unwrap_meta: Dict[str, Any] = {}
+        use_xatlas = (unwrap_method != "uvatlas")
+        if unwrap_method == "uvatlas":
+            try:
+                eff_uvatlas_gutter = max(4.0, float(uvatlas_gutter))
+                vertices_recharted, faces_recharted, uv_recharted, vmapping, unwrap_meta = unwrap_mesh_uvatlas(
+                    mesh=mesh,
+                    target_res=res,
+                    gutter=eff_uvatlas_gutter
+                )
+            except Exception as uvatlas_err:
+                import logging
+                logging.getLogger("uv_baker").warning(
+                    f"[uv_baker] UVAtlas unwrapping failed ({uvatlas_err}). "
+                    f"Falling back to robust xatlas backend..."
+                )
+                use_xatlas = True
+                unwrap_meta = {
+                    "uvatlas_fallback": True,
+                    "uvatlas_fallback_reason": str(uvatlas_err)
+                }
+
+        if use_xatlas:
+            n_faces = len(mesh.faces)
+            c_opts = get_adaptive_chart_options(n_faces)
+            if chart_options:
+                for k, v in chart_options.items():
+                    if hasattr(c_opts, k):
+                        setattr(c_opts, k, v)
+
+            p_opts = get_adaptive_pack_options(n_faces, target_res=res, padding=2)
+            if pack_options:
+                for k, v in pack_options.items():
+                    if hasattr(p_opts, k):
+                        setattr(p_opts, k, v)
+                # Caller's texels_per_unit targets the initial canvas; rescale it for a re-pack at `res`
+                if pack_options.get("texels_per_unit"):
+                    p_opts.texels_per_unit = float(pack_options["texels_per_unit"]) * res / initial_res
+            # Anti-blur: Always ensure rotate_charts is False to avoid diagonal resampling blur
+            if not pack_options or "rotate_charts" not in pack_options:
+                p_opts.rotate_charts = False
+                p_opts.rotate_charts_to_axis = False
+
+            atlas = xatlas.Atlas()
+            # Use 3D mesh unwrap to eliminate giant sliver triangles and unassigned (0, 0) UV artifacts from add_uv_mesh
+            atlas.add_mesh(
+                np.ascontiguousarray(mesh.vertices, dtype=np.float32),
+                np.ascontiguousarray(mesh.faces, dtype=np.uint32)
             )
-        except Exception as uvatlas_err:
-            import logging
-            logging.getLogger("uv_baker").warning(
-                f"[uv_baker] UVAtlas unwrapping failed ({uvatlas_err}). "
-                f"Falling back to robust xatlas backend..."
-            )
-            use_xatlas = True
-            unwrap_meta = {
-                "uvatlas_fallback": True,
-                "uvatlas_fallback_reason": str(uvatlas_err)
-            }
+            atlas.generate(chart_options=c_opts, pack_options=p_opts)
 
-    if use_xatlas:
-        n_faces = len(mesh.faces)
-        c_opts = get_adaptive_chart_options(n_faces)
-        if chart_options:
-            for k, v in chart_options.items():
-                if hasattr(c_opts, k):
-                    setattr(c_opts, k, v)
+            vmapping, indices, new_uv = atlas[0]
+            vertices_recharted = np.asarray(mesh.vertices, dtype=np.float64)[np.asarray(vmapping, dtype=np.int64)]
+            faces_recharted = np.asarray(indices, dtype=np.int64)
+            uv_recharted = np.asarray(new_uv, dtype=np.float64)
+            unwrap_meta.update({
+                "xatlas_chart_count": int(atlas.chart_count),
+                "xatlas_atlas_count": int(atlas.atlas_count),
+                "xatlas_utilization_percent": round(float(atlas.utilization * 100.0), 2),
+            })
+        return vertices_recharted, faces_recharted, uv_recharted, vmapping, unwrap_meta
 
-        p_opts = get_adaptive_pack_options(n_faces, target_res=initial_res, padding=2)
-        if pack_options:
-            for k, v in pack_options.items():
-                if hasattr(p_opts, k):
-                    setattr(p_opts, k, v)
-        # Anti-blur: Always ensure rotate_charts is False to avoid diagonal resampling blur
-        if not pack_options or "rotate_charts" not in pack_options:
-            p_opts.rotate_charts = False
-            p_opts.rotate_charts_to_axis = False
-
-        atlas = xatlas.Atlas()
-        # Use 3D mesh unwrap to eliminate giant sliver triangles and unassigned (0, 0) UV artifacts from add_uv_mesh
-        atlas.add_mesh(
-            np.ascontiguousarray(mesh.vertices, dtype=np.float32),
-            np.ascontiguousarray(mesh.faces, dtype=np.uint32)
-        )
-        atlas.generate(chart_options=c_opts, pack_options=p_opts)
-
-        vmapping, indices, new_uv = atlas[0]
-        vertices_recharted = np.asarray(mesh.vertices, dtype=np.float64)[np.asarray(vmapping, dtype=np.int64)]
-        faces_recharted = np.asarray(indices, dtype=np.int64)
-        uv_recharted = np.asarray(new_uv, dtype=np.float64)
-        unwrap_meta.update({
-            "xatlas_chart_count": int(atlas.chart_count),
-            "xatlas_atlas_count": int(atlas.atlas_count),
-            "xatlas_utilization_percent": round(float(atlas.utilization * 100.0), 2),
-        })
+    vertices_recharted, faces_recharted, uv_recharted, vmapping, unwrap_meta = _unwrap(initial_res)
 
     # =========================================================================
     # BƯỚC B: Kiểm tra xem có thể downscale không (can_downscale_texture)
@@ -777,6 +787,12 @@ def rechart_and_bake_high_density(
         orig_island_pixels=orig_island_pixels
     )
     target_res = active_target_res
+
+    # Gutter guarantee at the FINAL resolution: a downscale would halve the gaps between charts
+    # (bleeding under GPU bilinear + mipmaps), so re-run Bước A at target_res.
+    repacked_at_final_resolution = target_res < initial_res
+    if repacked_at_final_resolution:
+        vertices_recharted, faces_recharted, uv_recharted, vmapping, unwrap_meta = _unwrap(target_res)
 
     # =========================================================================
     # BƯỚC C: Hiệu chỉnh UV để tối đa hóa không gian texture
@@ -799,10 +815,19 @@ def rechart_and_bake_high_density(
     colors = _sample_texture_bilinear(src_img, src_uv)
     colors = np.nan_to_num(colors, nan=128.0)
 
-    # Defensive canvas initialization: use mean source image color instead of black (0,0,0)
-    # to guarantee zero black edge bleeding during GPU texture mipmapping
-    mean_color = np.mean(src_img[..., :channels], axis=(0, 1)).astype(np.uint8)
-    base_flat = np.tile(mean_color, (target_res * target_res, 1))
+    # Defensive canvas background initialization: initialize the canvas with the average
+    # sampled surface color rather than stark pure white (255, 255, 255) or black (0, 0, 0).
+    # This guarantees that unmapped canvas texels match the actual model surface tones,
+    # eliminating white seam/crack artifacts when GPU bilinear filtering/mipmapping samples boundaries.
+    if len(colors) > 0:
+        # True average color of the model surface (uncontaminated by blank white canvas in source texture)
+        avg_surface_color = np.mean(colors, axis=0).astype(np.uint8)
+        if channels == 4 and not has_transparency:
+            avg_surface_color[3] = 255
+    else:
+        avg_surface_color = np.mean(src_img[..., :channels], axis=(0, 1)).astype(np.uint8)
+
+    base_flat = np.tile(avg_surface_color, (target_res * target_res, 1))
     base_flat[sel] = np.clip(colors, 0.0, 255.0).astype(np.uint8)
     base_img = base_flat.reshape(target_res, target_res, channels)
 
@@ -810,7 +835,13 @@ def rechart_and_bake_high_density(
     covered[sel] = True
     covered = covered.reshape(target_res, target_res)
 
-    dilated_img = dilate_texture(base_img, covered, padding=dilation_padding)
+    # Mandatory EDT boundary dilation: expand edge pixels into the gutter buffer so GPU bilinear filtering
+    # and mipmapping sample valid colors instead of the background canvas.
+    # For UVAtlas, charts have gutter >= 4.0 px, so we mandatorily apply at least padding=8
+    # (or user-specified dilation_padding if larger).
+    min_dilation = 8 if unwrap_method == "uvatlas" else 4
+    eff_dilation_padding = max(min_dilation, int(dilation_padding))
+    dilated_img = dilate_texture(base_img, covered, padding=eff_dilation_padding)
     dilated_pil = Image.fromarray(dilated_img, mode=out_mode)
 
     # Configure PBRMaterial with FrontSide rendering (doubleSided=double_sided, default False)
@@ -874,6 +905,7 @@ def rechart_and_bake_high_density(
         "finalResolution": downscale_info["finalResolution"],
         "original_resolution": initial_res,
         "final_resolution": target_res,
+        "repacked_at_final_resolution": repacked_at_final_resolution,
         "orig_island_pixels": round(float(orig_island_pixels), 1),
         "textureFormat": "PNG",
         "uvCoverageRatio": round(float(covered_pixels / total_pixels), 4),
@@ -889,7 +921,7 @@ def rechart_and_bake_high_density(
         "texel_density_linear": texel_density_linear,
         "texel_density_area": texel_density_area,
         "mesh_surface_area": round(mesh_area, 4),
-        "dilation_padding": dilation_padding,
+        "dilation_padding": eff_dilation_padding,
         "double_sided": double_sided
     }
     result_stats.update(unwrap_meta)
@@ -910,25 +942,30 @@ def rebake_texture_uvatlas(
     source_uv: np.ndarray,
     target_res: int = 1024,
     dilation_padding: int = 16,
+    gutter: float = 4.0,
     double_sided: Optional[bool] = None
 ) -> Tuple[trimesh.Trimesh, Image.Image]:
     """
     Repacks UV charts with Microsoft UVAtlas and bakes new high-coverage texture.
     Preserves 100% triangles (Zero-Decimation).
+    Enforces gutter >= 4.0 and mandatory EDT dilation (min 8px) to prevent white seams.
     """
     if double_sided is None:
         double_sided = True
 
     target_res = clamp_target_resolution(target_res, source_image.size)
+    eff_padding = max(8, int(dilation_padding))
+    eff_gutter = max(4.0, float(gutter))
     res = rechart_and_bake_high_density(
         mesh=mesh,
         target_res=target_res,
         source_image=source_image,
         source_uv=source_uv,
-        dilation_padding=dilation_padding,
+        dilation_padding=eff_padding,
         double_sided=double_sided,
         return_stats=False,
-        unwrap_method="uvatlas"
+        unwrap_method="uvatlas",
+        uvatlas_gutter=eff_gutter
     )
     return res[0], res[1]
 
@@ -968,111 +1005,3 @@ def rebake_texture_xatlas(
         return_stats=False
     )
     return res[0], res[1]
-
-
-def direct_resample_texture(
-    mesh: trimesh.Trimesh,
-    source_image: Image.Image,
-    target_res: int = 1024,
-    dilation_padding: int = 16,
-    double_sided: bool = False,
-    copy_mesh: bool = False,
-    preserve_bitstream: bool = False
-) -> Tuple[trimesh.Trimesh, Image.Image]:
-    """
-    Direct mode: Keeps 100% original UVs.
-    - If preserve_bitstream or no resize is needed: keeps 100% bit-for-bit original texture bytes.
-    - If downscaling: applies Gamma-Corrected Linear Color Space Resampling (Lanczos in linear float32)
-      to preserve specular highlight dots and eyes from darkening.
-    Preserves vertex normals, alpha channel, and PBR material properties.
-    Configures FrontSide rendering (doubleSided=double_sided, default False).
-    """
-    orig_uv = getattr(mesh.visual, "uv", None)
-    is_same_res = (source_image.size == (target_res, target_res))
-    has_raw_bytes = hasattr(source_image, "_fast_save_data") and source_image._fast_save_data is not None
-
-    if preserve_bitstream or (is_same_res and has_raw_bytes):
-        # TRUE ZERO-LOSS BITSTREAM PASS-THROUGH:
-        # Zero decode, zero re-encode, preserve exact original bitstream.
-        clean_pil = source_image
-        clean_pil._is_bitstream_passthrough = True
-    else:
-        # Defense-in-depth: Never upscale texture
-        target_res = clamp_target_resolution(target_res, source_image.size)
-
-        # Check for active transparency in source image
-        has_alpha = source_image.mode in ("RGBA", "LA") or (
-            source_image.mode == "P" and "transparency" in source_image.info
-        )
-        has_transparency = False
-        if has_alpha:
-            if source_image.mode in ("RGBA", "LA"):
-                alpha_arr = np.asarray(source_image.convert("RGBA"))[..., 3]
-                if np.any(alpha_arr < 255):
-                    has_transparency = True
-            else:
-                has_transparency = True
-
-        if has_transparency:
-            img = source_image.convert("RGBA") if source_image.mode != "RGBA" else source_image
-            out_mode = "RGBA"
-        else:
-            img = source_image.convert("RGB") if source_image.mode != "RGB" else source_image
-            out_mode = "RGB"
-
-        if img.size == (target_res, target_res):
-            resampled = img
-        else:
-            # Gamma-Corrected Linear Color Space Resampling:
-            # Preserves specular highlights, eye reflection points, and optical energy
-            resampled = resample_texture_linear_gamma(img, (target_res, target_res), unsharp_strength=0.2)
-
-        arr = np.array(resampled, dtype=np.uint8)
-
-        # ZERO DILATION ON COMPLETE / OPAQUE TEXTURES IN DIRECT MODE:
-        # Dilation is ONLY executed if the source image has an active transparent alpha channel.
-        if has_transparency and dilation_padding > 0:
-            alpha = arr[:, :, 3]
-            if np.any(alpha == 0) and np.any(alpha > 0):
-                is_covered = alpha > 0
-                arr = dilate_texture(arr, is_covered, padding=dilation_padding)
-
-        clean_pil = Image.fromarray(arr, mode=out_mode)
-
-    orig_mat = getattr(mesh.visual, "material", None) if hasattr(mesh, "visual") and mesh.visual is not None else None
-    if isinstance(orig_mat, trimesh.visual.material.PBRMaterial):
-        mat = orig_mat.copy()
-        mat.baseColorTexture = clean_pil
-        mat.doubleSided = double_sided
-    else:
-        mat = trimesh.visual.material.PBRMaterial(
-            baseColorTexture=clean_pil,
-            metallicFactor=getattr(orig_mat, "metallicFactor", 0.0) if orig_mat else 0.0,
-            roughnessFactor=getattr(orig_mat, "roughnessFactor", 0.8) if orig_mat else 0.8,
-            doubleSided=double_sided
-        )
-        if orig_mat and hasattr(orig_mat, "baseColorFactor") and orig_mat.baseColorFactor is not None:
-            mat.baseColorFactor = orig_mat.baseColorFactor
-        if orig_mat and hasattr(orig_mat, "alphaMode") and orig_mat.alphaMode is not None:
-            mat.alphaMode = orig_mat.alphaMode
-        if orig_mat and hasattr(orig_mat, "alphaCutoff") and orig_mat.alphaCutoff is not None:
-            mat.alphaCutoff = orig_mat.alphaCutoff
-
-    out_mesh = mesh.copy() if copy_mesh else mesh
-
-    # Ensure vertex normals are preserved
-    if hasattr(mesh, "vertex_normals") and mesh.vertex_normals is not None and len(mesh.vertex_normals) == len(mesh.vertices):
-        if not hasattr(out_mesh, "vertex_normals") or out_mesh.vertex_normals is None:
-            out_mesh.vertex_normals = mesh.vertex_normals.copy()
-
-    if hasattr(out_mesh, "visual") and isinstance(out_mesh.visual, trimesh.visual.TextureVisuals):
-        out_mesh.visual.material = mat
-        if orig_uv is not None:
-            out_mesh.visual.uv = orig_uv
-    else:
-        out_mesh.visual = trimesh.visual.TextureVisuals(
-            uv=orig_uv,
-            material=mat
-        )
-
-    return out_mesh, clean_pil

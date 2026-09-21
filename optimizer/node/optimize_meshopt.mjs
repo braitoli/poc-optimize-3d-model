@@ -342,6 +342,7 @@ Options:
   let ktx2Threads = os.cpus()?.length || 4;
   let textureMaxDim = null;
   let forceSingleSided = false;
+  let keepDoubleSided = false;
   let enableJson = false;
   let exportIntermediateMeshopt = null;
   let texturesOnly = false;
@@ -369,13 +370,18 @@ Options:
     else if (a === '--webp') { enableWebp = true; enableKtx2 = false; }
     else if (a === '--webp-quality' && args[i + 1]) webpQuality = parseInt(args[++i], 10);
     else if (a === '--single-sided') forceSingleSided = true;
-    else if (a === '--keep-double-sided' || a === '--double-sided') forceSingleSided = false;
+    else if (a === '--keep-double-sided' || a === '--double-sided') keepDoubleSided = true;
     else if (a === '--json') enableJson = true;
     else if (a.startsWith('--ratio') || a.startsWith('--target-faces')) {
       // RULE 11 GUARD: Ignore decimation requests
       if (!enableJson) console.warn('   ⚠️ [RULE 11 GUARD] Mesh decimation request bypassed. 100% triangles preserved.');
     } else if (!inputFile) inputFile = a;
     else if (!outputFile) outputFile = a;
+  }
+
+  // When --keep-double-sided is active, forceSingleSided must NEVER override it
+  if (keepDoubleSided) {
+    forceSingleSided = false;
   }
 
   if (!inputFile || !outputFile) {
@@ -409,7 +415,12 @@ Options:
   }
 
   // 2. Material double-sided adjustments
-  if (forceSingleSided) {
+  if (keepDoubleSided) {
+    for (const mat of doc.getRoot().listMaterials()) {
+      mat.setDoubleSided(true);
+    }
+    if (!enableJson) console.log('   * Preserved/Set double-sided materials (--keep-double-sided active)');
+  } else if (forceSingleSided) {
     for (const mat of doc.getRoot().listMaterials()) {
       mat.setDoubleSided(false);
     }

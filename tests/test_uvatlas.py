@@ -125,30 +125,17 @@ class TestUVAtlas(unittest.TestCase):
         self.assertGreater(stats["uv_coverage_ratio_percent"], 0.0)
 
     def test_step_pipeline_uv_mode_resolution(self):
-        # Default mode -> direct
-        p1 = StepPipeline(rechart_uv=False)
-        self.assertEqual(p1.uv_mode, "direct")
-        self.assertFalse(p1.rechart_uv)
-
-        # Backward compatibility: rechart_uv=True -> xatlas
-        p2 = StepPipeline(rechart_uv=True)
-        self.assertEqual(p2.uv_mode, "xatlas")
-        self.assertTrue(p2.rechart_uv)
+        # Default mode -> xatlas
+        p1 = StepPipeline()
+        self.assertEqual(p1.uv_mode, "xatlas")
 
         # Explicit uv_mode uvatlas
         p3 = StepPipeline(uv_mode="uvatlas")
         self.assertEqual(p3.uv_mode, "uvatlas")
-        self.assertTrue(p3.rechart_uv)
-
-        # Explicit uv_mode direct
-        p4 = StepPipeline(uv_mode="direct")
-        self.assertEqual(p4.uv_mode, "direct")
-        self.assertFalse(p4.rechart_uv)
 
         # Explicit uv_mode xatlas
         p5 = StepPipeline(uv_mode="xatlas")
         self.assertEqual(p5.uv_mode, "xatlas")
-        self.assertTrue(p5.rechart_uv)
 
     def test_uvatlas_on_complex_model_if_present(self):
         if not self.test_model_path.exists():
@@ -160,6 +147,53 @@ class TestUVAtlas(unittest.TestCase):
         self.assertTrue(stats["zero_decimation_faces_preserved"])
         self.assertGreaterEqual(float(uv_unw.min()), 0.0)
         self.assertLessEqual(float(uv_unw.max()), 1.0)
+
+    def test_uvatlas_gutter_margin_enforcement(self):
+        # Passing gutter=1.0 should be clamped to >= 4.0
+        v_unw, f_unw, uv_unw, vmap, stats = unwrap_mesh_uvatlas(self.mesh, target_res=256, gutter=1.0)
+        self.assertGreaterEqual(stats.get("uvatlas_gutter", 0.0), 4.0)
+
+    def test_uvatlas_canvas_init_and_mandatory_dilation(self):
+        # Create a texture with stark pure white background (255, 255, 255)
+        # and dark blue model surface (20, 40, 100)
+        tex_arr = np.full((256, 256, 3), 255, dtype=np.uint8)
+        tex_arr[100:200, 100:200] = [20, 40, 100]
+        tex_img = Image.fromarray(tex_arr, mode="RGB")
+
+        # Map mesh UVs to the blue region
+        uv = np.array([
+            [0.45, 0.30], [0.70, 0.30], [0.70, 0.55], [0.45, 0.55],
+            [0.48, 0.35], [0.65, 0.35], [0.65, 0.50], [0.48, 0.50]
+        ], dtype=np.float64)
+        mesh_box = self.mesh.copy()
+        mesh_box.visual.uv = uv
+
+        stats = {}
+        # Test with dilation_padding=0: UVAtlas must MANDATORILY apply at least 8px dilation
+        baked_mesh, baked_pil, stats = rechart_and_bake_high_density(
+            mesh_box,
+            target_res=256,
+            source_image=tex_img,
+            source_uv=uv,
+            dilation_padding=0,
+            double_sided=False,
+            stats=stats,
+            return_stats=True,
+            unwrap_method="uvatlas",
+            uvatlas_gutter=2.0  # Should be clamped to >= 4.0
+        )
+        self.assertGreaterEqual(stats["dilation_padding"], 8, "UVAtlas must enforce mandatory dilation >= 8px")
+
+        # Verify that the baked texture canvas does NOT have stark white background (255, 255, 255)
+        baked_arr = np.asarray(baked_pil)
+        # Average color of non-dilated areas should match the dark blue surface, not white (255, 255, 255)
+        mean_baked = np.mean(baked_arr, axis=(0, 1))
+        # Blue channel should dominate, and total brightness should be much lower than 255
+        self.assertLess(float(mean_baked[0]), 50.0, "Red channel must not be white")
+        self.assertLess(float(mean_baked[1]), 60.0, "Green channel must not be white")
+        self.assertGreater(float(mean_baked[2]), 80.0, "Blue surface color must dominate")
+        # Corner background must be the dark blue surface color, not white
+        self.assertEqual(list(baked_arr[0, 0]), [20, 40, 100])
 
 
 if __name__ == "__main__":
