@@ -79,18 +79,21 @@ GL_UNSIGNED_SHORT = 5123
 GL_FLOAT = 5126
 
 
-def make_uv_band_glb(path: Path, u_offset: float = 0.0, lat: int = 24, lon: int = 48) -> int:
+def make_uv_band_glb(path: Path, u_offset: float = 0.0, seam_jitter: float = 0.0, lat: int = 24, lon: int = 48) -> int:
     """
     Writes a textured spherical band (no poles, so no degenerate triangles) with an explicit
     UV seam: column j == lon duplicates column j == 0 at the same position with u shifted by 1.
-    Faces are wound CCW seen from outside. Returns the triangle count.
+    seam_jitter offsets the duplicate column along z (the seam lies at z == 0), mimicking the
+    float noise real exporters leave between seam copies. Faces are wound CCW seen from outside.
+    Returns the triangle count.
     """
     thetas = np.linspace(0.2 * np.pi, 0.8 * np.pi, lat + 1)
     verts, uvs = [], []
     for i, theta in enumerate(thetas):
         for j in range(lon + 1):
             phi = 2.0 * np.pi * (j % lon) / lon  # j == lon reuses the exact j == 0 position
-            verts.append([np.sin(theta) * np.cos(phi), np.cos(theta), np.sin(theta) * np.sin(phi)])
+            z = np.sin(theta) * np.sin(phi) + (seam_jitter if j == lon else 0.0)
+            verts.append([np.sin(theta) * np.cos(phi), np.cos(theta), z])
             uvs.append([j / lon + u_offset, i / lat])
     verts = np.asarray(verts, dtype=np.float64)
 
@@ -218,13 +221,15 @@ class TestStep5GeometryEncoding(unittest.TestCase):
 class TestSmoothNormalsSeamWelding(unittest.TestCase):
     """Smooth normals must be continuous across UV seams (same position => same normal)."""
 
+    SEAM_JITTER = 0.0
+
     @classmethod
     def setUpClass(cls):
         cls._tmp = tempfile.TemporaryDirectory()
         tmp = Path(cls._tmp.name)
         src = tmp / "band.glb"
         out = tmp / "smoothed.glb"
-        make_uv_band_glb(src)
+        make_uv_band_glb(src, seam_jitter=cls.SEAM_JITTER)
         # --no-meshopt keeps NORMAL as float so the check is exact.
         run_optimizer(src, out, "--smooth-normals", "--no-meshopt")
         cls.data = dump_glb(out)
@@ -247,6 +252,12 @@ class TestSmoothNormalsSeamWelding(unittest.TestCase):
         radial = self.data["position"] / np.linalg.norm(self.data["position"], axis=1, keepdims=True)
         normals = self.data["normal"] / np.linalg.norm(self.data["normal"], axis=1, keepdims=True)
         self.assertGreater(np.einsum("ij,ij->i", normals, radial).min(), 0.99)
+
+
+class TestSmoothNormalsNearCoincidentSeam(TestSmoothNormalsSeamWelding):
+    """Seam copies 1e-6 apart (below the 1e-5 welding tolerance) must still share one normal."""
+
+    SEAM_JITTER = 1e-6
 
 
 if __name__ == "__main__":

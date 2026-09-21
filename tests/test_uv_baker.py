@@ -468,8 +468,7 @@ class TestUvBaker(unittest.TestCase):
 
     def test_determine_safe_downscale_resolution(self):
         """Verify smallest safe resolution logic: 4K -> 1024 or 2048, 1.5K/2K -> 1024."""
-        # 1. Box mesh has area ~6.0. Effective UV coverage ~0.5.
-        # At 1024px: TD = 1024 * sqrt(0.5) / sqrt(6.0) ~= 295.6 px/unit >= 120 -> picks 1024
+        # 1. 4K texture safely downscales 1 tier to 2048 (2K) to preserve micro-details
         res_4k, details_4k = determine_safe_downscale_resolution(
             self.mesh,
             orig_size=(4096, 4096),
@@ -477,10 +476,10 @@ class TestUvBaker(unittest.TestCase):
             min_texel_density=120.0,
             requested_res="auto"
         )
-        self.assertEqual(res_4k, 1024, "Small mesh with 4K texture should safely downscale to 1024")
+        self.assertEqual(res_4k, 2048, "4K texture should safely downscale to 2048 (2K) to preserve micro-details")
         self.assertTrue(details_4k["downscaled"])
         self.assertEqual(details_4k["originalResolution"], "4096x4096")
-        self.assertEqual(details_4k["finalResolution"], "1024x1024")
+        self.assertEqual(details_4k["finalResolution"], "2048x2048")
 
         # 2. 1536 (1.5K like Dinoki) -> 1024 (1K)
         res_1536, details_1536 = determine_safe_downscale_resolution(

@@ -3,8 +3,9 @@
  *
  * Computes Angle-Weighted Smooth Vertex Normals (Thürmer & Wüthrich / Bærentzen & Aanaes).
  * Smooths normals across adjacent faces with weight proportional to the face vertex incident angle.
- * Uses exact-position remapping (meshoptimizer's generatePositionRemap) so that vertices split by
- * UV seams share continuous, seamless smooth normals without seam creases, dimples, or inverted normals.
+ * Snaps positions to a spatial tolerance grid and remaps them (meshoptimizer's generatePositionRemap)
+ * so that vertices split by UV seams share continuous, seamless smooth normals without seam creases,
+ * dimples, or inverted normals.
  */
 
 import { Primitive } from '@gltf-transform/core';
@@ -14,6 +15,8 @@ await MeshoptSimplifier.ready;
 
 export function computeStandardSmoothNormals(doc, options = {}) {
   const smoothAcrossUvSeams = options.smoothAcrossUvSeams !== false;
+  const spatialTol = options.spatialTolerance || 1e-5;
+  const invTol = 1.0 / spatialTol;
 
   for (const mesh of doc.getRoot().listMeshes()) {
     for (const prim of mesh.listPrimitives()) {
@@ -31,14 +34,18 @@ export function computeStandardSmoothNormals(doc, options = {}) {
       const triCount = indArr ? Math.floor(indArr.length / 3) : Math.floor(vCount / 3);
       if (triCount === 0) continue;
 
-      // Map each vertex to a spatial group if smoothing across UV seams: remap[i] is the index of
-      // the first vertex with a bit-identical position, so groups are keyed by vertex index (buffers
-      // sized vCount; slots of non-representative vertices stay unused and are never read back).
+      // Map each vertex to a spatial group if smoothing across UV seams: positions are snapped to the
+      // tolerance grid (round(coord / spatialTol)) and then remapped, so remap[i] is the index of the
+      // first vertex in the same grid cell and groups are keyed by vertex index (buffers sized vCount;
+      // slots of non-representative vertices stay unused and are never read back).
       let vertToSpatial;
       const spatialCount = vCount;
       if (smoothAcrossUvSeams) {
-        const posF32 = posArr instanceof Float32Array ? posArr : Float32Array.from(posArr);
-        vertToSpatial = MeshoptSimplifier.generatePositionRemap(posF32, 3);
+        // Cell indices are exact in float32 only up to 2^24 (|coord| < ~167 units at 1e-5);
+        // beyond that neighbouring cells merge, i.e. the tolerance effectively grows.
+        const snapped = new Float32Array(vCount * 3);
+        for (let i = 0; i < vCount * 3; i++) snapped[i] = Math.round(posArr[i] * invTol);
+        vertToSpatial = MeshoptSimplifier.generatePositionRemap(snapped, 3);
       } else {
         vertToSpatial = new Int32Array(vCount);
         for (let i = 0; i < vCount; i++) vertToSpatial[i] = i;

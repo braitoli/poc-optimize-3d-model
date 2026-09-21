@@ -405,7 +405,7 @@ class StepPipeline:
             baked_mesh.visual.material.doubleSided = self.double_sided
 
         # Optimize texture before export (defense-in-depth: format JPEG if opaque, or optimized PNG)
-        opt_pil = optimize_mesh_texture_for_export(baked_mesh, orig_tex_info=orig_tex_info, jpeg_quality=92)
+        opt_pil = optimize_mesh_texture_for_export(baked_mesh, orig_tex_info=orig_tex_info, jpeg_quality=95)
         if opt_pil is not None:
             dilated_pil = opt_pil
 

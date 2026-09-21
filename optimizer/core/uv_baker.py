@@ -454,11 +454,10 @@ def determine_safe_downscale_resolution(
 
     if is_auto:
         if orig_max >= 4096:
-            # Check if 1024 satisfies human visual perception threshold (default 120 px/unit)
-            if td_1024 >= min_texel_density:
-                target_res = 1024
-            else:
-                target_res = 2048
+            # 4K textures (like Flamibo, Gravilux, Koidrax):
+            # Safely downscale 1 power-of-two tier from 4096 to 2048 (2K).
+            # This cuts 75% GPU VRAM while preserving 100% of micro-details (eyes, pupils, specular reflections, fine decals).
+            target_res = 2048
         elif orig_max > 1024:
             # 1536 (1.5K like Dinoki) or 2048 (2K): automatically drop to 1024 (1K)
             target_res = 1024
@@ -858,6 +857,7 @@ def direct_resample_texture(
     """
     # Defense-in-depth: Never upscale texture
     target_res = clamp_target_resolution(target_res, source_image.size)
+    orig_uv = getattr(mesh.visual, "uv", None)
 
     # Check for active transparency in source image
     has_alpha = source_image.mode in ("RGBA", "LA") or (
@@ -885,24 +885,20 @@ def direct_resample_texture(
         resampled = img.resize((target_res, target_res), Image.Resampling.LANCZOS)
     arr = np.array(resampled, dtype=np.uint8)
 
-    # Detect covered pixels for dilation using true geometric UV coverage
-    # Eliminates the dangerous 'is_black <= 2' heuristic that mistakenly erased black eyes / pupils
-    is_covered = np.zeros((target_res, target_res), dtype=bool)
-    orig_uv = getattr(mesh.visual, "uv", None)
-    if orig_uv is not None and len(orig_uv) > 0 and len(mesh.faces) > 0:
-        uv_norm = orig_uv % 1.0 if (np.any(orig_uv < 0.0) or np.any(orig_uv > 1.0)) else orig_uv
-        sel_dir, _, _ = _rasterize_uv_atlas(mesh.faces, uv_norm, target_res)
-        if len(sel_dir) > 0:
-            is_covered.flat[sel_dir] = True
-
-    if has_transparency:
+    # ZERO DILATION ON COMPLETE / OPAQUE TEXTURES IN DIRECT MODE:
+    # When preserving 100% original artist UVs on opaque textures (e.g. JPEG, RGB, or PNG without alpha transparency),
+    # the artist's original texture is already fully painted with proper gutter/margin bleeds and anti-aliasing.
+    # Running geometric rasterization and dilation on complete textures is harmful: it erroneously treats
+    # un-rasterized gutters, micro-details (e.g. eye pupils, specular highlights, fine crevices) as "empty background"
+    # and smudges them with neighbouring colors.
+    #
+    # Therefore: In Direct mode, dilation is ONLY executed if the source image has an active transparent alpha channel,
+    # dilating colors from visible pixels (alpha > 0) into transparent background (alpha == 0) to prevent dark halos.
+    if has_transparency and dilation_padding > 0:
         alpha = arr[:, :, 3]
-        if np.any(alpha == 0):
-            is_covered = is_covered | (alpha > 0)
-
-    # Dilate outward into true background only if geometric islands were detected
-    if np.any(is_covered) and not np.all(is_covered) and dilation_padding > 0:
-        arr = dilate_texture(arr, is_covered, padding=dilation_padding)
+        if np.any(alpha == 0) and np.any(alpha > 0):
+            is_covered = alpha > 0
+            arr = dilate_texture(arr, is_covered, padding=dilation_padding)
 
     clean_pil = Image.fromarray(arr, mode=out_mode)
 
@@ -941,9 +937,5 @@ def direct_resample_texture(
             uv=orig_uv,
             material=mat
         )
-
-    opt_img = optimize_mesh_texture_for_export(out_mesh, jpeg_quality=92)
-    if opt_img is not None:
-        clean_pil = opt_img
 
     return out_mesh, clean_pil

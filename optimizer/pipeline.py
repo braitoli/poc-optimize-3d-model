@@ -440,7 +440,7 @@ class ModelOptimizer:
                 baked_mesh.visual.material.doubleSided = True
 
             # Optimize texture before export (defense-in-depth: JPEG if opaque, optimized PNG if alpha)
-            opt_pil = optimize_mesh_texture_for_export(baked_mesh, orig_tex_info=orig_tex_info)
+            opt_pil = optimize_mesh_texture_for_export(baked_mesh, orig_tex_info=orig_tex_info, jpeg_quality=95)
             if opt_pil is not None:
                 dilated_pil = opt_pil
 

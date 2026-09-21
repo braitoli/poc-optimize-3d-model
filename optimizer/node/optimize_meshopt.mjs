@@ -304,7 +304,7 @@ async function runCli() {
 Options:
   --smooth-normals         Compute angle-weighted smooth normals across seams (default: ON)
   --no-smooth-normals      Disable smooth normals
-  --keep-uv-float32        Keep UV as Float32 (default: OFF, UV quantized to 16-bit)
+  --keep-uv-float32        Keep UV as Float32 (default: OFF, UV quantized to 16-bit; UVs outside [0,1] stay Float32)
   --pos-bits <bits>        Quantize position bits (default: 14)
   --weld <tol>             Weld tolerance (default: 0.0001)
   --reorder                Reorder for GPU cache (default: ON)
@@ -405,7 +405,7 @@ Options:
   // 1. Compute angle-weighted smooth normals across seams
   if (!texturesOnly && enableSmoothNormals) {
     if (!enableJson) console.log('   * Computing Angle-Weighted Smooth Normals (spatial seam welding)...');
-    computeStandardSmoothNormals(doc, { smoothAcrossUvSeams: true });
+    computeStandardSmoothNormals(doc, { smoothAcrossUvSeams: true, spatialTolerance: 1e-5 });
   }
 
   // 2. Material double-sided adjustments
