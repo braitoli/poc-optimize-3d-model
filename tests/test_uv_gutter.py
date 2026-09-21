@@ -2,19 +2,17 @@
 test_uv_gutter.py
 
 Gutter guarantee of rechart_and_bake_high_density at the FINAL texture resolution:
-- When Bước B downscales (2048 -> 1024) the atlas must be re-packed at the final
-  resolution, so the gap between UV charts stays >= 3 px in final-texture pixels
-  (xatlas and Microsoft UVAtlas).
+- Every size mode packs the atlas at its final canvas, so the gap between UV charts stays
+  >= 3 px in final-texture pixels (xatlas and Microsoft UVAtlas). pot-down is the case where
+  islands shrink below 1:1: the charts must be re-packed at the smaller canvas instead of
+  scaling a larger layout down (which would shrink the gutters with it).
 - EDT dilation fills every gutter pixel near a chart (no flat background colour left).
-- Without downscale nothing is re-packed and the gap guarantee still holds.
 """
 
 import functools
 import unittest
 
 import numpy as np
-from PIL import Image
-import trimesh
 from scipy import ndimage
 from scipy.sparse import coo_matrix
 from scipy.sparse.csgraph import connected_components
@@ -22,50 +20,25 @@ from scipy.sparse.csgraph import connected_components
 from optimizer.core import uv_baker
 from optimizer.core.uv_baker import rechart_and_bake_high_density
 from optimizer.core.uvatlas import is_uvatlas_available
+from tests.fixtures import make_sphere_grid_case
 
 MIN_GAP_PX = 3.0
 DILATION_PADDING = 16
 UVATLAS_OK = is_uvatlas_available()[0]
-
-# Source UVs are squeezed into a small square [U0, U0 + SPAN]^2 (~9% of the canvas is covered)
-U0, SPAN = 0.30, 0.40
-
-
-def _make_case(src_res: int):
-    """6x6 grid of small icospheres (11,520 faces, ~200 charts so the packer's minimum padding is
-    actually reached) with planar-projected source UVs and a 3-stripe source texture."""
-    parts = []
-    for i in range(6):
-        for j in range(6):
-            part = trimesh.creation.icosphere(subdivisions=2, radius=0.4)
-            part.apply_translation([i, j, 0.0])
-            parts.append(part)
-    mesh = trimesh.util.concatenate(parts)
-    xy = np.asarray(mesh.vertices)[:, :2]
-    xy = (xy - xy.min(axis=0)) / (xy.max(axis=0) - xy.min(axis=0))
-    uv = U0 + xy * SPAN
-    # Red / green / blue vertical stripes across the UV region. Every source texel and every
-    # bilinear blend of neighbouring stripes has at least one zero channel, whereas the flat
-    # canvas background (mean sampled surface colour) has all three channels > 0.
-    img = np.zeros((src_res, src_res, 3), dtype=np.uint8)
-    xs = np.arange(src_res) / float(src_res - 1)
-    img[:, xs < U0 + SPAN / 3.0, 0] = 255
-    img[:, (xs >= U0 + SPAN / 3.0) & (xs < U0 + 2.0 * SPAN / 3.0), 1] = 255
-    img[:, xs >= U0 + 2.0 * SPAN / 3.0, 2] = 255
-    return mesh, Image.fromarray(img, mode="RGB"), uv
+SRC_RES = 2048
 
 
 @functools.lru_cache(maxsize=None)
-def _run(unwrap_method: str, src_res: int, target_res: int):
-    mesh, img, uv = _make_case(src_res)
+def _run(unwrap_method: str, size_mode: str):
+    mesh, img, uv = make_sphere_grid_case(SRC_RES)
     return rechart_and_bake_high_density(
         mesh,
-        target_res=target_res,
         source_image=img,
         source_uv=uv,
+        size_mode=size_mode,
+        unwrap_method=unwrap_method,
         dilation_padding=DILATION_PADDING,
         return_stats=True,
-        unwrap_method=unwrap_method,
     )
 
 
@@ -106,21 +79,18 @@ def _min_chart_gap_px(faces: np.ndarray, uv: np.ndarray, res: int) -> float:
 
 
 class TestUVGutterAtFinalResolution(unittest.TestCase):
-    def _check_min_gap(self, unwrap_method, src_res, target_res, expect_downscale):
-        mesh, img, stats = _run(unwrap_method, src_res, target_res)
-        final_res = 1024
-        self.assertEqual(stats["downscaled"], expect_downscale)
+    def _check_min_gap(self, unwrap_method, size_mode):
+        mesh, img, stats = _run(unwrap_method, size_mode)
+        final_res = stats["final_resolution"]
         self.assertEqual(img.size, (final_res, final_res))
-        self.assertEqual(stats["final_resolution"], final_res)
-        self.assertFalse(stats.get("uvatlas_fallback", False))
 
         gap = _min_chart_gap_px(np.asarray(mesh.faces), np.asarray(mesh.visual.uv), final_res)
-        print(f"\n[uv_gutter] {unwrap_method} {src_res}->{final_res}: min chart gap = {gap:.3f} px")
+        print(f"\n[uv_gutter] {unwrap_method} {size_mode} {final_res}px (fit {stats['fit_resolution']}): "
+              f"min chart gap = {gap:.3f} px")
         self.assertGreaterEqual(gap, MIN_GAP_PX)
-        self.assertIs(stats.get("repacked_at_final_resolution"), expect_downscale)
 
-    def _check_dilation_fills_gutters(self, unwrap_method, src_res, target_res):
-        mesh, img, _ = _run(unwrap_method, src_res, target_res)
+    def _check_dilation_fills_gutters(self, unwrap_method, size_mode):
+        mesh, img, _ = _run(unwrap_method, size_mode)
         res = img.size[0]
         label_img, dist, _ = _coverage(np.asarray(mesh.faces), np.asarray(mesh.visual.uv), res)
         rgb = np.asarray(img.convert("RGB"))
@@ -133,28 +103,36 @@ class TestUVGutterAtFinalResolution(unittest.TestCase):
         self.assertTrue(np.any(near_gutter))
         self.assertEqual(int(np.count_nonzero(near_gutter & background_like)), 0)
 
-    # --- Downscale path (2048 -> 1024) -----------------------------------------------------
-    def test_xatlas_downscaled_gutter(self):
-        self._check_min_gap("xatlas", 2048, 2048, expect_downscale=True)
+    # --- exact (non power-of-two canvas at 1:1) --------------------------------------------
+    def test_xatlas_exact_gutter(self):
+        self._check_min_gap("xatlas", "exact")
 
     @unittest.skipUnless(UVATLAS_OK, "Microsoft UVAtlas backend not available")
-    def test_uvatlas_downscaled_gutter(self):
-        self._check_min_gap("uvatlas", 2048, 2048, expect_downscale=True)
+    def test_uvatlas_exact_gutter(self):
+        self._check_min_gap("uvatlas", "exact")
 
-    def test_xatlas_downscaled_dilation_fills_gutters(self):
-        self._check_dilation_fills_gutters("xatlas", 2048, 2048)
-
-    @unittest.skipUnless(UVATLAS_OK, "Microsoft UVAtlas backend not available")
-    def test_uvatlas_downscaled_dilation_fills_gutters(self):
-        self._check_dilation_fills_gutters("uvatlas", 2048, 2048)
-
-    # --- No-downscale path (1024 source, 1024 target) ----------------------------------------
-    def test_xatlas_no_downscale_no_repack(self):
-        self._check_min_gap("xatlas", 1024, 1024, expect_downscale=False)
+    # --- pot-down (islands shrink below 1:1, re-packed at the smaller canvas) ---------------
+    def test_xatlas_pot_down_gutter(self):
+        self._check_min_gap("xatlas", "pot-down")
 
     @unittest.skipUnless(UVATLAS_OK, "Microsoft UVAtlas backend not available")
-    def test_uvatlas_no_downscale_no_repack(self):
-        self._check_min_gap("uvatlas", 1024, 1024, expect_downscale=False)
+    def test_uvatlas_pot_down_gutter(self):
+        self._check_min_gap("uvatlas", "pot-down")
+
+    def test_xatlas_pot_down_dilation_fills_gutters(self):
+        self._check_dilation_fills_gutters("xatlas", "pot-down")
+
+    @unittest.skipUnless(UVATLAS_OK, "Microsoft UVAtlas backend not available")
+    def test_uvatlas_pot_down_dilation_fills_gutters(self):
+        self._check_dilation_fills_gutters("uvatlas", "pot-down")
+
+    # --- pot-up (islands at 1:1 or better on the larger power-of-two canvas) ----------------
+    def test_xatlas_pot_up_gutter(self):
+        self._check_min_gap("xatlas", "pot-up")
+
+    @unittest.skipUnless(UVATLAS_OK, "Microsoft UVAtlas backend not available")
+    def test_uvatlas_pot_up_gutter(self):
+        self._check_min_gap("uvatlas", "pot-up")
 
 
 if __name__ == "__main__":

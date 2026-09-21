@@ -92,7 +92,6 @@ class TestUVAtlas(unittest.TestCase):
         stats = {}
         out_mesh, baked_pil, stats = rechart_and_bake_high_density(
             self.mesh,
-            target_res=256,
             source_image=orig_img,
             source_uv=orig_uv,
             dilation_padding=8,
@@ -154,7 +153,6 @@ class TestUVAtlas(unittest.TestCase):
         # Test with dilation_padding=0: UVAtlas must MANDATORILY apply at least 8px dilation
         baked_mesh, baked_pil, stats = rechart_and_bake_high_density(
             mesh_box,
-            target_res=256,
             source_image=tex_img,
             source_uv=uv,
             dilation_padding=0,

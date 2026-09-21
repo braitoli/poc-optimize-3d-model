@@ -38,9 +38,15 @@ Usage: optimize-3d <input.glb> <output.glb> [options]
 Zero-decimation .glb optimizer (runs optimizer.step_pipeline).
 
 Options:
-  -r, --resolution RES  Target texture size: auto, 512, 1024, 2048, ... (default: auto; never upscales)
   -f, --format FMT      Texture format: ktx2, webp, original (default: ktx2)
       --uv-mode MODE    UV unwrap mode: xatlas, uvatlas (default: xatlas)
+      --downscale on|off
+                        on: re-chart UVs on a canvas sized at 1:1 texel density
+                        (original kept when that canvas is not smaller);
+                        off: keep original UVs, texture and resolution (default: on)
+      --size-mode MODE  Canvas size when downscale is on: exact (smallest square,
+                        multiple of 4), pot-up (power of two, 1:1 or better),
+                        pot-down (power of two, islands scaled down) (default: exact)
       --double-sided    Keep double-sided materials (default: single-sided FrontSide)
   -q, --quiet           Suppress progress logs
   -h, --help            Show this help and exit
@@ -57,7 +63,7 @@ while [[ $# -gt 0 ]]; do
             usage
             exit 0
             ;;
-        -r|--resolution|-f|--format|--uv-mode)
+        -f|--format|--uv-mode|--downscale|--size-mode)
             if [[ $# -lt 2 ]]; then
                 echo "Error: $1 requires a value." >&2
                 exit 2

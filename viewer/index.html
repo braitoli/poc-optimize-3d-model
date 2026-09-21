@@ -83,13 +83,26 @@
           </select>
         </div>
 
-        <!-- Auto Texel Density Status Badge -->
-        <div class="config-item config-item-status" title="Hệ thống tự động đánh giá Texel Density để quyết định downscale hoặc giữ nguyên độ phân giải và tối ưu hóa không gian UV">
-          <label class="config-label">Resolution Policy</label>
-          <div class="auto-density-badge">
-            <span class="status-pulse-dot"></span>
-            <span class="badge-text">Auto Texel Density</span>
-          </div>
+        <!-- Downscale (Step 3) -->
+        <div class="config-item config-item-downscale">
+          <label class="config-label" for="downscaleSelect">
+            Downscale
+            <span class="policy-tooltip-trigger" title="Bật: re-chart UV và bake texture trên canvas vừa đủ ở mật độ texel 1:1 (giữ nguyên bản gốc nếu canvas không nhỏ hơn texture gốc). Tắt: giữ nguyên UV, texture và độ phân giải gốc">ⓘ</span>
+          </label>
+          <select class="config-select" id="downscaleSelect">
+            <option value="on" selected>Bật</option>
+            <option value="off" title="Giữ nguyên UV, texture và độ phân giải gốc">Tắt</option>
+          </select>
+        </div>
+
+        <!-- Canvas Size Mode (Step 3) -->
+        <div class="config-item config-item-size">
+          <label class="config-label" for="sizeModeSelect">Canvas Size</label>
+          <select class="config-select" id="sizeModeSelect">
+            <option value="exact" selected>Vừa khít (1:1)</option>
+            <option value="pot-up">Lũy thừa 2 – giữ 1:1</option>
+            <option value="pot-down">Lũy thừa 2 – thu nhỏ đảo</option>
+          </select>
         </div>
       </div>
 

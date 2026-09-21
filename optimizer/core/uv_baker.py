@@ -7,17 +7,14 @@ Ensures zero black edge bleeding during GPU texture mipmapping.
 """
 
 import math
-from typing import Tuple, Optional, Dict, Any, Union
+from typing import Tuple, Optional, Dict, Any
 import numpy as np
 from PIL import Image
 from scipy import ndimage
 import trimesh
 import xatlas
 from optimizer.core.uvatlas import unwrap_mesh_uvatlas
-from optimizer.core.texture_utils import (
-    clamp_target_resolution,
-    optimize_mesh_texture_for_export
-)
+from optimizer.core.texture_utils import optimize_mesh_texture_for_export
 
 
 def _sample_texture_bilinear(image_rgb: np.ndarray, uv: np.ndarray) -> np.ndarray:
@@ -277,211 +274,270 @@ def get_adaptive_pack_options(n_faces: int, target_res: int, padding: int = 2) -
     return p_opts
 
 
-def compute_original_island_pixels(
-    mesh: trimesh.Trimesh,
-    source_image: Image.Image,
-    uv: Optional[np.ndarray] = None,
-    sample_dim: int = 1024
-) -> Tuple[float, float]:
+SIZE_MODES = ("exact", "pot-up", "pot-down")
+UNWRAP_METHODS = ("xatlas", "uvatlas")
+
+CANVAS_BLOCK_PX = 4           # KTX2 / GPU block size: canvas sides are multiples of 4
+CANVAS_MARGIN_PX = 4          # border kept free around the islands by maximize_uv_bounds
+XATLAS_PADDING_PX = 2         # xatlas chart padding (+1 bilinear texel) in final-canvas pixels
+MIN_TEXEL_DENSITY_RATIO = 0.97  # exact / pot-up must keep T_new / T_src >= this
+MAX_PACK_PASSES = 4           # bound on every sizing loop (xatlas re-packs, UVAtlas passes)
+UVATLAS_INITIAL_FILL = 0.5    # first guess of the UV area fraction UVAtlas fills (gutter 4 px)
+
+
+def _uv_triangle_areas(uv: np.ndarray, faces: np.ndarray) -> np.ndarray:
+    tri = np.asarray(uv, dtype=np.float64)[np.asarray(faces, dtype=np.int64)]
+    e1 = tri[:, 1] - tri[:, 0]
+    e2 = tri[:, 2] - tri[:, 0]
+    return 0.5 * np.abs(e1[:, 0] * e2[:, 1] - e1[:, 1] * e2[:, 0])
+
+
+def texel_density(
+    vertices: np.ndarray,
+    faces: np.ndarray,
+    uv: np.ndarray,
+    width: int,
+    height: int
+) -> float:
     """
-    Calculates the actual pixel area occupied by all UV islands on the original texture:
-      1. Rasterizes the original UV triangles onto a sample_dim x sample_dim grid.
-      2. Computes coverage ratio = len(covered_pixels) / (sample_dim * sample_dim).
-      3. Calculates orig_island_pixels = coverage_ratio * (orig_width * orig_height).
-    Returns:
-      (orig_island_pixels, coverage_ratio)
+    Average texel density in texels per 3D unit:
+        T = sqrt( sum_f uvArea_f * W * H / sum_f area3D_f )
+    Summed per face, so overlapping or mirrored UVs count once per use (a re-chart gives every
+    face its own space).
     """
-    w, h = source_image.size
-    total_pixels = float(w * h)
-    if uv is None:
-        uv = getattr(mesh.visual, "uv", None)
-
-    if uv is None or len(uv) == 0 or len(mesh.faces) == 0:
-        return total_pixels, 1.0
-
-    uv_clean = np.clip(uv, 0.0, 1.0)
-    grid_dim = min(sample_dim, max(w, h))
-    grid_dim = max(256, grid_dim)
-
-    sel, _, _ = _rasterize_uv_atlas(mesh.faces, uv_clean, dim=grid_dim)
-    if len(sel) == 0:
-        return total_pixels, 1.0
-
-    coverage_ratio = float(len(sel)) / float(grid_dim * grid_dim)
-    orig_island_pixels = coverage_ratio * total_pixels
-    return float(orig_island_pixels), float(coverage_ratio)
+    faces = np.asarray(faces, dtype=np.int64)
+    area_3d = float(trimesh.triangles.area(np.asarray(vertices, dtype=np.float64)[faces]).sum())
+    if area_3d <= 0.0:
+        raise ValueError("Mesh has zero surface area: texel density is undefined")
+    area_uv = float(_uv_triangle_areas(uv, faces).sum())
+    return math.sqrt(area_uv * float(width) * float(height) / area_3d)
 
 
-def select_repack_canvas_resolution(
-    mesh: trimesh.Trimesh,
-    source_image: Image.Image,
-    source_uv: Optional[np.ndarray] = None,
-    requested_res: Union[int, str] = "auto",
-    sample_dim: int = 1024
-) -> Tuple[int, Dict[str, Any]]:
+def _round_up_to_block(size: float) -> int:
+    return int(math.ceil(size / CANVAS_BLOCK_PX)) * CANVAS_BLOCK_PX
+
+
+def _pow2_at_least(n: int) -> int:
+    return 1 << (int(n) - 1).bit_length()
+
+
+def _pow2_at_most(n: int) -> int:
+    return 1 << (int(n).bit_length() - 1)
+
+
+def _layout_texel_density(layout: Dict[str, Any]) -> float:
+    canvas = layout["canvas"]
+    return texel_density(layout["vertices"], layout["faces"], layout["uv"], canvas, canvas)
+
+
+def _xatlas_natural_atlas(mesh: trimesh.Trimesh, texels_per_unit: float) -> Dict[str, Any]:
     """
-    Capacity Check 1:1 UV Island Packing:
-    Finds the smallest canvas size S in {1024, 2048, 4096} such that UV islands
-    fit into S x S while preserving their 1:1 texel scale (no island shrinking).
-
-    - S = 1024 if orig_island_pixels <= 1_048_576 (~1M pixels, e.g. scans with 80% wasted canvas)
-    - S = 2048 if 1_048_576 < orig_island_pixels <= 4_350_000 (~4.2M - 4.3M pixels, e.g. Flamibo)
-    - S = 4096 if orig_island_pixels > 4_350_000
-
-    Strictly adheres to NO-UPSCALE policy: S <= max_pot(max(w, h)).
+    Charts and packs the mesh with xatlas at `texels_per_unit` and resolution 0, i.e. one atlas
+    whose size xatlas grows until every chart fits. Returns the layout in atlas pixels.
     """
-    w, h = source_image.size
-    orig_max = max(w, h)
-    orig_island_pixels, coverage_ratio = compute_original_island_pixels(
-        mesh, source_image, uv=source_uv, sample_dim=sample_dim
+    n_faces = len(mesh.faces)
+    c_opts = get_adaptive_chart_options(n_faces)
+    p_opts = get_adaptive_pack_options(n_faces, target_res=0, padding=XATLAS_PADDING_PX)
+    p_opts.texels_per_unit = float(texels_per_unit)
+
+    atlas = xatlas.Atlas()
+    # 3D mesh unwrap (not add_uv_mesh): no giant sliver triangles or unassigned (0, 0) UVs
+    atlas.add_mesh(
+        np.ascontiguousarray(mesh.vertices, dtype=np.float32),
+        np.ascontiguousarray(mesh.faces, dtype=np.uint32)
+    )
+    atlas.generate(chart_options=c_opts, pack_options=p_opts)
+    if atlas.atlas_count != 1:
+        raise RuntimeError(
+            f"xatlas packed {atlas.atlas_count} atlases at {texels_per_unit:.3f} texels/unit "
+            f"(expected exactly one)"
+        )
+
+    vmapping, indices, uv = atlas[0]
+    vmapping = np.asarray(vmapping, dtype=np.int64)
+    return {
+        "vertices": np.asarray(mesh.vertices, dtype=np.float64)[vmapping],
+        "faces": np.asarray(indices, dtype=np.int64),
+        "vmapping": vmapping,
+        # xatlas normalises UVs by the atlas width / height: back to atlas pixels
+        "uv_px": np.asarray(uv, dtype=np.float64) * np.array([atlas.width, atlas.height], dtype=np.float64),
+        "extent": max(int(atlas.width), int(atlas.height)),
+        "texels_per_unit": float(texels_per_unit),
+        "meta": {
+            "xatlas_chart_count": int(atlas.chart_count),
+            "xatlas_atlas_count": int(atlas.atlas_count),
+            "xatlas_atlas_size": f"{int(atlas.width)}x{int(atlas.height)}",
+            "xatlas_texels_per_unit": round(float(texels_per_unit), 4),
+            "xatlas_utilization_percent": round(float(atlas.utilization * 100.0), 2),
+        }
+    }
+
+
+def _place_on_canvas(natural: Dict[str, Any], canvas: int) -> Dict[str, Any]:
+    """Puts an xatlas pixel layout on a canvas x canvas texture; maximize_uv_bounds then scales the
+    islands uniformly (never below their packed size when the atlas fits) to fill the canvas."""
+    uv = maximize_uv_bounds(natural["uv_px"] / float(canvas), target_res=canvas, padding_px=CANVAS_MARGIN_PX)
+    return {
+        "vertices": natural["vertices"],
+        "faces": natural["faces"],
+        "vmapping": natural["vmapping"],
+        "uv": uv,
+        "canvas": canvas,
+        "meta": dict(natural["meta"]),
+    }
+
+
+def _uvatlas_layout(mesh: trimesh.Trimesh, canvas: int, gutter: float) -> Dict[str, Any]:
+    """Microsoft UVAtlas unwrap packed into a canvas x canvas square (gutter in canvas pixels)."""
+    vertices, faces, uv, vmapping, meta = unwrap_mesh_uvatlas(
+        mesh=mesh,
+        target_res=canvas,
+        gutter=max(4.0, float(gutter))
+    )
+    uv = maximize_uv_bounds(np.asarray(uv, dtype=np.float64), target_res=canvas, padding_px=CANVAS_MARGIN_PX)
+    return {
+        "vertices": np.asarray(vertices, dtype=np.float64),
+        "faces": np.asarray(faces, dtype=np.int64),
+        "vmapping": np.asarray(vmapping, dtype=np.int64),
+        "uv": uv,
+        "canvas": canvas,
+        "meta": dict(meta),
+    }
+
+
+def _fit_xatlas(mesh: trimesh.Trimesh, t_src: float) -> Dict[str, Any]:
+    """
+    Exact fit with xatlas: pack at texels_per_unit = T_src (xatlas scales every chart to that
+    density) into a single atlas sized to fit, then S = max(atlas side) + border margins, rounded
+    up to the block size. xatlas can land slightly under the requested density; if T_new / T_src
+    falls below the minimum, re-pack at a proportionally higher density (bounded).
+    """
+    tpu = t_src
+    tried = []
+    for _ in range(MAX_PACK_PASSES):
+        natural = _xatlas_natural_atlas(mesh, tpu)
+        fit = _round_up_to_block(natural["extent"] + 2 * CANVAS_MARGIN_PX)
+        layout = _place_on_canvas(natural, fit)
+        ratio = _layout_texel_density(layout) / t_src
+        tried.append((fit, round(ratio, 4)))
+        if ratio >= MIN_TEXEL_DENSITY_RATIO:
+            return {"fit": fit, "natural": natural, "layouts": {fit: layout}, "passes": len(tried)}
+        tpu /= ratio
+    raise RuntimeError(
+        f"xatlas could not pack at {MIN_TEXEL_DENSITY_RATIO} of the source texel density "
+        f"within {MAX_PACK_PASSES} passes (canvas, ratio): {tried}"
     )
 
-    max_pot = 1 << int(math.floor(math.log2(orig_max)))
-    max_pot = max(256, max_pot)
 
-    is_auto = isinstance(requested_res, str) and requested_res.lower() == "auto"
+def _fit_uvatlas(mesh: trimesh.Trimesh, t_src: float, source_px_area: float, gutter: float) -> Dict[str, Any]:
+    """
+    Exact fit with UVAtlas. UVAtlas always scales its charts to fill the square it is given, so the
+    density grows about linearly with S; the fixed-pixel gutter makes the filled fraction grow
+    slightly with S as well. Iterate S <- S / (T_new / T_src) (bounded) and keep the smallest S
+    whose layout reaches the minimum density ratio.
+    """
+    canvas = _round_up_to_block(math.sqrt(source_px_area / UVATLAS_INITIAL_FILL))
+    layouts: Dict[int, Dict[str, Any]] = {}
+    ratios: Dict[int, float] = {}
+    for _ in range(MAX_PACK_PASSES):
+        layout = _uvatlas_layout(mesh, canvas, gutter)
+        ratio = _layout_texel_density(layout) / t_src
+        if ratio <= 0.0:
+            raise RuntimeError(f"UVAtlas produced a layout with zero UV area at {canvas}x{canvas}")
+        layouts[canvas] = layout
+        ratios[canvas] = round(ratio, 4)
+        next_canvas = _round_up_to_block(canvas / ratio)
+        if next_canvas in layouts:
+            break
+        canvas = next_canvas
 
-    if not is_auto:
-        try:
-            req_int = int(requested_res)
-            selected_res = min(req_int, max_pot)
-            reason = f"manual_override ({req_int})"
-        except (ValueError, TypeError):
-            is_auto = True
-
-    if is_auto:
-        if orig_island_pixels <= 1_048_576:
-            candidate_res = 1024
-            reason = f"capacity_1024 (orig_islands={orig_island_pixels:,.0f} <= 1,048,576)"
-        elif orig_island_pixels <= 4_350_000:
-            candidate_res = 2048
-            reason = f"capacity_2048 (orig_islands={orig_island_pixels:,.0f} fits in 2048x2048 1:1)"
-        else:
-            candidate_res = 4096
-            reason = f"capacity_4096 (orig_islands={orig_island_pixels:,.0f} > 4.35M)"
-
-        selected_res = min(candidate_res, max_pot)
-        if selected_res < candidate_res:
-            reason += f" (clamped to max_pot={selected_res} by NO-UPSCALE policy)"
-
-    details = {
-        "orig_size": (w, h),
-        "orig_max": orig_max,
-        "orig_island_pixels": round(orig_island_pixels, 1),
-        "coverage_ratio": round(coverage_ratio, 4),
-        "selected_resolution": selected_res,
-        "capacity_reason": reason,
-        "is_auto": is_auto
-    }
-    return selected_res, details
+    fitting = [s for s, r in ratios.items() if r >= MIN_TEXEL_DENSITY_RATIO]
+    if not fitting:
+        raise RuntimeError(
+            f"UVAtlas did not reach {MIN_TEXEL_DENSITY_RATIO} of the source texel density "
+            f"within {MAX_PACK_PASSES} passes (canvas: ratio): {ratios}"
+        )
+    return {"fit": min(fitting), "layouts": layouts, "passes": len(ratios)}
 
 
-def can_downscale_texture(
+def plan_uv_canvas(
     mesh: trimesh.Trimesh,
-    current_res: int,
-    old_uv: Optional[np.ndarray],
-    new_uv: np.ndarray,
-    new_faces: Optional[np.ndarray] = None,
-    min_res: int = 1024,
-    td_threshold_ratio: float = 0.85,
-    sample_dim: int = 256,
-    orig_island_pixels: Optional[float] = None
-) -> Tuple[bool, int, Dict[str, Any]]:
+    source_image: Image.Image,
+    source_uv: np.ndarray,
+    size_mode: str = "exact",
+    unwrap_method: str = "xatlas",
+    uvatlas_gutter: float = 4.0
+) -> Dict[str, Any]:
     """
-    Bước B: Checks if texture resolution can be safely downscaled to the next power-of-two tier
-    (e.g., 4096 -> 2048, or 2048 -> 1024) without visual loss, by comparing Texel Density
-    AND strictly enforcing 1:1 island capacity check:
-      TD = effective_uv_area * Res^2 / surface_area_3d
-
-    Downscales only if:
-    1. current_res in (4096, 2048) and current_res > min_res
-    2. Capacity Check: downscaling to 1024 is permitted ONLY if orig_island_pixels <= 1,048,576 (~1M)
-       and downscaling to 2048 is permitted if orig_island_pixels <= 4,350,000 (~4.3M)
-    3. TD_new_downscaled >= td_threshold_ratio * TD_orig (e.g., >= 0.85 * TD_orig)
-
-    Returns:
-      (can_downscale, target_res, details)
+    Sizes the square re-chart canvas at the source's 1:1 average texel density (see
+    texel_density; source texture W x H, source UVs per face):
+      - fit_resolution: smallest S x S holding the packed islands at 1:1, S % 4 == 0.
+      - final_resolution: exact -> fit; pot-up -> smallest power of two >= fit;
+        pot-down -> largest power of two <= fit (islands scaled down, lossy).
+    Charts and packs at the fit size; the final canvas is packed by bake_uv_plan.
     """
-    mesh_area = float(max(mesh.area, 1e-6))
+    if size_mode not in SIZE_MODES:
+        raise ValueError(f"Unsupported size_mode '{size_mode}' (expected one of {', '.join(SIZE_MODES)})")
+    if unwrap_method not in UNWRAP_METHODS:
+        raise ValueError(f"Unsupported unwrap_method '{unwrap_method}' (expected one of {', '.join(UNWRAP_METHODS)})")
 
-    # 1. Measure effective UV area for old UV
-    if old_uv is not None and len(old_uv) > 0 and len(mesh.faces) > 0:
-        sel_old, _, _ = _rasterize_uv_atlas(mesh.faces, old_uv, dim=sample_dim)
-        effective_uv_area_old = float(len(sel_old)) / float(sample_dim * sample_dim)
+    src_w, src_h = source_image.size
+    t_src = texel_density(mesh.vertices, mesh.faces, source_uv, src_w, src_h)
+    if t_src <= 0.0:
+        raise ValueError("Source UVs have zero area: the canvas cannot be sized at 1:1 texel density")
+
+    if unwrap_method == "xatlas":
+        fit_info = _fit_xatlas(mesh, t_src)
     else:
-        effective_uv_area_old = 0.5
+        source_px_area = float(_uv_triangle_areas(source_uv, mesh.faces).sum()) * src_w * src_h
+        fit_info = _fit_uvatlas(mesh, t_src, source_px_area, uvatlas_gutter)
 
-    effective_uv_area_old = max(effective_uv_area_old, 1e-4)
-
-    # 2. Measure effective UV area for new packed UV
-    faces_to_check = new_faces if new_faces is not None else mesh.faces
-    if new_uv is not None and len(new_uv) > 0 and len(faces_to_check) > 0:
-        sel_new, _, _ = _rasterize_uv_atlas(faces_to_check, new_uv, dim=sample_dim)
-        effective_uv_area_new = float(len(sel_new)) / float(sample_dim * sample_dim)
-    else:
-        effective_uv_area_new = 0.75
-
-    effective_uv_area_new = max(effective_uv_area_new, 1e-4)
-
-    # 3. Calculate original Texel Density
-    # TD = effective_uv_area * Res^2 / surface_area_3d
-    td_orig = (effective_uv_area_old * (current_res ** 2)) / mesh_area
-
-    if orig_island_pixels is None:
-        orig_island_pixels = effective_uv_area_old * (current_res ** 2)
-
-    # 4. Determine next lower power-of-two tier
-    if current_res >= 4096:
-        downscaled_res = 2048
-    elif current_res >= 2048:
-        downscaled_res = 1024
-    else:
-        downscaled_res = current_res
-
-    can_downscale = False
-    capacity_passed = True
-    if current_res > min_res and downscaled_res < current_res and downscaled_res >= min_res:
-        # Enforce 1:1 capacity check
-        if downscaled_res == 1024 and orig_island_pixels > 1_048_576:
-            capacity_passed = False
-        elif downscaled_res == 2048 and orig_island_pixels > 4_350_000:
-            capacity_passed = False
-
-        td_new_downscaled = (effective_uv_area_new * (downscaled_res ** 2)) / mesh_area
-        if capacity_passed and td_new_downscaled >= td_threshold_ratio * td_orig:
-            can_downscale = True
-            target_res = downscaled_res
-            td_final = td_new_downscaled
-        else:
-            can_downscale = False
-            target_res = current_res
-            td_final = (effective_uv_area_new * (target_res ** 2)) / mesh_area
-    else:
-        can_downscale = False
-        target_res = current_res
-        td_final = (effective_uv_area_new * (target_res ** 2)) / mesh_area
-
-    td_delta = td_final - td_orig
-    td_delta_pct = (td_delta / td_orig * 100.0) if td_orig > 0 else 0.0
-
-    details = {
-        "downscaled": can_downscale,
-        "originalResolution": f"{current_res}x{current_res}",
-        "finalResolution": f"{target_res}x{target_res}",
-        "original_resolution": current_res,
-        "final_resolution": target_res,
-        "orig_island_pixels": round(float(orig_island_pixels), 1),
-        "capacity_passed": capacity_passed,
-        "uvCoverageRatio": round(effective_uv_area_new, 4),
-        "uvCoverageRatioOrig": round(effective_uv_area_old, 4),
-        "texelDensityOrig": round(td_orig, 2),
-        "texelDensityFinal": round(td_final, 2),
-        "texelDensityDelta": round(td_delta, 2),
-        "texelDensityDeltaPercent": round(td_delta_pct, 2),
-        "td_threshold_ratio": td_threshold_ratio,
-        "mesh_surface_area": round(mesh_area, 4)
+    fit = fit_info["fit"]
+    final = {"exact": fit, "pot-up": _pow2_at_least(fit), "pot-down": _pow2_at_most(fit)}[size_mode]
+    return {
+        "size_mode": size_mode,
+        "unwrap_method": unwrap_method,
+        "uvatlas_gutter": float(uvatlas_gutter),
+        "source_resolution": (src_w, src_h),
+        "texel_density_source": t_src,
+        "fit_resolution": fit,
+        "final_resolution": final,
+        "fit_passes": fit_info["passes"],
+        # Layouts already packed, by canvas size (reused when the final canvas equals one of them)
+        "layouts": fit_info["layouts"],
+        # xatlas pixel layout at 1:1 (pot-up re-uses it on the larger canvas)
+        "xatlas_natural": fit_info.get("natural"),
     }
-    return can_downscale, target_res, details
+
+
+def _final_layout(mesh: trimesh.Trimesh, plan: Dict[str, Any]) -> Tuple[Dict[str, Any], bool]:
+    """Layout packed for the plan's final canvas. Returns (layout, repacked_at_final_resolution)."""
+    canvas = plan["final_resolution"]
+    if canvas in plan["layouts"]:
+        return plan["layouts"][canvas], False
+
+    if plan["unwrap_method"] == "uvatlas":
+        return _uvatlas_layout(mesh, canvas, plan["uvatlas_gutter"]), True
+
+    natural = plan["xatlas_natural"]
+    if canvas > plan["fit_resolution"]:
+        # pot-up: the 1:1 packing fits the larger canvas as is (padding already in final pixels);
+        # maximize_uv_bounds scales the islands and gutters up to fill it.
+        return _place_on_canvas(natural, canvas), False
+
+    # pot-down: re-pack at a lower density so the atlas fits the smaller canvas and the padding
+    # stays in final-canvas pixels (scaling the 1:1 layout down would shrink the gutters).
+    tried = []
+    for _ in range(MAX_PACK_PASSES):
+        tpu = natural["texels_per_unit"] * (canvas - 2 * CANVAS_MARGIN_PX) / natural["extent"] * 0.99
+        natural = _xatlas_natural_atlas(mesh, tpu)
+        tried.append((round(tpu, 3), natural["extent"]))
+        if natural["extent"] + 2 * CANVAS_MARGIN_PX <= canvas:
+            return _place_on_canvas(natural, canvas), True
+    raise RuntimeError(
+        f"xatlas could not fit the charts into {canvas}x{canvas} within {MAX_PACK_PASSES} passes "
+        f"(texels/unit, atlas side): {tried}"
+    )
 
 
 def maximize_uv_bounds(
@@ -516,49 +572,180 @@ def maximize_uv_bounds(
     return uv_out
 
 
-def rechart_and_bake_high_density(
+# Non tangent-space PBR slots: resampled into the new UV layout like the base colour
+_RESAMPLED_TEXTURE_SLOTS = ("metallicRoughnessTexture", "occlusionTexture", "emissiveTexture")
+_FLAT_NORMAL_RGB = (128, 128, 255)
+
+
+def _slot_rgb(mat: Any, slot: str) -> Optional[np.ndarray]:
+    """(H, W, 3) uint8 pixels of a material texture slot; None if the slot is empty. Fails fast otherwise."""
+    img = getattr(mat, slot, None)
+    if img is None:
+        return None
+    if not isinstance(img, Image.Image):
+        raise TypeError(f"Material {slot} is a {type(img).__name__}, expected a PIL image")
+    try:
+        return np.asarray(img.convert("RGB"), dtype=np.uint8)
+    except Exception as err:
+        raise RuntimeError(f"Cannot read the material {slot} image for re-baking: {err}") from err
+
+
+def _face_uv_derivatives(tri_pos: np.ndarray, tri_uv: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Per-face T = dp/du, B = dp/dv: the frame three.js derives when a glTF has no TANGENT attribute.
+    In trimesh's v-up UV space (glTF V flipped on load) the glTF normal-map convention is
+    +X = +dp/du, +Y = +dp/dv. Returns (T, B, valid); valid is False for degenerate UV triangles.
+    """
+    dp1 = tri_pos[:, 1] - tri_pos[:, 0]
+    dp2 = tri_pos[:, 2] - tri_pos[:, 0]
+    duv1 = tri_uv[:, 1] - tri_uv[:, 0]
+    duv2 = tri_uv[:, 2] - tri_uv[:, 0]
+    r = duv1[:, 0] * duv2[:, 1] - duv2[:, 0] * duv1[:, 1]
+    # |r| = |duv1| |duv2| sin(angle): relative test, so tiny but well-shaped UV triangles stay valid
+    valid = np.abs(r) > 1e-9 * np.linalg.norm(duv1, axis=1) * np.linalg.norm(duv2, axis=1)
+    inv_r = (1.0 / np.where(valid, r, 1.0))[:, None]
+    t = (dp1 * duv2[:, 1:2] - dp2 * duv1[:, 1:2]) * inv_r
+    b = (dp2 * duv1[:, 0:1] - dp1 * duv2[:, 0:1]) * inv_r
+    return t, b, valid
+
+
+def _tangent_frame(t: np.ndarray, b: np.ndarray, n: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Orthonormal (T, B) around unit n: Gram-Schmidt T, B = cross(n, T) signed like b (keeps mirroring)."""
+    t_len0 = np.linalg.norm(t, axis=1)
+    t = t - n * np.sum(n * t, axis=1, keepdims=True)
+    t_len = np.linalg.norm(t, axis=1)
+    valid = t_len > 1e-6 * t_len0
+    t = t / np.where(valid, t_len, 1.0)[:, None]
+    bt = np.cross(n, t)
+    bt *= np.where(np.sum(bt * b, axis=1) < 0.0, -1.0, 1.0)[:, None]
+    return t, bt, valid
+
+
+def _rebake_normal_map(
+    normal_rgb: np.ndarray,
+    tri_pos: np.ndarray,
+    old_tri_uv: np.ndarray,
+    new_tri_uv: np.ndarray,
+    tri_normals: Optional[np.ndarray],
+    fid: np.ndarray,
+    bary: np.ndarray,
+    src_uv: np.ndarray,
+    chunk: int = 1 << 20
+) -> Tuple[np.ndarray, int]:
+    """
+    Re-bakes a tangent-space normal map into the new UV layout. Per baked pixel: sample the old map at
+    src_uv, decode (rgb / 255 * 2 - 1), to object space with the OLD per-face frame, back with the NEW
+    per-face frame (same face positions, same interpolated vertex normal N), normalize, encode.
+    Pixels whose old or new frame is degenerate keep the sampled value.
+    tri_* are per new face: positions, old / new UVs, vertex normals (None -> face normal).
+    Returns (encoded (P, 3) float in [0, 255], degenerate pixel count).
+    """
+    t_old, b_old, ok_old = _face_uv_derivatives(tri_pos, old_tri_uv)
+    t_new, b_new, ok_new = _face_uv_derivatives(tri_pos, new_tri_uv)
+    ok_face = ok_old & ok_new
+    if tri_normals is None:
+        face_n = np.cross(tri_pos[:, 1] - tri_pos[:, 0], tri_pos[:, 2] - tri_pos[:, 0])
+
+    encoded = np.empty((len(fid), 3), dtype=np.float64)
+    degenerate = 0
+    for s in range(0, len(fid), chunk):  # bounded memory on multi-million pixel canvases
+        f = fid[s:s + chunk]
+        n_ts = _sample_texture_bilinear(normal_rgb, src_uv[s:s + chunk]) / 255.0 * 2.0 - 1.0
+        n = face_n[f] if tri_normals is None else np.einsum("pk,pkj->pj", bary[s:s + chunk], tri_normals[f])
+        n_len = np.linalg.norm(n, axis=1)
+        n = n / np.where(n_len > 0.0, n_len, 1.0)[:, None]
+        t0, b0, ok0 = _tangent_frame(t_old[f], b_old[f], n)
+        t1, b1, ok1 = _tangent_frame(t_new[f], b_new[f], n)
+        n_os = n_ts[:, 0:1] * t0 + n_ts[:, 1:2] * b0 + n_ts[:, 2:3] * n
+        out = np.stack([np.sum(n_os * t1, axis=1), np.sum(n_os * b1, axis=1), np.sum(n_os * n, axis=1)], axis=1)
+        out_len = np.linalg.norm(out, axis=1)
+        ok = ok_face[f] & (n_len > 0.0) & ok0 & ok1 & (out_len > 0.0)
+        out = np.where(ok[:, None], out / np.where(ok, out_len, 1.0)[:, None], n_ts)
+        encoded[s:s + chunk] = (out * 0.5 + 0.5) * 255.0
+        degenerate += int(np.count_nonzero(~ok))
+    return encoded, degenerate
+
+
+def _rebake_material_slots(
+    mat: Any,
     mesh: trimesh.Trimesh,
-    target_res: int = 1024,
-    source_image: Optional[Image.Image] = None,
-    source_uv: Optional[np.ndarray] = None,
+    source_uv: np.ndarray,
+    orig_face_verts: np.ndarray,
+    new_tri_uv: np.ndarray,
+    sel: np.ndarray,
+    fid: np.ndarray,
+    bary: np.ndarray,
+    src_uv: np.ndarray,
+    covered: np.ndarray,
+    padding: int
+) -> Tuple[Dict[str, Image.Image], int]:
+    """
+    Re-bakes every non-base-colour texture slot of a PBRMaterial into the new UV layout with the base
+    colour's rasterization (sel / fid / bary / src_uv), canvas and dilation: the re-charted mesh no longer
+    carries the UVs those images were painted for. normalTexture is re-encoded into the new tangent frames
+    (flat-normal background); the other slots are resampled like the base colour (mean sampled background).
+    Returns ({slot: new image}, degenerate normal-frame pixel count).
+    """
+    if not isinstance(mat, trimesh.visual.material.PBRMaterial):
+        return {}, 0
+    res = covered.shape[0]
+    rebaked: Dict[str, Image.Image] = {}
+    degenerate = 0
+    for slot in ("normalTexture",) + _RESAMPLED_TEXTURE_SLOTS:
+        slot_rgb = _slot_rgb(mat, slot)
+        if slot_rgb is None:
+            continue
+        if slot == "normalTexture":
+            vn = getattr(mesh, "vertex_normals", None)
+            tri_normals = (
+                np.asarray(vn, dtype=np.float64)[orig_face_verts]
+                if vn is not None and len(vn) == len(mesh.vertices) else None
+            )
+            values, degenerate = _rebake_normal_map(
+                slot_rgb, np.asarray(mesh.vertices, dtype=np.float64)[orig_face_verts],
+                source_uv[orig_face_verts], new_tri_uv, tri_normals, fid, bary, src_uv
+            )
+            values = np.round(values)
+            background = np.array(_FLAT_NORMAL_RGB, dtype=np.uint8)
+        else:
+            values = np.nan_to_num(_sample_texture_bilinear(slot_rgb, src_uv), nan=128.0)
+            background = np.mean(values, axis=0).astype(np.uint8)
+        canvas = np.tile(background, (res * res, 1))
+        canvas[sel] = np.clip(values, 0.0, 255.0).astype(np.uint8)
+        # New PIL images: no _fast_save_data / _is_bitstream_passthrough, so the GLB gets these pixels
+        rebaked[slot] = Image.fromarray(dilate_texture(canvas.reshape(res, res, 3), covered, padding=padding), mode="RGB")
+    return rebaked, degenerate
+
+
+def bake_uv_plan(
+    mesh: trimesh.Trimesh,
+    plan: Dict[str, Any],
+    source_image: Image.Image,
+    source_uv: np.ndarray,
     dilation_padding: int = 16,
-    chart_options: Optional[Dict[str, Any]] = None,
-    pack_options: Optional[Dict[str, Any]] = None,
-    double_sided: bool = False,
-    stats: Optional[Dict[str, Any]] = None,
-    return_stats: bool = False,
-    min_downscale_res: int = 1024,
-    td_threshold_ratio: float = 0.85,
-    unwrap_method: str = "xatlas",
-    uvatlas_gutter: float = 4.0
-) -> Tuple[trimesh.Trimesh, Image.Image] | Tuple[trimesh.Trimesh, Image.Image, Dict[str, Any]]:
+    double_sided: bool = False
+) -> Tuple[trimesh.Trimesh, Image.Image, Dict[str, Any]]:
     """
-    4-Stage Adaptive UV & Resolution Optimization Pipeline:
-    - Bước A: Tổ chức lại UV gom vào hình vuông [0, 1] x [0, 1] qua xatlas hoặc Microsoft UVAtlas.
-    - Bước B: can_downscale_texture kiểm tra Texel Density hạ bậc độ phân giải (4096->2048, 2048->1024).
-    - Bước C: maximize_uv_bounds hiệu chỉnh tọa độ UV nở rộng tối đa không gian canvas an toàn.
-    - Bước D: Barycentric sampling bake texture, 16px EDT dilation & FrontSide rendering (doubleSided=False).
+    Packs the charts for the plan's final canvas (see plan_uv_canvas) and bakes the source texture
+    into it: barycentric sampling, EDT dilation into the gutters, FrontSide material
+    (doubleSided=double_sided). Returns (recharted_mesh, baked_image, stats).
     """
-    # 1. Resolve source image and source UVs
-    if source_image is None:
-        orig_mat = getattr(mesh.visual, "material", None)
-        if orig_mat is not None:
-            source_image = getattr(orig_mat, "baseColorTexture", None) or getattr(orig_mat, "image", None)
-        if source_image is None:
-            source_image = Image.new("RGB", (target_res, target_res), (200, 200, 200))
+    source_uv = np.asarray(source_uv, dtype=np.float64)
+    layout, repacked = _final_layout(mesh, plan)
+    target_res = layout["canvas"]
+    vertices_recharted = layout["vertices"]
+    faces_recharted = layout["faces"]
+    uv_recharted = layout["uv"]
+    vmapping = layout["vmapping"]
 
-    # Defense-in-depth: Never upscale texture
-    target_res = clamp_target_resolution(target_res, source_image.size)
-    initial_res = target_res
-
-    orig_island_pixels, orig_coverage_ratio = compute_original_island_pixels(
-        mesh, source_image, uv=source_uv, sample_dim=1024
-    )
-
-    if source_uv is None:
-        source_uv = getattr(mesh.visual, "uv", None)
-        if source_uv is None or len(source_uv) == 0:
-            source_uv = np.zeros((len(mesh.vertices), 2), dtype=np.float32)
+    t_src = plan["texel_density_source"]
+    t_new = _layout_texel_density(layout)
+    density_ratio = t_new / t_src
+    if plan["size_mode"] in ("exact", "pot-up") and density_ratio < MIN_TEXEL_DENSITY_RATIO:
+        raise RuntimeError(
+            f"{plan['size_mode']} canvas {target_res}x{target_res} holds the islands at only "
+            f"{density_ratio:.3f} of the source texel density (minimum {MIN_TEXEL_DENSITY_RATIO})"
+        )
 
     has_alpha = source_image.mode in ("RGBA", "LA") or (
         source_image.mode == "P" and "transparency" in source_image.info
@@ -581,109 +768,10 @@ def rechart_and_bake_high_density(
         channels = 3
         out_mode = "RGB"
 
-    # =========================================================================
-    # BƯỚC A: Tổ chức lại UV gom vào hình vuông [0, 1] x [0, 1]
-    # Padding (xatlas) / gutter (UVAtlas) are pixels of the pack canvas `res`,
-    # so Bước A is re-run at the final resolution if Bước B downscales.
-    # =========================================================================
-    def _unwrap(res: int):
-        unwrap_meta: Dict[str, Any] = {}
-        use_xatlas = (unwrap_method != "uvatlas")
-        if unwrap_method == "uvatlas":
-            try:
-                eff_uvatlas_gutter = max(4.0, float(uvatlas_gutter))
-                vertices_recharted, faces_recharted, uv_recharted, vmapping, unwrap_meta = unwrap_mesh_uvatlas(
-                    mesh=mesh,
-                    target_res=res,
-                    gutter=eff_uvatlas_gutter
-                )
-            except Exception as uvatlas_err:
-                import logging
-                logging.getLogger("uv_baker").warning(
-                    f"[uv_baker] UVAtlas unwrapping failed ({uvatlas_err}). "
-                    f"Falling back to robust xatlas backend..."
-                )
-                use_xatlas = True
-                unwrap_meta = {
-                    "uvatlas_fallback": True,
-                    "uvatlas_fallback_reason": str(uvatlas_err)
-                }
-
-        if use_xatlas:
-            n_faces = len(mesh.faces)
-            c_opts = get_adaptive_chart_options(n_faces)
-            if chart_options:
-                for k, v in chart_options.items():
-                    if hasattr(c_opts, k):
-                        setattr(c_opts, k, v)
-
-            p_opts = get_adaptive_pack_options(n_faces, target_res=res, padding=2)
-            if pack_options:
-                for k, v in pack_options.items():
-                    if hasattr(p_opts, k):
-                        setattr(p_opts, k, v)
-                # Caller's texels_per_unit targets the initial canvas; rescale it for a re-pack at `res`
-                if pack_options.get("texels_per_unit"):
-                    p_opts.texels_per_unit = float(pack_options["texels_per_unit"]) * res / initial_res
-            # Anti-blur: Always ensure rotate_charts is False to avoid diagonal resampling blur
-            if not pack_options or "rotate_charts" not in pack_options:
-                p_opts.rotate_charts = False
-                p_opts.rotate_charts_to_axis = False
-
-            atlas = xatlas.Atlas()
-            # Use 3D mesh unwrap to eliminate giant sliver triangles and unassigned (0, 0) UV artifacts from add_uv_mesh
-            atlas.add_mesh(
-                np.ascontiguousarray(mesh.vertices, dtype=np.float32),
-                np.ascontiguousarray(mesh.faces, dtype=np.uint32)
-            )
-            atlas.generate(chart_options=c_opts, pack_options=p_opts)
-
-            vmapping, indices, new_uv = atlas[0]
-            vertices_recharted = np.asarray(mesh.vertices, dtype=np.float64)[np.asarray(vmapping, dtype=np.int64)]
-            faces_recharted = np.asarray(indices, dtype=np.int64)
-            uv_recharted = np.asarray(new_uv, dtype=np.float64)
-            unwrap_meta.update({
-                "xatlas_chart_count": int(atlas.chart_count),
-                "xatlas_atlas_count": int(atlas.atlas_count),
-                "xatlas_utilization_percent": round(float(atlas.utilization * 100.0), 2),
-            })
-        return vertices_recharted, faces_recharted, uv_recharted, vmapping, unwrap_meta
-
-    vertices_recharted, faces_recharted, uv_recharted, vmapping, unwrap_meta = _unwrap(initial_res)
-
-    # =========================================================================
-    # BƯỚC B: Kiểm tra xem có thể downscale không (can_downscale_texture)
-    # Enforces 1:1 capacity check so islands are never scaled down below 1:1
-    # =========================================================================
-    can_downscale, active_target_res, downscale_info = can_downscale_texture(
-        mesh=mesh,
-        current_res=initial_res,
-        old_uv=source_uv,
-        new_uv=uv_recharted,
-        new_faces=faces_recharted,
-        min_res=min_downscale_res,
-        td_threshold_ratio=td_threshold_ratio,
-        orig_island_pixels=orig_island_pixels
-    )
-    target_res = active_target_res
-
-    # Gutter guarantee at the FINAL resolution: a downscale would halve the gaps between charts
-    # (bleeding under GPU bilinear + mipmaps), so re-run Bước A at target_res.
-    repacked_at_final_resolution = target_res < initial_res
-    if repacked_at_final_resolution:
-        vertices_recharted, faces_recharted, uv_recharted, vmapping, unwrap_meta = _unwrap(target_res)
-
-    # =========================================================================
-    # BƯỚC C: Hiệu chỉnh UV để tối đa hóa không gian texture
-    # =========================================================================
-    uv_recharted = maximize_uv_bounds(uv_recharted, target_res=target_res, padding_px=4)
-
-    # =========================================================================
-    # BƯỚC D: Nướng (Bake) texture & Lan viền 16px
-    # =========================================================================
+    # Bake the texture & dilate the gutters
     sel, fid, bary = _rasterize_uv_atlas(faces_recharted, uv_recharted, target_res)
     if len(sel) == 0:
-        raise RuntimeError("Failed to rasterize UV atlas during xatlas baking.")
+        raise RuntimeError("Failed to rasterize UV atlas during baking.")
 
     # Map recharted faces through vmapping back to exact original mesh vertices
     orig_face_verts = np.asarray(vmapping, dtype=np.int64)[faces_recharted]  # (N, 3)
@@ -718,17 +806,24 @@ def rechart_and_bake_high_density(
     # and mipmapping sample valid colors instead of the background canvas.
     # For UVAtlas, charts have gutter >= 4.0 px, so we mandatorily apply at least padding=8
     # (or user-specified dilation_padding if larger).
-    min_dilation = 8 if unwrap_method == "uvatlas" else 4
+    min_dilation = 8 if plan["unwrap_method"] == "uvatlas" else 4
     eff_dilation_padding = max(min_dilation, int(dilation_padding))
     dilated_img = dilate_texture(base_img, covered, padding=eff_dilation_padding)
     dilated_pil = Image.fromarray(dilated_img, mode=out_mode)
 
     # Configure PBRMaterial with FrontSide rendering (doubleSided=double_sided, default False)
     orig_mat = getattr(mesh.visual, "material", None) if hasattr(mesh, "visual") and mesh.visual is not None else None
+    # normal / metallicRoughness / occlusion / emissive maps re-baked into the NEW layout as well
+    rebaked_textures, normal_degenerate_px = _rebake_material_slots(
+        orig_mat, mesh, source_uv, orig_face_verts, uv_recharted[faces_recharted],
+        sel, fid, bary, src_uv, covered, eff_dilation_padding
+    )
     if isinstance(orig_mat, trimesh.visual.material.PBRMaterial):
         mat = orig_mat.copy()
         mat.baseColorTexture = dilated_pil
         mat.doubleSided = double_sided
+        for slot, img in rebaked_textures.items():
+            setattr(mat, slot, img)
     else:
         mat = trimesh.visual.material.PBRMaterial(
             baseColorTexture=dilated_pil,
@@ -779,20 +874,17 @@ def rechart_and_bake_high_density(
     texel_density_area = round(float(covered_pixels / max(mesh_area, 1e-6)), 2)
 
     result_stats = {
-        "downscaled": downscale_info["downscaled"],
-        "originalResolution": downscale_info["originalResolution"],
-        "finalResolution": downscale_info["finalResolution"],
-        "original_resolution": initial_res,
+        "size_mode": plan["size_mode"],
+        "unwrap_method": plan["unwrap_method"],
+        "fit_resolution": plan["fit_resolution"],
         "final_resolution": target_res,
-        "repacked_at_final_resolution": repacked_at_final_resolution,
-        "orig_island_pixels": round(float(orig_island_pixels), 1),
+        "fit_passes": plan["fit_passes"],
+        "repacked_at_final_resolution": repacked,
+        "texel_density_source": round(float(t_src), 4),
+        "texel_density_final": round(float(t_new), 4),
+        "texel_density_ratio": round(float(density_ratio), 4),
         "textureFormat": "PNG",
         "uvCoverageRatio": round(float(covered_pixels / total_pixels), 4),
-        "uvCoverageRatioOrig": downscale_info["uvCoverageRatioOrig"],
-        "texelDensityOrig": downscale_info["texelDensityOrig"],
-        "texelDensityFinal": texel_density_area,
-        "texelDensityDelta": round(float(texel_density_area - downscale_info["texelDensityOrig"]), 2),
-        "texelDensityDeltaPercent": round(float((texel_density_area - downscale_info["texelDensityOrig"]) / max(downscale_info["texelDensityOrig"], 1e-6) * 100.0), 2),
         "target_resolution": target_res,
         "canvas_pixels": total_pixels,
         "covered_pixels": covered_pixels,
@@ -801,17 +893,52 @@ def rechart_and_bake_high_density(
         "texel_density_area": texel_density_area,
         "mesh_surface_area": round(mesh_area, 4),
         "dilation_padding": eff_dilation_padding,
+        "rebaked_texture_slots": ["baseColorTexture"] + list(rebaked_textures),
+        "normal_rebake_degenerate_pixels": normal_degenerate_px,
         "double_sided": double_sided
     }
-    result_stats.update(unwrap_meta)
+    result_stats.update(layout["meta"])
 
-    if stats is not None:
-        stats.update(result_stats)
     if hasattr(recharted_mesh, "metadata"):
         recharted_mesh.metadata["uv_metrics"] = result_stats
+    return recharted_mesh, dilated_pil, result_stats
 
+
+def rechart_and_bake_high_density(
+    mesh: trimesh.Trimesh,
+    source_image: Image.Image,
+    source_uv: np.ndarray,
+    size_mode: str = "exact",
+    unwrap_method: str = "xatlas",
+    dilation_padding: int = 16,
+    double_sided: bool = False,
+    uvatlas_gutter: float = 4.0,
+    stats: Optional[Dict[str, Any]] = None,
+    return_stats: bool = False
+) -> Tuple[trimesh.Trimesh, Image.Image] | Tuple[trimesh.Trimesh, Image.Image, Dict[str, Any]]:
+    """
+    Re-charts the UVs (xatlas or Microsoft UVAtlas) on a canvas sized by `size_mode` at the source's
+    1:1 texel density (plan_uv_canvas) and bakes the source texture into it (bake_uv_plan).
+    Always re-charts: the pipeline's keep-original rule is applied by the caller.
+    """
+    plan = plan_uv_canvas(
+        mesh,
+        source_image,
+        source_uv,
+        size_mode=size_mode,
+        unwrap_method=unwrap_method,
+        uvatlas_gutter=uvatlas_gutter
+    )
+    recharted_mesh, dilated_pil, result_stats = bake_uv_plan(
+        mesh,
+        plan,
+        source_image,
+        source_uv,
+        dilation_padding=dilation_padding,
+        double_sided=double_sided
+    )
+    if stats is not None:
+        stats.update(result_stats)
     if return_stats:
         return recharted_mesh, dilated_pil, result_stats
     return recharted_mesh, dilated_pil
-
-

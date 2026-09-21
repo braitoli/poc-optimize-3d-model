@@ -105,7 +105,6 @@ def calculate_texture_vram(width: int, height: int, is_ktx2: bool) -> int:
 def run_model_benchmark(
     model_key: str,
     model_path: Path,
-    resolution: int = 1024,
     texture_format: str = "ktx2",
     preserve_textures: bool = True,
     workdir: Optional[Path] = None,
@@ -134,7 +133,6 @@ def run_model_benchmark(
         t_pipeline_start = time.perf_counter()
 
         pipeline = StepPipeline(
-            resolution=resolution,
             texture_format=texture_format,
             smooth_normals=True,
             double_sided=False,
@@ -213,7 +211,7 @@ def run_model_benchmark(
         final_textures = step6_metrics.get("textures", [])
 
         raw_tex_res = raw_textures[0].get("resolutionFormatted", "N/A") if raw_textures else "N/A"
-        final_tex_res = final_textures[0].get("resolutionFormatted", f"{resolution}x{resolution}") if final_textures else f"{resolution}x{resolution}"
+        final_tex_res = final_textures[0].get("resolutionFormatted", "N/A") if final_textures else "N/A"
 
         raw_tex_format = raw_textures[0].get("format", "JPEG") if raw_textures else "None"
         final_tex_format = final_textures[0].get("format", texture_format.upper()) if final_textures else texture_format.upper()
@@ -229,7 +227,7 @@ def run_model_benchmark(
         # GPU VRAM after (Final)
         final_tex_vram = step6_metrics.get("totalGpuVramBytes", 0)
         if final_tex_vram == 0 and final_textures:
-            w, h = final_textures[0].get("resolution", [resolution, resolution])
+            w, h = final_textures[0].get("resolution", [0, 0])
             final_tex_vram = calculate_texture_vram(w, h, is_ktx2=(texture_format.lower() == "ktx2"))
         final_geo_vram = calculate_geometry_vram(final_faces, final_verts)
         final_total_vram = final_tex_vram + final_geo_vram
@@ -265,7 +263,6 @@ def run_model_benchmark(
             "input_path": str(model_path),
             "output_dir": str(effective_workdir),
             "pipeline_config": {
-                "target_resolution": f"{resolution}x{resolution}",
                 "texture_format": texture_format.upper(),
                 "smooth_normals": True,
                 "preserve_textures": preserve_textures,
@@ -380,7 +377,6 @@ def run_model_benchmark(
 def run_model_comparison(
     model_key: str,
     model_path: Path,
-    resolution: int = 1024,
     texture_format: str = "ktx2",
     workdir: Optional[Path] = None,
     clean_workdir: bool = False,
@@ -398,7 +394,6 @@ def run_model_comparison(
     baseline_res = run_model_benchmark(
         model_key=model_key,
         model_path=model_path,
-        resolution=resolution,
         texture_format=texture_format,
         preserve_textures=False,
         workdir=base_workdir,
@@ -411,7 +406,6 @@ def run_model_comparison(
     optimized_res = run_model_benchmark(
         model_key=model_key,
         model_path=model_path,
-        resolution=resolution,
         texture_format=texture_format,
         preserve_textures=True,
         workdir=opt_workdir,
@@ -612,12 +606,6 @@ def main() -> None:
         help="Path to save structured benchmark JSON results."
     )
     parser.add_argument(
-        "--resolution", "-r",
-        type=int,
-        default=1024,
-        help="Target texture resolution (e.g. 512, 1024, 2048)."
-    )
-    parser.add_argument(
         "--format", "-f",
         choices=["ktx2", "webp"],
         default="ktx2",
@@ -677,7 +665,7 @@ def main() -> None:
         print("=" * 80)
         print(f" Targets: {', '.join(t['key'] for t in targets)}")
         print(f" Mode: {args.mode.upper()}")
-        print(f" Resolution: {args.resolution}x{args.resolution} | Format: {args.format.upper()}")
+        print(f" Format: {args.format.upper()}")
         print(f" Rule 11 Zero-Decimation Policy: ENFORCED (100% face count preservation)")
         print("=" * 80)
 
@@ -699,7 +687,6 @@ def main() -> None:
             comp_data = run_model_comparison(
                 model_key=model_key,
                 model_path=model_path,
-                resolution=args.resolution,
                 texture_format=args.format,
                 workdir=args.workdir,
                 clean_workdir=(args.workdir is None),
@@ -711,7 +698,6 @@ def main() -> None:
             res_data = run_model_benchmark(
                 model_key=model_key,
                 model_path=model_path,
-                resolution=args.resolution,
                 texture_format=args.format,
                 preserve_textures=preserve,
                 workdir=args.workdir,

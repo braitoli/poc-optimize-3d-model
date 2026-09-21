@@ -29,7 +29,6 @@ from optimizer.core.uv_baker import (
     _rasterize_uv_atlas,
     _sample_texture_bilinear
 )
-from optimizer.core.texture_utils import clamp_target_resolution
 
 
 def measure_uv_overlap(faces: np.ndarray, uv: np.ndarray, dim: int = 1024) -> Dict[str, Any]:
@@ -92,7 +91,7 @@ def sample_vertex_colors(mesh: trimesh.Trimesh, image_pil: Image.Image) -> np.nd
     return arr[py, px]
 
 
-def test_dinoki(model_path: str, target_res: int = 1024) -> Dict[str, Any]:
+def test_dinoki(model_path: str) -> Dict[str, Any]:
     print(f"\n================================================================================")
     print(f"TESTING DINOKI: {model_path}")
     print(f"================================================================================")
@@ -109,7 +108,6 @@ def test_dinoki(model_path: str, target_res: int = 1024) -> Dict[str, Any]:
     t0 = time.perf_counter()
     baked_mesh, baked_pil, stats = rechart_and_bake_high_density(
         mesh=mesh,
-        target_res=target_res,
         source_image=raw_tex,
         source_uv=mesh.visual.uv,
         return_stats=True
@@ -168,7 +166,7 @@ def test_dinoki(model_path: str, target_res: int = 1024) -> Dict[str, Any]:
     return result
 
 
-def test_flamibo(model_path: str, target_res: int = 2048) -> Dict[str, Any]:
+def test_flamibo(model_path: str) -> Dict[str, Any]:
     print(f"\n================================================================================")
     print(f"TESTING FLAMIBO: {model_path}")
     print(f"================================================================================")
@@ -185,7 +183,6 @@ def test_flamibo(model_path: str, target_res: int = 2048) -> Dict[str, Any]:
     t0 = time.perf_counter()
     baked_mesh, baked_pil, stats = rechart_and_bake_high_density(
         mesh=mesh,
-        target_res=target_res,
         source_image=raw_tex,
         source_uv=mesh.visual.uv,
         return_stats=True
@@ -262,12 +259,12 @@ if __name__ == "__main__":
 
     results = {}
     if os.path.exists(dinoki_path):
-        results["dinoki"] = test_dinoki(dinoki_path, target_res=1024)
+        results["dinoki"] = test_dinoki(dinoki_path)
     else:
         print(f"Dinoki not found at {dinoki_path}")
 
     if os.path.exists(flamibo_path):
-        results["flamibo"] = test_flamibo(flamibo_path, target_res=2048)
+        results["flamibo"] = test_flamibo(flamibo_path)
     else:
         print(f"Flamibo not found at {flamibo_path}")
 

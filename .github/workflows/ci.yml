@@ -78,7 +78,7 @@ jobs:
           # Generate sample mock GLB
           python3 -c "from tests.fixtures import create_mock_glb; from pathlib import Path; create_mock_glb(Path('sample_ci_input.glb'))"
           # Run CLI wrapper
-          ./bin/optimize-3d sample_ci_input.glb sample_ci_opt.glb --resolution 512
+          ./bin/optimize-3d sample_ci_input.glb sample_ci_opt.glb
           # Verify output
           test -s sample_ci_opt.glb
           echo "✅ CLI E2E verification passed: $(ls -lh sample_ci_opt.glb)"
@@ -110,7 +110,7 @@ jobs:
           # Create mock GLB using container environment
           docker run --rm --entrypoint python3 -v $(pwd)/data:/data braitoli/poc-optimize-3d:ci -c "from pathlib import Path; from tests.fixtures import create_mock_glb; create_mock_glb(Path('/data/input.glb'))"
           # Execute container via volume mount
-          docker run --rm -v $(pwd)/data:/data braitoli/poc-optimize-3d:ci /data/input.glb /data/output.glb --resolution 256
+          docker run --rm -v $(pwd)/data:/data braitoli/poc-optimize-3d:ci /data/input.glb /data/output.glb
           # Verify containerized output
           test -s data/output.glb
           echo "✅ Docker container E2E execution verified successfully!"

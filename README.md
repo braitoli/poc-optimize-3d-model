@@ -19,7 +19,7 @@ flowchart TD
     A["Raw Input .glb<br/>(AI Mesh: Trellis, Tripo,...)"] --> B["Phase 1: Geometric Clean & Ground<br/>(Deduplicate, Fix Degenerate, Ground Y=0)"]
     B --> C["Phase 2: Shell Orientation<br/>(Visibility Z-Buffer: CCW FrontSide Winding)"]
     C --> D{"Phase 3: UV Mode"}
-    D -- "Re-chart (xatlas)<br/>(When UV is fragmented)" --> E["xatlas Repack & Barycentric Bake<br/>(Padding 4-16px, 1K/2K resolution)"]
+    D -- "Re-chart (xatlas)<br/>(When UV is fragmented)" --> E["xatlas Repack & Barycentric Bake<br/>(Padding 4-16px, canvas sized at 1:1 texel density)"]
     E --> G["16px Boundary Dilation<br/>(scipy ndimage: Eliminates black mipmap borders)"]
     G --> H["Phase 4: Palette & Metadata<br/>(K-Means 10 dominant colors in glTF extras)"]
     H --> I["Phase 5: Angle-Weighted Smooth Normals<br/>(Spatial vertex hashing across UV seams)"]
@@ -94,7 +94,8 @@ python3 -m optimizer.step_pipeline input.glb --output-dir out/
 
 | Flag | Short | Default | Description |
 |---|---|---|---|
-| `--resolution` | `-r` | `auto` | Target texture dimension (`auto`, `512`, `1024`, `2048`, `4096`; never upscaled) |
+| `--downscale` | | `on` | `on`: re-chart UVs on a canvas sized by `--size-mode` (original UVs & texture kept when that canvas is not smaller than the original texture); `off`: keep original UVs, texture and resolution |
+| `--size-mode` | | `exact` | Canvas at the source's 1:1 texel density: `exact` (smallest square, multiple of 4), `pot-up` (power of two, 1:1 or better), `pot-down` (power of two, islands scaled down) |
 | `--format` | `-f` | `ktx2` | GPU texture format (`ktx2`, `webp` or `original`) |
 | `--uv-mode` | | `xatlas` | UV unwrap mode (`xatlas` or `uvatlas`) |
 | `--double-sided` | | `False` | Keep DoubleSided material (default: FrontSide) |
@@ -102,14 +103,15 @@ python3 -m optimizer.step_pipeline input.glb --output-dir out/
 
 ### Examples
 
-**1. Default (auto resolution, KTX2)**:
+**1. Default (downscale on, exact 1:1 canvas, KTX2)**:
 ```bash
-./bin/optimize-3d input.glb output_1k.glb
+./bin/optimize-3d input.glb output.glb
 ```
 
-**2. High-Fidelity 2K Texture**:
+**2. Power-of-Two Canvas / Keep Original Texture**:
 ```bash
-./bin/optimize-3d input.glb output_2k.glb --resolution 2048
+./bin/optimize-3d input.glb output_pot.glb --size-mode pot-up
+./bin/optimize-3d input.glb output_orig.glb --downscale off
 ```
 
 **3. WebP Fallback Format**:

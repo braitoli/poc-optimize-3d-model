@@ -7,10 +7,8 @@ Prevents redundant re-compression to heavy PNGs during Steps 1 & 2.
 """
 
 from pathlib import Path
-from typing import Dict, Any, Optional, Tuple, Union
+from typing import Dict, Any, Optional
 import io
-import math
-import sys
 import numpy as np
 from PIL import Image
 import trimesh
@@ -116,50 +114,6 @@ def preserve_mesh_textures(mesh: trimesh.Trimesh, tex_info: Dict[str, Any]) -> N
                 img.save = make_fast_save(raw_bytes)
                 img._fast_save_data = raw_bytes
                 img._is_bitstream_passthrough = True
-
-
-def clamp_target_resolution(
-    requested_res: Union[int, str],
-    orig_size: Tuple[int, int],
-    logger_fn: Optional[Any] = None
-) -> int:
-    """
-    Core principle: NEVER UPSCALE TEXTURES.
-    If requested_res == 'auto':
-        Calculates the largest power of 2 <= max(orig_size).
-    If requested_res > max(orig_size):
-        Clamps to the largest power of 2 such that 2**k <= max(orig_size).
-        (e.g., for 1536x1536, max POT <= 1536 is 1024; for 768x768, max POT <= 768 is 512).
-    If requested_res <= max(orig_size):
-        Retains requested_res unchanged.
-    Logs clearly:
-        [Step 3] Original texture: {w}x{h}, requested: {requested_res} -> clamped to {target_res} (NO-UPSCALE policy)
-    """
-    w, h = orig_size
-    orig_max = max(w, h)
-    if orig_max <= 0:
-        return 1024
-
-    max_pot = 1 << int(math.floor(math.log2(orig_max)))
-    max_pot = max(1, max_pot)
-
-    if isinstance(requested_res, str) and requested_res.lower() == "auto":
-        return max_pot
-
-    try:
-        req = int(requested_res)
-    except (ValueError, TypeError):
-        return max_pot
-
-    if req > orig_max:
-        msg = f"[Step 3] Original texture: {w}x{h}, requested: {req} -> clamped to {max_pot} (NO-UPSCALE policy)"
-        if logger_fn is not None:
-            logger_fn(msg)
-        else:
-            print(f"   {msg}", file=sys.stderr, flush=True)
-        return max_pot
-    else:
-        return req
 
 
 def optimize_mesh_texture_for_export(

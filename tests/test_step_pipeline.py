@@ -9,9 +9,13 @@ Unit and integration tests for:
 import json
 import struct
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+
+import numpy as np
+import trimesh
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 INSPECT_SCRIPT = REPO_ROOT / "optimizer" / "inspect_metrics.mjs"
@@ -19,7 +23,7 @@ SAMPLE_DINOKI = REPO_ROOT / "examples" / "sample_dinoki.glb"
 
 from optimizer.step_pipeline import StepPipeline, inspect_glb_metrics
 from optimizer.core.glb_utils import set_doublesided_material
-from tests.fixtures import create_mock_glb
+from tests.fixtures import create_mock_glb, create_sphere_grid_glb
 
 
 class TestMetricsEngine(unittest.TestCase):
@@ -89,7 +93,6 @@ class TestStepPipeline(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="test_step_pipeline_") as tmpdir:
             out_dir = Path(tmpdir)
             pipeline = StepPipeline(
-                resolution=512,
                 texture_format="ktx2",
                 smooth_normals=True,
                 double_sided=False,
@@ -145,75 +148,82 @@ class TestStepPipeline(unittest.TestCase):
             step3_metrics = metrics_data["steps"][3]["metrics"]
             self.assertFalse(step3_metrics["materials"][0]["doubleSided"], "Step 3 material must be doubleSided=False for FrontSide")
 
-    def test_auto_resolution_step_pipeline(self):
-        """Verify pipeline execution with resolution='auto' calculates optimal resolution and executes all 7 steps."""
-        with tempfile.TemporaryDirectory(prefix="test_auto_res_pipeline_") as tmpdir:
+    def test_default_downscale_keeps_original_when_fit_not_smaller(self):
+        """Default (downscale on, exact): Dinoki's source UVs overlap (per-face UV area ~123% of its
+        1536x1536 canvas), so the 1:1 fit is larger than the original and Step 3 keeps it."""
+        with tempfile.TemporaryDirectory(prefix="test_default_downscale_pipeline_") as tmpdir:
             out_dir = Path(tmpdir)
-            pipeline = StepPipeline(
-                resolution="auto",
-                texture_format="webp",
-                smooth_normals=True,
-                double_sided=False,
-                verbose=False,
-                stream_events=False
-            )
-
-            result = pipeline.run(SAMPLE_DINOKI, out_dir)
-            self.assertTrue(result["success"])
-
-            # Verify metrics.json
-            metrics_file = out_dir / "metrics.json"
-            self.assertTrue(metrics_file.exists())
-            metrics_data = json.loads(metrics_file.read_text())
-
+            StepPipeline(texture_format="webp", verbose=False, stream_events=False).run(SAMPLE_DINOKI, out_dir)
+            metrics_data = json.loads((out_dir / "metrics.json").read_text())
             self.assertEqual(len(metrics_data["steps"]), 7)
 
-            # Step 3 must re-chart with xatlas on the 1:1 capacity canvas (1536 source -> 1024 max POT, NO-UPSCALE)
-            step3 = metrics_data["steps"][3]
-            self.assertEqual(step3["metrics"]["uvMode"], "xatlas")
-            self.assertIn("1024x1024", step3["metrics"]["textureResolution"])
-            self.assertEqual(step3["metrics"]["faces"], 45000)
-            self.assertGreater(step3["metrics"]["uvCoverageRatio"], 0.0)
-            self.assertFalse(step3["metrics"]["materials"][0]["doubleSided"])
+            m3 = metrics_data["steps"][3]["metrics"]
+            self.assertIs(m3["downscale"], True)
+            self.assertEqual(m3["sizeMode"], "exact")
+            self.assertEqual(m3["uvMode"], "xatlas")
+            self.assertEqual(m3["fitResolution"] % 4, 0)
+            self.assertGreaterEqual(m3["fitResolution"] ** 2, 1536 * 1536)
+            self.assertEqual(m3["originalResolution"], "1536x1536")
+            self.assertEqual(m3["finalResolution"], "1536x1536")
+            self.assertIs(m3["downscaled"], False)
+            self.assertTrue(m3["decision"].startswith("kept_original"), m3["decision"])
+            self.assertEqual(m3["texelDensityRatio"], 1.0)
+            self.assertFalse(m3["materials"][0]["doubleSided"])
 
-            # Final step must preserve 100% faces
-            final_step = metrics_data["steps"][6]
-            self.assertEqual(final_step["metrics"]["faces"], 45000)
+            # Original texture bitstream kept, never resized in Steps 5-6
+            self.assertEqual(_glb_image_bytes(out_dir / "step_03_texture_baked.glb"),
+                             _glb_image_bytes(out_dir / "step_00_raw.glb"))
+            for step in (5, 6):
+                self.assertEqual(metrics_data["steps"][step]["metrics"]["textures"][0]["resolutionFormatted"], "1536x1536")
+            for step_info in metrics_data["steps"]:
+                self.assertEqual(step_info["metrics"]["faces"], 45000)
 
-    def test_rechart_uv_step_pipeline_adaptive_metrics(self):
-        """Verify Step 3 adaptive recharting, downscaling evaluation, and FrontSide material."""
-        with tempfile.TemporaryDirectory(prefix="test_rechart_pipeline_") as tmpdir:
+    def test_downscale_off_keeps_original_uvs_and_texture(self):
+        """downscale off: Step 3 exports the Step 2 mesh unchanged (UVs, faces) with the original
+        texture bitstream; Steps 5-6 keep the original texture dimensions."""
+        with tempfile.TemporaryDirectory(prefix="test_downscale_off_pipeline_") as tmpdir:
             out_dir = Path(tmpdir)
-            pipeline = StepPipeline(
-                resolution=1024,
-                texture_format="webp",
-                smooth_normals=True,
-                double_sided=False,
-                verbose=False,
-                stream_events=False
-            )
+            StepPipeline(downscale=False, texture_format="webp", verbose=False, stream_events=False).run(SAMPLE_DINOKI, out_dir)
+            metrics_data = json.loads((out_dir / "metrics.json").read_text())
 
-            result = pipeline.run(SAMPLE_DINOKI, out_dir)
-            self.assertTrue(result["success"])
-
-            metrics_file = out_dir / "metrics.json"
-            self.assertTrue(metrics_file.exists())
-            metrics_data = json.loads(metrics_file.read_text())
-
-            step3 = metrics_data["steps"][3]
-            m3 = step3["metrics"]
-            self.assertIn("downscaled", m3)
-            self.assertIn("originalResolution", m3)
-            self.assertIn("finalResolution", m3)
-            self.assertIn("uvCoverageRatio", m3)
-            self.assertIn("texelDensityDelta", m3)
-            self.assertGreater(m3["uvCoverageRatio"], 0.0)
-
-            # Material must be FrontSide (doubleSided=False)
+            m3 = metrics_data["steps"][3]["metrics"]
+            self.assertIs(m3["downscale"], False)
+            self.assertIsNone(m3["fitResolution"])
+            self.assertEqual(m3["decision"], "kept_original: downscale off")
+            self.assertIs(m3["downscaled"], False)
+            self.assertEqual(m3["texelDensityRatio"], 1.0)
+            self.assertEqual(m3["originalResolution"], "1536x1536")
+            self.assertEqual(m3["finalResolution"], "1536x1536")
             self.assertFalse(m3["materials"][0]["doubleSided"], "Step 3 material must be FrontSide")
 
-            # Final step must preserve 100% faces
+            step2 = trimesh.load(str(out_dir / "step_02_oriented.glb"), force="mesh", process=False)
+            step3 = trimesh.load(str(out_dir / "step_03_texture_baked.glb"), force="mesh", process=False)
+            self.assertTrue(np.array_equal(step2.faces, step3.faces))
+            self.assertTrue(np.array_equal(step2.visual.uv, step3.visual.uv))
+            self.assertEqual(_glb_image_bytes(out_dir / "step_03_texture_baked.glb"),
+                             _glb_image_bytes(out_dir / "step_00_raw.glb"))
+
+            for step in (5, 6):
+                self.assertEqual(metrics_data["steps"][step]["metrics"]["textures"][0]["resolutionFormatted"], "1536x1536")
             self.assertEqual(metrics_data["steps"][6]["metrics"]["faces"], 45000)
+
+    def test_invalid_options_raise(self):
+        with self.assertRaises(ValueError):
+            StepPipeline(size_mode="bogus")
+        with self.assertRaises(TypeError):
+            StepPipeline(downscale="on")
+        with self.assertRaises(TypeError):
+            StepPipeline(resolution=1024)
+
+    def test_cli_rejects_removed_and_unknown_options(self):
+        for extra in (["--resolution", "512"], ["--size-mode", "bogus"], ["--downscale", "maybe"]):
+            with tempfile.TemporaryDirectory(prefix="test_cli_options_") as tmpdir:
+                proc = subprocess.run(
+                    [sys.executable, "-m", "optimizer.step_pipeline", str(SAMPLE_DINOKI), "--output-dir", tmpdir, *extra],
+                    capture_output=True, text=True, cwd=REPO_ROOT
+                )
+                self.assertEqual(proc.returncode, 2, f"{extra}: {proc.stderr}")
+                self.assertEqual(list(Path(tmpdir).iterdir()), [], f"{extra}: pipeline must not run")
 
     def test_auto_detect_double_sided_input(self):
         """Verify a doubleSided=true source keeps doubleSided on Step 3 and Step 6 without --double-sided."""
@@ -224,7 +234,6 @@ class TestStepPipeline(unittest.TestCase):
             out_dir = tmp / "out"
 
             pipeline = StepPipeline(
-                resolution=512,
                 texture_format="ktx2",
                 smooth_normals=True,
                 double_sided=False,
@@ -259,7 +268,6 @@ class TestStepPipelineMockGlb(unittest.TestCase):
         raw_glb = tmp / "mock.glb"
         cls.orig_faces = create_mock_glb(raw_glb)
         StepPipeline(
-            resolution=512,
             texture_format="webp",
             verbose=False,
             stream_events=False
@@ -284,6 +292,87 @@ class TestStepPipelineMockGlb(unittest.TestCase):
         self.assertIn("policy", extras, "glTF extras missing 'policy'")
         self.assertEqual(extras["policy"], "STRICT 0-DECIMATION (--ratio 1.0)")
         self.assertGreaterEqual(len(extras["palette"]), 1)
+
+
+class TestStepPipelineRechart(unittest.TestCase):
+    """Synthetic sphere grid whose islands use a small part of a 2048x2048 texture: the 1:1 fit is
+    far smaller than the original, so downscale re-charts it (exact) or keeps it (pot-up >= 2048)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._tmp = tempfile.TemporaryDirectory(prefix="test_rechart_pipeline_")
+        tmp = Path(cls._tmp.name)
+        cls.raw_glb = tmp / "grid.glb"
+        cls.orig_faces = create_sphere_grid_glb(cls.raw_glb, src_res=2048)
+        cls.exact_dir = tmp / "exact"
+        StepPipeline(texture_format="ktx2", verbose=False, stream_events=False).run(cls.raw_glb, cls.exact_dir)
+        cls.exact = json.loads((cls.exact_dir / "metrics.json").read_text())
+        cls.pot_up_dir = tmp / "pot_up"
+        StepPipeline(size_mode="pot-up", texture_format="webp", verbose=False, stream_events=False).run(cls.raw_glb, cls.pot_up_dir)
+        cls.pot_up = json.loads((cls.pot_up_dir / "metrics.json").read_text())
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._tmp.cleanup()
+
+    def test_exact_recharts_at_fit_resolution(self):
+        m3 = self.exact["steps"][3]["metrics"]
+        fit = m3["fitResolution"]
+        self.assertEqual(fit % 4, 0)
+        self.assertLess(fit, 2048)
+        self.assertIs(m3["downscaled"], True)
+        self.assertTrue(m3["decision"].startswith("rechart"), m3["decision"])
+        self.assertEqual(m3["originalResolution"], "2048x2048")
+        self.assertEqual(m3["finalResolution"], f"{fit}x{fit}")
+        self.assertEqual(m3["textures"][0]["resolutionFormatted"], f"{fit}x{fit}")
+        self.assertGreaterEqual(m3["texelDensityRatio"], 0.97)
+        for step_info in self.exact["steps"]:
+            self.assertEqual(step_info["metrics"]["faces"], self.orig_faces, step_info["file"])
+
+    def test_exact_ktx2_keeps_fit_resolution(self):
+        """Step 6 compresses the non power-of-two canvas to KTX2 without resizing it."""
+        fit = self.exact["steps"][3]["metrics"]["fitResolution"]
+        final = self.exact_dir / "step_06_final.glb"
+        self.assertIn("KHR_texture_basisu", _read_glb_json(final)["extensionsUsed"])
+        self.assertEqual(_ktx2_dimensions(_glb_image_bytes(final)), (fit, fit))
+
+    def test_pot_up_keeps_original_when_canvas_not_smaller(self):
+        m3 = self.pot_up["steps"][3]["metrics"]
+        self.assertEqual(m3["sizeMode"], "pot-up")
+        self.assertLess(m3["fitResolution"], 2048)
+        self.assertIs(m3["downscaled"], False)
+        self.assertTrue(m3["decision"].startswith("kept_original"), m3["decision"])
+        self.assertIn("2048x2048 >= original 2048x2048", m3["decision"])
+        self.assertEqual(m3["finalResolution"], "2048x2048")
+        self.assertEqual(m3["texelDensityRatio"], 1.0)
+        self.assertEqual(_glb_image_bytes(self.pot_up_dir / "step_03_texture_baked.glb"),
+                         _glb_image_bytes(self.pot_up_dir / "step_00_raw.glb"))
+
+
+def _read_glb(glb_path: Path):
+    """Returns (glTF JSON, BIN chunk bytes) of a GLB file."""
+    data = glb_path.read_bytes()
+    json_len, json_type = struct.unpack("<I4s", data[12:20])
+    assert json_type == b"JSON", f"First chunk of {glb_path.name} is not JSON"
+    gltf = json.loads(data[20:20 + json_len].decode("utf-8"))
+    bin_start = 20 + json_len
+    bin_len, bin_type = struct.unpack("<I4s", data[bin_start:bin_start + 8])
+    assert bin_type == b"BIN\x00", f"Second chunk of {glb_path.name} is not BIN"
+    return gltf, data[bin_start + 8:bin_start + 8 + bin_len]
+
+
+def _glb_image_bytes(glb_path: Path, index: int = 0) -> bytes:
+    """Raw bytes of an embedded glTF image (bufferView-backed)."""
+    gltf, bin_chunk = _read_glb(glb_path)
+    view = gltf["bufferViews"][gltf["images"][index]["bufferView"]]
+    start = view.get("byteOffset", 0)
+    return bin_chunk[start:start + view["byteLength"]]
+
+
+def _ktx2_dimensions(data: bytes):
+    """(pixelWidth, pixelHeight) from a KTX2 header."""
+    assert data[:12] == b"\xabKTX 20\xbb\r\n\x1a\n", "not a KTX2 file"
+    return struct.unpack("<II", data[20:28])
 
 
 def _read_glb_json(glb_path: Path) -> dict:

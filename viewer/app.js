@@ -46,6 +46,8 @@ const dom = {
   modelSelect: document.getElementById('modelSelect'),
   formatSelect: document.getElementById('formatSelect'),
   uvModeSelect: document.getElementById('uvModeSelect'),
+  downscaleSelect: document.getElementById('downscaleSelect'),
+  sizeModeSelect: document.getElementById('sizeModeSelect'),
   startBtn: document.getElementById('startBtn'),
   dropzone: document.getElementById('dropzone'),
   fileInput: document.getElementById('fileInput'),
@@ -487,7 +489,7 @@ function renderComparisonTable(rawM, curM, finM, stepNum) {
       cur: curM.textureRes || 'Pending',
       delta: (curM.clamped || state.textureClamped)
         ? `${curM.textureRes} 🔒 Clamped (NO-UPSCALE)`
-        : (curM.textureRes ? `${curM.textureRes} (Power of 2)` : '—'),
+        : (curM.textureRes || '—'),
       badge: (curM.clamped || state.textureClamped) ? 'badge-orange' : 'badge-blue'
     },
     {
@@ -562,7 +564,7 @@ function renderDeepDiveTabs(rawM, curM, finM) {
         <p style="font-size: 0.75rem; color: var(--text-dim); margin-top: 4px;">
           ${(curM.clamped || state.textureClamped)
             ? '⚠️ ' + (curM.clampedMessage || state.textureClampedMessage || 'Texture gốc nhỏ hơn kích thước yêu cầu: Áp dụng chính sách NO-UPSCALE để bảo toàn độ sắc nét và tối ưu VRAM GPU.')
-            : 'Re-charted UV atlas bake with 16-pixel boundary dilation padding.'}
+            : (curM.decision || 'Re-charted UV atlas bake with 16-pixel boundary dilation padding.')}
         </p>
       </div>
       <div>
@@ -883,9 +885,10 @@ async function startOptimization() {
   state.uvMode = uvMode;
 
   const formData = new FormData();
-  formData.append('resolution', 'auto');
   formData.append('format', format);
   formData.append('uvMode', uvMode);
+  formData.append('downscale', dom.downscaleSelect.value);
+  formData.append('sizeMode', dom.sizeModeSelect.value);
 
   if (state.selectedFile) {
     formData.append('file', state.selectedFile);
@@ -1038,6 +1041,15 @@ window.addEventListener('DOMContentLoaded', async () => {
   if (dom.uvModeSelect && !dom.uvModeSelect.value) {
     dom.uvModeSelect.value = 'rechart';
   }
+
+  // Downscale off keeps the original UVs & texture: UV mode and canvas size do not apply
+  const syncDownscaleControls = () => {
+    const off = dom.downscaleSelect.value === 'off';
+    dom.uvModeSelect.disabled = off;
+    dom.sizeModeSelect.disabled = off;
+  };
+  dom.downscaleSelect.onchange = syncDownscaleControls;
+  syncDownscaleControls();
 
   dom.modelSelect.onchange = () => {
     if (dom.modelSelect.value) {

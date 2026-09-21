@@ -18,11 +18,9 @@ import trimesh
 
 from optimizer.core.uv_baker import (
     rechart_and_bake_high_density,
-    can_downscale_texture as uv_baker_can_downscale,
     maximize_uv_bounds,
     get_adaptive_chart_options
 )
-from optimizer.core.texture_utils import clamp_target_resolution
 from optimizer.core.glb_utils import set_doublesided_material
 
 
@@ -44,7 +42,6 @@ class TestUvBaker(unittest.TestCase):
 
         recharted_mesh, dilated_pil = rechart_and_bake_high_density(
             self.mesh,
-            target_res=128,
             source_image=rgba_img,
             source_uv=self.uv,
             dilation_padding=4,
@@ -88,13 +85,13 @@ class TestUvBaker(unittest.TestCase):
 
         recharted_mesh, dilated_pil, stats = rechart_and_bake_high_density(
             self.mesh,
-            target_res=256,
             source_image=img,
             source_uv=self.uv,
             dilation_padding=16,
             double_sided=False,
             return_stats=True
         )
+        res = stats["final_resolution"]
 
         # 1. FrontSide rendering: doubleSided must be False
         self.assertFalse(recharted_mesh.visual.material.doubleSided, "doubleSided must be False for FrontSide")
@@ -110,114 +107,12 @@ class TestUvBaker(unittest.TestCase):
         self.assertIn("covered_pixels", stats)
         self.assertGreater(stats["uv_coverage_ratio_percent"], 0.0)
         self.assertGreater(stats["texel_density_linear"], 0.0)
-        self.assertEqual(stats["target_resolution"], 256)
-        self.assertEqual(stats["canvas_pixels"], 256 * 256)
-        self.assertEqual(dilated_pil.size, (256, 256))
-
-    def test_no_upscale_clamp_target_resolution_helper(self):
-        # 1536x1536 -> largest POT <= 1536 is 1024
-        self.assertEqual(clamp_target_resolution(2048, (1536, 1536)), 1024)
-        self.assertEqual(clamp_target_resolution(4096, (1536, 1536)), 1024)
-        # 768x768 -> largest POT <= 768 is 512
-        self.assertEqual(clamp_target_resolution(1024, (768, 768)), 512)
-        # 1024x1024 requested 1024 -> keeps 1024
-        self.assertEqual(clamp_target_resolution(1024, (1024, 1024)), 1024)
-        # 1024x1024 requested 2048 -> clamps to 1024
-        self.assertEqual(clamp_target_resolution(2048, (1024, 1024)), 1024)
-        # 2048x1024 requested 2048 -> orig_max is 2048, <= 2048 -> keeps 2048
-        self.assertEqual(clamp_target_resolution(2048, (2048, 1024)), 2048)
-        # 2048x1024 requested 4096 -> clamps to 2048
-        self.assertEqual(clamp_target_resolution(4096, (2048, 1024)), 2048)
-
-    def test_no_upscale_enforced_in_rechart_and_bake(self):
-        img = Image.new("RGB", (128, 128), (80, 160, 240))
-        recharted_mesh, dilated_pil, stats = rechart_and_bake_high_density(
-            self.mesh,
-            target_res=256,
-            source_image=img,
-            source_uv=self.uv,
-            dilation_padding=16,
-            double_sided=False,
-            return_stats=True
-        )
-        # 256 > 128 -> clamped to 128
-        self.assertEqual(stats["target_resolution"], 128)
-        self.assertEqual(dilated_pil.size, (128, 128))
-
-    def test_clamp_target_resolution_auto(self):
-        # 'auto' or 'AUTO' computes largest POT <= orig_max
-        self.assertEqual(clamp_target_resolution("auto", (1536, 1536)), 1024)
-        self.assertEqual(clamp_target_resolution("AUTO", (4096, 4096)), 4096)
-        self.assertEqual(clamp_target_resolution("auto", (2048, 1024)), 2048)
-        self.assertEqual(clamp_target_resolution("auto", (512, 512)), 512)
-
-    def test_uv_baker_can_downscale_threshold_logic(self):
-        # When TD_new_downscaled >= 0.85 * TD_orig: downscale 4096 -> 2048
-        # Simulate mesh with surface area 10.0
-        # Old UV with small coverage (0.15) on 4096:
-        # TD_orig = 0.15 * 4096^2 / 10.0 = 251,658.24
-        # New UV with high coverage (0.80) on 2048:
-        # TD_downscaled = 0.80 * 2048^2 / 10.0 = 335,544.32 (335544.32 / 251658.24 = 1.33 >= 0.85) -> CÓ THỂ DOWNSCALE
-        sparse_uv = np.array([
-            [0.1, 0.1], [0.3, 0.1], [0.3, 0.3], [0.1, 0.3],
-            [0.15, 0.15], [0.25, 0.15], [0.25, 0.25], [0.15, 0.25]
-        ], dtype=np.float64)
-        full_new_uv = np.array([
-            [0.05, 0.05], [0.95, 0.05], [0.95, 0.95], [0.05, 0.95],
-            [0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]
-        ], dtype=np.float64)
-
-        can_down, target_res, details = uv_baker_can_downscale(
-            self.mesh,
-            current_res=4096,
-            old_uv=sparse_uv,
-            new_uv=full_new_uv,
-            min_res=1024,
-            td_threshold_ratio=0.85
-        )
-        self.assertTrue(can_down)
-        self.assertEqual(target_res, 2048)
-        self.assertEqual(details["originalResolution"], "4096x4096")
-        self.assertEqual(details["finalResolution"], "2048x2048")
-        self.assertIn("texelDensityDelta", details)
-        self.assertIn("uvCoverageRatio", details)
-
-    def test_uv_baker_can_downscale_rejected_when_td_too_low(self):
-        # When TD would drop below 0.85 * TD_orig: keep current resolution
-        # Old UV already high coverage (0.75) on 2048:
-        # Downscaling to 1024 would drop TD to ~1/4 * (0.80/0.75) = 26% of TD_orig < 85%
-        packed_uv = np.array([
-            [0.05, 0.05], [0.95, 0.05], [0.95, 0.95], [0.05, 0.95],
-            [0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]
-        ], dtype=np.float64)
-
-        can_down, target_res, details = uv_baker_can_downscale(
-            self.mesh,
-            current_res=2048,
-            old_uv=packed_uv,
-            new_uv=packed_uv,
-            min_res=1024,
-            td_threshold_ratio=0.85
-        )
-        self.assertFalse(can_down)
-        self.assertEqual(target_res, 2048)
-        self.assertEqual(details["finalResolution"], "2048x2048")
-
-    def test_uv_baker_can_downscale_rejected_for_small_resolutions(self):
-        # Resolutions <= 1024 should not downscale further
-        full_uv = np.array([
-            [0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0],
-            [0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]
-        ], dtype=np.float64)
-        can_down, target_res, details = uv_baker_can_downscale(
-            self.mesh,
-            current_res=1024,
-            old_uv=full_uv,
-            new_uv=full_uv,
-            min_res=1024
-        )
-        self.assertFalse(can_down)
-        self.assertEqual(target_res, 1024)
+        self.assertEqual(stats["size_mode"], "exact")
+        self.assertEqual(res % 4, 0)
+        self.assertEqual(stats["target_resolution"], res)
+        self.assertEqual(stats["canvas_pixels"], res * res)
+        self.assertEqual(dilated_pil.size, (res, res))
+        self.assertGreaterEqual(stats["texel_density_ratio"], 0.97)
 
     def test_maximize_uv_bounds_scaling_and_margin(self):
         # UVs occupying only [0.2, 0.3] to [0.7, 0.8]
@@ -254,38 +149,6 @@ class TestUvBaker(unittest.TestCase):
         small_opts = get_adaptive_chart_options(5_000)
         self.assertEqual(small_opts.max_iterations, 4)
         self.assertEqual(small_opts.max_cost, 2.0)
-
-    def test_rechart_and_bake_high_density_downscale_and_metrics(self):
-        # Sparse UVs on 4096 texture: should downscale to 2048 and report metrics
-        sparse_uv = np.array([
-            [0.1, 0.1], [0.3, 0.1], [0.3, 0.3], [0.1, 0.3],
-            [0.15, 0.15], [0.25, 0.15], [0.25, 0.25], [0.15, 0.25]
-        ], dtype=np.float64)
-        mat = trimesh.visual.material.PBRMaterial(doubleSided=True)
-        self.mesh.visual = trimesh.visual.TextureVisuals(uv=sparse_uv, material=mat)
-        img_4k = Image.new("RGB", (4096, 4096), (70, 140, 210))
-
-        recharted_mesh, dilated_pil, stats = rechart_and_bake_high_density(
-            self.mesh,
-            target_res=4096,
-            source_image=img_4k,
-            source_uv=sparse_uv,
-            dilation_padding=16,
-            double_sided=False,
-            return_stats=True
-        )
-
-        # 1. FrontSide rendering: doubleSided must be False
-        self.assertFalse(recharted_mesh.visual.material.doubleSided)
-        # 2. Adaptive downscale occurred
-        self.assertTrue(stats["downscaled"])
-        self.assertEqual(stats["originalResolution"], "4096x4096")
-        self.assertEqual(stats["finalResolution"], "2048x2048")
-        self.assertEqual(dilated_pil.size, (2048, 2048))
-        # 3. Required metric fields present
-        self.assertIn("uvCoverageRatio", stats)
-        self.assertIn("texelDensityDelta", stats)
-        self.assertGreater(stats["uvCoverageRatio"], 0.0)
 
 
 if __name__ == "__main__":

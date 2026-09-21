@@ -121,29 +121,21 @@ function detectGlbDoubleSided(filePath) {
 }
 
 // Allowed Optimization Parameters
-const ALLOWED_RESOLUTIONS = ['auto', 256, 512, 1024, 2048, 4096];
 const ALLOWED_FORMATS = ['ktx2', 'webp', 'png', 'jpeg', 'jpg', 'original', 'passthrough'];
 const ALLOWED_UV_MODES = ['rechart', 'xatlas', 'uvatlas'];
+const ALLOWED_DOWNSCALE = ['on', 'off'];
+const ALLOWED_SIZE_MODES = ['exact', 'pot-up', 'pot-down'];
 
-function sanitizeOptimizationOptions({ resolution, format, uvMode } = {}) {
-  let res;
-  if (!resolution || resolution === 'auto' || resolution === 'null' || resolution === 'undefined' || resolution === '') {
-    res = 'auto';
-  } else {
-    let parsed = parseInt(resolution, 10);
-    if (isNaN(parsed) || parsed <= 0) {
-      res = 'auto';
-    } else if (![256, 512, 1024, 2048, 4096].includes(parsed)) {
-      if (parsed <= 384) res = 256;
-      else if (parsed <= 768) res = 512;
-      else if (parsed <= 1536) res = 1024;
-      else if (parsed <= 3072) res = 2048;
-      else res = 4096;
-    } else {
-      res = parsed;
-    }
+// Absent field -> default; any other value must match exactly (never coerced)
+function validateChoice(name, value, allowed, defaultValue) {
+  if (value === null || value === undefined) return defaultValue;
+  if (!allowed.includes(value)) {
+    throw new Error(`Unsupported ${name} '${value}' (allowed: ${allowed.join(', ')})`);
   }
+  return value;
+}
 
+function sanitizeOptimizationOptions({ format, uvMode, downscale, sizeMode } = {}) {
   let fmt = String(format || 'ktx2').toLowerCase().trim();
   if (fmt === 'passthrough') fmt = 'original';
   if (!ALLOWED_FORMATS.includes(fmt)) {
@@ -155,7 +147,12 @@ function sanitizeOptimizationOptions({ resolution, format, uvMode } = {}) {
     throw new Error(`Unsupported uvMode '${uvMode}' (allowed: ${ALLOWED_UV_MODES.join(', ')})`);
   }
 
-  return { resolution: res, format: fmt, uvMode: uv };
+  return {
+    format: fmt,
+    uvMode: uv,
+    downscale: validateChoice('downscale', downscale, ALLOWED_DOWNSCALE, 'on'),
+    sizeMode: validateChoice('sizeMode', sizeMode, ALLOWED_SIZE_MODES, 'exact')
+  };
 }
 
 // In-Memory Job Management
@@ -260,11 +257,12 @@ function emitJobEvent(job, eventName, data) {
   }
 }
 
-function startPipelineJob({ jobId, rawGlbPath, workspaceDir, resolution = 'auto', format = 'ktx2', uvMode = 'rechart' }) {
-  const sanitized = sanitizeOptimizationOptions({ resolution, format, uvMode });
-  const finalResolution = sanitized.resolution;
+function startPipelineJob({ jobId, rawGlbPath, workspaceDir, format = 'ktx2', uvMode = 'rechart', downscale = 'on', sizeMode = 'exact' }) {
+  const sanitized = sanitizeOptimizationOptions({ format, uvMode, downscale, sizeMode });
   const finalFormat = sanitized.format;
   const finalUvMode = sanitized.uvMode;
+  const finalDownscale = sanitized.downscale;
+  const finalSizeMode = sanitized.sizeMode;
 
   const isDoubleSided = detectGlbDoubleSided(rawGlbPath);
   if (isDoubleSided) {
@@ -275,7 +273,7 @@ function startPipelineJob({ jobId, rawGlbPath, workspaceDir, resolution = 'auto'
     id: jobId,
     workspaceDir,
     status: 'started',
-    config: { resolution: finalResolution, format: finalFormat, uvMode: finalUvMode, doubleSided: isDoubleSided },
+    config: { format: finalFormat, uvMode: finalUvMode, downscale: finalDownscale, sizeMode: finalSizeMode, doubleSided: isDoubleSided },
     startTime: Date.now(),
     totalSteps: 7,
     currentStep: 0,
@@ -289,8 +287,7 @@ function startPipelineJob({ jobId, rawGlbPath, workspaceDir, resolution = 'auto'
   };
   jobs.set(jobId, job);
 
-  const resLabel = finalResolution === 'auto' ? 'auto (Adaptive)' : `${finalResolution}px`;
-  console.log(`[Job ${jobId}] Initialized with target resolution=${resLabel}, format=${finalFormat}, uvMode=${finalUvMode}`);
+  console.log(`[Job ${jobId}] Initialized with downscale=${finalDownscale}, sizeMode=${finalSizeMode}, format=${finalFormat}, uvMode=${finalUvMode}`);
 
   emitJobEvent(job, 'job_start', {
     jobId,
@@ -306,8 +303,9 @@ function startPipelineJob({ jobId, rawGlbPath, workspaceDir, resolution = 'auto'
     '-m', 'optimizer.step_pipeline',
     rawGlbPath,
     '--output-dir', workspaceDir,
-    '--resolution', String(finalResolution),
-    '--format', finalFormat
+    '--format', finalFormat,
+    '--downscale', finalDownscale,
+    '--size-mode', finalSizeMode
   ];
 
   if (isDoubleSided) {
@@ -501,15 +499,15 @@ const server = http.createServer(async (req, res) => {
         const formData = await webReq.formData();
         const file = formData.get('file');
         const samplePath = formData.get('samplePath') || formData.get('sampleUrl');
-        const rawRes = formData.get('resolution');
         const rawFmt = formData.get('format');
         const rawUv = formData.get('uvMode');
         let options;
         try {
           options = sanitizeOptimizationOptions({
-            resolution: rawRes,
             format: rawFmt,
-            uvMode: rawUv
+            uvMode: rawUv,
+            downscale: formData.get('downscale'),
+            sizeMode: formData.get('sizeMode')
           });
         } catch (optErr) {
           fs.rmSync(wsDir, { recursive: true, force: true });
@@ -517,9 +515,9 @@ const server = http.createServer(async (req, res) => {
           res.end(JSON.stringify({ error: optErr.message }));
           return;
         }
-        const { resolution, format, uvMode } = options;
+        const { format, uvMode, downscale, sizeMode } = options;
 
-        console.log(`[API /api/upload] Form upload request: res=${resolution} (raw: ${rawRes}), format=${format}, uvMode=${uvMode}`);
+        console.log(`[API /api/upload] Form upload request: downscale=${downscale}, sizeMode=${sizeMode}, format=${format}, uvMode=${uvMode}`);
 
         if (file && typeof file === 'object' && typeof file.arrayBuffer === 'function') {
           const ab = await file.arrayBuffer();
@@ -555,13 +553,14 @@ const server = http.createServer(async (req, res) => {
           jobId,
           rawGlbPath,
           workspaceDir: wsDir,
-          resolution,
           format,
-          uvMode
+          uvMode,
+          downscale,
+          sizeMode
         });
 
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ jobId, status: 'started', totalSteps: 7, config: { resolution, format, uvMode } }));
+        res.end(JSON.stringify({ jobId, status: 'started', totalSteps: 7, config: { format, uvMode, downscale, sizeMode } }));
         return;
       }
 
@@ -573,13 +572,14 @@ const server = http.createServer(async (req, res) => {
           try {
             const data = JSON.parse(body || '{}');
             const samplePath = data.samplePath || data.sampleUrl;
-            const { resolution, format, uvMode } = sanitizeOptimizationOptions({
-              resolution: data.resolution,
+            const { format, uvMode, downscale, sizeMode } = sanitizeOptimizationOptions({
               format: data.format,
-              uvMode: data.uvMode
+              uvMode: data.uvMode,
+              downscale: data.downscale,
+              sizeMode: data.sizeMode
             });
 
-            console.log(`[API /api/upload] JSON request: sample=${samplePath}, res=${resolution} (raw: ${data.resolution}), format=${format}, uvMode=${uvMode}`);
+            console.log(`[API /api/upload] JSON request: sample=${samplePath}, downscale=${downscale}, sizeMode=${sizeMode}, format=${format}, uvMode=${uvMode}`);
 
             if (!samplePath) {
               fs.rmSync(wsDir, { recursive: true, force: true });
@@ -603,13 +603,14 @@ const server = http.createServer(async (req, res) => {
               jobId,
               rawGlbPath,
               workspaceDir: wsDir,
-              resolution,
               format,
-              uvMode
+              uvMode,
+              downscale,
+              sizeMode
             });
 
             res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ jobId, status: 'started', totalSteps: 7, config: { resolution, format, uvMode } }));
+            res.end(JSON.stringify({ jobId, status: 'started', totalSteps: 7, config: { format, uvMode, downscale, sizeMode } }));
           } catch (jsonErr) {
             fs.rmSync(wsDir, { recursive: true, force: true });
             res.writeHead(400, { 'Content-Type': 'application/json' });

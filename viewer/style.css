@@ -195,7 +195,7 @@ header {
 
 .control-bar-grid {
   display: grid;
-  grid-template-columns: 1.1fr 2.1fr auto;
+  grid-template-columns: 0.8fr 2.4fr auto;
   gap: 16px;
   align-items: stretch;
 }
@@ -305,48 +305,14 @@ header {
   min-width: 135px;
 }
 
-.config-item-status {
-  flex: 1.1;
-  min-width: 145px;
+.config-item-downscale {
+  flex: 0.8;
+  min-width: 95px;
 }
 
-.auto-density-badge {
-  background: rgba(16, 185, 129, 0.08);
-  border: 1px solid rgba(16, 185, 129, 0.28);
-  color: var(--text-main);
-  padding: 7px 11px;
-  border-radius: var(--radius-sm);
-  font-size: 0.8rem;
-  font-weight: 600;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  height: 35px;
-  box-sizing: border-box;
-  white-space: nowrap;
-  user-select: none;
-}
-
-.status-pulse-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--success);
-  box-shadow: 0 0 8px var(--success);
-  flex-shrink: 0;
-  animation: pulse-glow 2s infinite ease-in-out;
-}
-
-@keyframes pulse-glow {
-  0%, 100% {
-    opacity: 0.7;
-    transform: scale(0.95);
-  }
-  50% {
-    opacity: 1;
-    transform: scale(1.15);
-    box-shadow: 0 0 10px var(--success);
-  }
+.config-item-size {
+  flex: 1.2;
+  min-width: 140px;
 }
 
 .config-label {
@@ -402,6 +368,11 @@ header {
 .config-select:focus,
 .config-input:focus {
   border-color: var(--accent);
+}
+
+.config-select:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 /* Action Button */

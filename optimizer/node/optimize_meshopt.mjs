@@ -14,7 +14,9 @@ import {
   reorder,
   quantize,
   prune,
-  dedup
+  dedup,
+  listTextureSlots,
+  getTextureColorSpace
 } from '@gltf-transform/functions';
 import {
   MeshoptEncoder,
@@ -97,8 +99,21 @@ export async function compressTexturesKtx2(doc, options = {}) {
     const imgBuffer = Buffer.from(tex.getImage());
     if (!imgBuffer || imgBuffer.byteLength === 0) continue;
 
+    // glTF: only colour slots (baseColor, emissive, ...) are sRGB; normal/metallicRoughness/occlusion are linear data.
+    // Textures with no material slot keep the previous (sRGB) behaviour.
+    const slots = listTextureSlots(tex);
+    let colorSpace = 'srgb';
+    if (getTextureColorSpace(tex) === 'srgb') {
+      const dataSlots = slots.filter(s => !/color|emissive|diffuse/i.test(s)); // gltf-transform's colour-slot name rule
+      if (dataSlots.length > 0) {
+        console.warn(`   ⚠️ Warning: texture ${i} is shared by colour and data slots (${slots.join(', ')}); encoding as sRGB.`);
+      }
+    } else if (slots.length > 0) {
+      colorSpace = slots.includes('normalTexture') ? 'normal' : 'linear';
+    }
+
     totalBefore += imgBuffer.byteLength;
-    pendingTextures.push({ tex, i, imgBuffer, mime });
+    pendingTextures.push({ tex, i, imgBuffer, mime, colorSpace });
   }
 
   if (pendingTextures.length === 0) {
@@ -114,7 +129,7 @@ export async function compressTexturesKtx2(doc, options = {}) {
   let processedCount = 0;
 
   try {
-    async function processTextureItem({ tex, i, imgBuffer, mime }) {
+    async function processTextureItem({ tex, i, imgBuffer, mime, colorSpace }) {
       const isJpeg = mime === 'image/jpeg' || mime === 'image/jpg';
       const isWebp = mime === 'image/webp' || (imgBuffer.length >= 12 && imgBuffer.subarray(0, 4).toString() === 'RIFF' && imgBuffer.subarray(8, 12).toString() === 'WEBP');
 
@@ -155,6 +170,15 @@ export async function compressTexturesKtx2(doc, options = {}) {
       } else {
         basisuArgs.push('-q', String(etc1sQuality));
         basisuArgs.push('-comp_level', String(compLevel));
+      }
+
+      // Without these basisu assumes sRGB and tags the KTX2 DFD as sRGB, so viewers decode
+      // normals through the sRGB curve. Both flags imply linear metrics, linear mip filtering
+      // and a linear transfer function (verified with basisu v2.50).
+      if (colorSpace === 'normal') {
+        basisuArgs.push('-normal_map');
+      } else if (colorSpace === 'linear') {
+        basisuArgs.push('-linear');
       }
 
       if (generateMipmaps) {

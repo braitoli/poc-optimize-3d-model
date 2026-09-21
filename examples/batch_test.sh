@@ -71,7 +71,7 @@ for model in "${TARGET_MODELS[@]}"; do
     
     echo ""
     echo "▶️ Processing: ${model}"
-    "${REPO_ROOT}/bin/optimize-3d" "${IN_FILE}" "${OUT_FILE}" --resolution 1024 --format ktx2
+    "${REPO_ROOT}/bin/optimize-3d" "${IN_FILE}" "${OUT_FILE}" --format ktx2
 done
 
 echo ""

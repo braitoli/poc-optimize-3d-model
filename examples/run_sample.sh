@@ -17,7 +17,7 @@ echo "=================================================================="
 echo "🧪 Running Optimization Pipeline on Sample 3D Model..."
 echo "=================================================================="
 
-"${REPO_ROOT}/bin/optimize-3d" "${INPUT}" "${OUTPUT}" --resolution 1024 --format ktx2
+"${REPO_ROOT}/bin/optimize-3d" "${INPUT}" "${OUTPUT}" --format ktx2
 
 echo ""
 echo "📊 Verifying Result:"

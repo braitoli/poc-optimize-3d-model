@@ -52,7 +52,6 @@ class TestBenchmarkRunner(unittest.TestCase):
             res = run_model_benchmark(
                 model_key="dinoki",
                 model_path=SAMPLE_DINOKI,
-                resolution=1024,
                 texture_format="ktx2",
                 workdir=workdir,
                 clean_workdir=False,
@@ -80,9 +79,10 @@ class TestBenchmarkRunner(unittest.TestCase):
             self.assertEqual(fs["raw_input_bytes"], 2026696)
             self.assertEqual(fs["step_01_intermediate_file"], "step_01_cleaned_grounded.glb")
             self.assertGreater(fs["step_01_intermediate_bytes"], 1000000)
-            self.assertLess(fs["final_output_bytes"], fs["raw_input_bytes"])
-            self.assertGreater(fs["saved_bytes"], 0)
-            self.assertGreater(fs["saved_percent"], 0.0)
+            # Dinoki keeps its 1536x1536 texture (1:1 fit is larger), and KTX2 UASTC of that texture
+            # is larger on disk than the source JPEG: the file can grow while GPU VRAM shrinks.
+            self.assertGreater(fs["final_output_bytes"], 0)
+            self.assertEqual(fs["saved_bytes"], fs["raw_input_bytes"] - fs["final_output_bytes"])
 
             # 3. Rule 11 Zero-Decimation geometric integrity check
             geo = res["geometry_rule11"]
@@ -96,7 +96,8 @@ class TestBenchmarkRunner(unittest.TestCase):
             # 4. Textures and GPU VRAM before vs after
             tv = res["textures_and_vram"]
             self.assertEqual(tv["texture_resolution_before"], "1536x1536")
-            self.assertEqual(tv["texture_resolution_after"], "1024x1024")
+            # Dinoki's 1:1 fit is larger than its 1536x1536 texture, so Step 3 keeps the original
+            self.assertEqual(tv["texture_resolution_after"], "1536x1536")
             self.assertEqual(tv["texture_format_before"], "JPEG")
             self.assertEqual(tv["texture_format_after"], "KTX2")
             self.assertGreater(tv["total_gpu_vram_saved_percent"], 50.0)
