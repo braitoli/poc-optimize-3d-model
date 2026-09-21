@@ -81,20 +81,27 @@ function scanModels() {
 }
 
 // Allowed Optimization Parameters
-const ALLOWED_RESOLUTIONS = [256, 512, 1024, 2048, 4096];
+const ALLOWED_RESOLUTIONS = ['auto', 256, 512, 1024, 2048, 4096];
 const ALLOWED_FORMATS = ['ktx2', 'webp', 'png', 'jpeg', 'jpg'];
 const ALLOWED_UV_MODES = ['direct', 'rechart', 'xatlas'];
 
 function sanitizeOptimizationOptions({ resolution, format, uvMode } = {}) {
-  let res = parseInt(resolution, 10);
-  if (isNaN(res) || res <= 0) {
-    res = 1024;
-  } else if (!ALLOWED_RESOLUTIONS.includes(res)) {
-    if (res <= 384) res = 256;
-    else if (res <= 768) res = 512;
-    else if (res <= 1536) res = 1024;
-    else if (res <= 3072) res = 2048;
-    else res = 4096;
+  let res;
+  if (!resolution || resolution === 'auto' || resolution === 'null' || resolution === 'undefined' || resolution === '') {
+    res = 'auto';
+  } else {
+    let parsed = parseInt(resolution, 10);
+    if (isNaN(parsed) || parsed <= 0) {
+      res = 'auto';
+    } else if (![256, 512, 1024, 2048, 4096].includes(parsed)) {
+      if (parsed <= 384) res = 256;
+      else if (parsed <= 768) res = 512;
+      else if (parsed <= 1536) res = 1024;
+      else if (parsed <= 3072) res = 2048;
+      else res = 4096;
+    } else {
+      res = parsed;
+    }
   }
 
   let fmt = String(format || 'ktx2').toLowerCase().trim();
@@ -212,7 +219,7 @@ function emitJobEvent(job, eventName, data) {
   }
 }
 
-function startPipelineJob({ jobId, rawGlbPath, workspaceDir, resolution = 1024, format = 'ktx2', uvMode = 'direct' }) {
+function startPipelineJob({ jobId, rawGlbPath, workspaceDir, resolution = 'auto', format = 'ktx2', uvMode = 'direct' }) {
   const sanitized = sanitizeOptimizationOptions({ resolution, format, uvMode });
   const finalResolution = sanitized.resolution;
   const finalFormat = sanitized.format;
@@ -236,7 +243,8 @@ function startPipelineJob({ jobId, rawGlbPath, workspaceDir, resolution = 1024, 
   };
   jobs.set(jobId, job);
 
-  console.log(`[Job ${jobId}] Initialized with target resolution=${finalResolution}px, format=${finalFormat}, uvMode=${finalUvMode}`);
+  const resLabel = finalResolution === 'auto' ? 'auto (Adaptive)' : `${finalResolution}px`;
+  console.log(`[Job ${jobId}] Initialized with target resolution=${resLabel}, format=${finalFormat}, uvMode=${finalUvMode}`);
 
   emitJobEvent(job, 'job_start', {
     jobId,
@@ -759,7 +767,7 @@ const server = http.createServer(async (req, res) => {
     req.on('data', chunk => { body += chunk; });
     req.on('end', () => {
       try {
-        const { input, resolution = 1024, format = 'ktx2' } = JSON.parse(body || '{}');
+        const { input, resolution = 'auto', format = 'ktx2' } = JSON.parse(body || '{}');
         if (!input) {
           res.writeHead(400, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'Missing input model path' }));

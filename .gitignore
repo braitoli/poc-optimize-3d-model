@@ -12,6 +12,7 @@ build/
 *.egg-info/
 tmp/
 scratch/
+output/
 examples/optimized/
 *.tmp.glb
 *.tmp.glbenc

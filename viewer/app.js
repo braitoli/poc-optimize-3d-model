@@ -43,7 +43,6 @@ const state = new AppState();
 // DOM Elements Cache
 const dom = {
   modelSelect: document.getElementById('modelSelect'),
-  resSelect: document.getElementById('resSelect'),
   formatSelect: document.getElementById('formatSelect'),
   uvModeSelect: document.getElementById('uvModeSelect'),
   startBtn: document.getElementById('startBtn'),
@@ -878,12 +877,11 @@ function connectJobStream(jobId) {
 
 // 11. Trigger Optimization Action
 async function startOptimization() {
-  const resolution = dom.resSelect.value || '1024';
-  const format = dom.formatSelect.value || 'ktx2';
-  const uvMode = dom.uvModeSelect.value || 'direct';
+  const uvMode = (dom.uvModeSelect && dom.uvModeSelect.value) ? dom.uvModeSelect.value : 'rechart';
+  const format = (dom.formatSelect && dom.formatSelect.value) ? dom.formatSelect.value : 'ktx2';
 
   const formData = new FormData();
-  formData.append('resolution', resolution);
+  formData.append('resolution', 'auto');
   formData.append('format', format);
   formData.append('uvMode', uvMode);
 
@@ -1035,6 +1033,9 @@ window.addEventListener('DOMContentLoaded', async () => {
   setupDragAndDrop();
 
   dom.startBtn.onclick = startOptimization;
+  if (dom.uvModeSelect) {
+    dom.uvModeSelect.value = 'rechart';
+  }
 
   dom.modelSelect.onchange = () => {
     if (dom.modelSelect.value) {

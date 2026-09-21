@@ -139,9 +139,78 @@ class TestStepPipeline(unittest.TestCase):
             self.assertIn("KHR_texture_basisu", final_step["extensions"]["used"])
             self.assertGreater(len(final_step["palette"]), 0)
 
-            # Step 3 must have doubleSided=True to prevent backface-culling holes in viewer
+            # Step 3 must have FrontSide rendering (doubleSided=False) when double_sided=False
             step3_metrics = metrics_data["steps"][3]["metrics"]
-            self.assertTrue(step3_metrics["materials"][0]["doubleSided"], "Step 3 material must be doubleSided=True")
+            self.assertFalse(step3_metrics["materials"][0]["doubleSided"], "Step 3 material must be doubleSided=False for FrontSide")
+
+    def test_auto_resolution_step_pipeline(self):
+        """Verify pipeline execution with resolution='auto' calculates optimal resolution and executes all 7 steps."""
+        with tempfile.TemporaryDirectory(prefix="test_auto_res_pipeline_") as tmpdir:
+            out_dir = Path(tmpdir)
+            pipeline = StepPipeline(
+                resolution="auto",
+                texture_format="webp",
+                rechart_uv=False,
+                smooth_normals=True,
+                double_sided=False,
+                verbose=False,
+                stream_events=False
+            )
+
+            result = pipeline.run(SAMPLE_DINOKI, out_dir)
+            self.assertTrue(result["success"])
+
+            # Verify metrics.json
+            metrics_file = out_dir / "metrics.json"
+            self.assertTrue(metrics_file.exists())
+            metrics_data = json.loads(metrics_file.read_text())
+
+            self.assertEqual(len(metrics_data["steps"]), 7)
+
+            # Step 3 must have resolved to 1024x1024 (Dinoki orig 1536 clamped/evaluated to 1024)
+            step3 = metrics_data["steps"][3]
+            self.assertIn("1024x1024", step3["metrics"]["textureResolution"])
+            self.assertEqual(step3["metrics"]["faces"], 45000)
+
+            # Final step must preserve 100% faces
+            final_step = metrics_data["steps"][6]
+            self.assertEqual(final_step["metrics"]["faces"], 45000)
+
+    def test_rechart_uv_step_pipeline_adaptive_metrics(self):
+        """Verify Step 3 adaptive recharting, downscaling evaluation, and FrontSide material."""
+        with tempfile.TemporaryDirectory(prefix="test_rechart_pipeline_") as tmpdir:
+            out_dir = Path(tmpdir)
+            pipeline = StepPipeline(
+                resolution=1024,
+                texture_format="webp",
+                rechart_uv=True,
+                smooth_normals=True,
+                double_sided=False,
+                verbose=False,
+                stream_events=False
+            )
+
+            result = pipeline.run(SAMPLE_DINOKI, out_dir)
+            self.assertTrue(result["success"])
+
+            metrics_file = out_dir / "metrics.json"
+            self.assertTrue(metrics_file.exists())
+            metrics_data = json.loads(metrics_file.read_text())
+
+            step3 = metrics_data["steps"][3]
+            m3 = step3["metrics"]
+            self.assertIn("downscaled", m3)
+            self.assertIn("originalResolution", m3)
+            self.assertIn("finalResolution", m3)
+            self.assertIn("uvCoverageRatio", m3)
+            self.assertIn("texelDensityDelta", m3)
+            self.assertGreater(m3["uvCoverageRatio"], 0.0)
+
+            # Material must be FrontSide (doubleSided=False)
+            self.assertFalse(m3["materials"][0]["doubleSided"], "Step 3 material must be FrontSide")
+
+            # Final step must preserve 100% faces
+            self.assertEqual(metrics_data["steps"][6]["metrics"]["faces"], 45000)
 
 
 if __name__ == "__main__":

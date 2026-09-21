@@ -168,6 +168,21 @@ header {
   border: 1px solid rgba(99, 102, 241, 0.3);
 }
 
+.pill-texel {
+  background: rgba(99, 102, 241, 0.12);
+  color: var(--accent-light);
+  border: 1px solid rgba(99, 102, 241, 0.3);
+}
+
+.pill-texel::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #a5b4fc;
+  box-shadow: 0 0 8px #a5b4fc;
+}
+
 /* Upload & Configuration Control Bar */
 .control-bar {
   background: var(--bg-secondary);
@@ -180,7 +195,7 @@ header {
 
 .control-bar-grid {
   display: grid;
-  grid-template-columns: 1.4fr 1.6fr auto;
+  grid-template-columns: 1.1fr 2.1fr auto;
   gap: 16px;
   align-items: stretch;
 }
@@ -188,6 +203,17 @@ header {
 @media (max-width: 1100px) {
   .control-bar-grid {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 600px) {
+  .config-group {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .config-item {
+    width: 100%;
+    min-width: 100%;
   }
 }
 
@@ -252,7 +278,7 @@ header {
   padding: 10px 14px;
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 14px;
   flex-wrap: wrap;
 }
 
@@ -262,6 +288,65 @@ header {
   gap: 4px;
   min-width: 120px;
   flex: 1;
+}
+
+.config-item-preset {
+  flex: 1.6;
+  min-width: 170px;
+}
+
+.config-item-format {
+  flex: 1;
+  min-width: 115px;
+}
+
+.config-item-uv {
+  flex: 1.1;
+  min-width: 135px;
+}
+
+.config-item-status {
+  flex: 1.1;
+  min-width: 145px;
+}
+
+.auto-density-badge {
+  background: rgba(16, 185, 129, 0.08);
+  border: 1px solid rgba(16, 185, 129, 0.28);
+  color: var(--text-main);
+  padding: 7px 11px;
+  border-radius: var(--radius-sm);
+  font-size: 0.8rem;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 35px;
+  box-sizing: border-box;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.status-pulse-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--success);
+  box-shadow: 0 0 8px var(--success);
+  flex-shrink: 0;
+  animation: pulse-glow 2s infinite ease-in-out;
+}
+
+@keyframes pulse-glow {
+  0%, 100% {
+    opacity: 0.7;
+    transform: scale(0.95);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.15);
+    box-shadow: 0 0 10px var(--success);
+  }
 }
 
 .config-label {

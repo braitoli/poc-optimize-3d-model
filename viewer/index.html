@@ -27,6 +27,7 @@
     </div>
     <div class="header-badges">
       <span class="pill-badge pill-rule11">Rule 11: 100% Geometry Preserved</span>
+      <span class="pill-badge pill-texel" title="Tự động phân tích Texel Density &amp; tối đa hóa không gian UV">⚡ Auto Texel Density</span>
       <span class="pill-badge pill-status">Live WebGL Viewport</span>
     </div>
   </header>
@@ -47,31 +48,27 @@
       <!-- Config Controls -->
       <div class="config-group">
         <!-- Preset Models Dropdown -->
-        <div class="config-item" style="flex: 1.4;">
+        <div class="config-item config-item-preset">
           <label class="config-label" for="modelSelect">Preset Sample Models</label>
           <select class="config-select" id="modelSelect">
             <option value="">Loading sample models...</option>
           </select>
         </div>
 
-        <!-- Target Resolution -->
-        <div class="config-item" style="position: relative;">
-          <label class="config-label" for="resSelect">
-            Resolution
-            <span class="policy-tooltip-trigger" title="Tự động giới hạn (không upscale) nếu texture gốc nhỏ hơn độ phân giải yêu cầu">ⓘ</span>
+        <!-- UV Mode (Step 3) -->
+        <div class="config-item config-item-uv">
+          <label class="config-label" for="uvModeSelect">
+            UV Unwrap Mode
+            <span class="policy-tooltip-trigger" title="Tự động tính toán Texel Density tối ưu và tối đa hóa không gian UV">Auto TD ⓘ</span>
           </label>
-          <select class="config-select" id="resSelect" title="Tự động giới hạn (không upscale) nếu texture gốc nhỏ hơn độ phân giải yêu cầu">
-            <option value="512">512 × 512</option>
-            <option value="1024" selected>1024 × 1024 (Default)</option>
-            <option value="2048">2048 × 2048 (Max HD)</option>
+          <select class="config-select" id="uvModeSelect">
+            <option value="rechart" selected>Re-chart (xatlas)</option>
+            <option value="direct">Direct Master UV</option>
           </select>
-          <div class="config-policy-note" id="resPolicyNote" title="Tự động giới hạn (không upscale) nếu texture gốc nhỏ hơn độ phân giải yêu cầu">
-            🔒 Tự động giới hạn (không upscale) nếu texture gốc nhỏ hơn độ phân giải yêu cầu
-          </div>
         </div>
 
-        <!-- Format -->
-        <div class="config-item">
+        <!-- GPU Format (Step 6) -->
+        <div class="config-item config-item-format">
           <label class="config-label" for="formatSelect">GPU Format</label>
           <select class="config-select" id="formatSelect">
             <option value="ktx2" selected>KTX2 UASTC</option>
@@ -79,13 +76,13 @@
           </select>
         </div>
 
-        <!-- UV Mode -->
-        <div class="config-item">
-          <label class="config-label" for="uvModeSelect">UV Unwrap Mode</label>
-          <select class="config-select" id="uvModeSelect">
-            <option value="direct" selected>Direct Master UV</option>
-            <option value="rechart">Re-chart (xatlas)</option>
-          </select>
+        <!-- Auto Texel Density Status Badge -->
+        <div class="config-item config-item-status" title="Hệ thống tự động đánh giá Texel Density để quyết định downscale hoặc giữ nguyên độ phân giải và tối ưu hóa không gian UV">
+          <label class="config-label">Resolution Policy</label>
+          <div class="auto-density-badge">
+            <span class="status-pulse-dot"></span>
+            <span class="badge-text">Auto Texel Density</span>
+          </div>
         </div>
       </div>
 

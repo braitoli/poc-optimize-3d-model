@@ -19,7 +19,7 @@ import shutil
 import tempfile
 import subprocess
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Union
 
 import numpy as np
 from PIL import Image
@@ -38,7 +38,9 @@ from optimizer.core.texture_utils import (
     extract_original_texture_info,
     preserve_mesh_textures,
     clamp_target_resolution,
-    optimize_mesh_texture_for_export
+    optimize_mesh_texture_for_export,
+    can_downscale_texture,
+    maximize_uv_space
 )
 
 MODULE_ROOT = Path(__file__).resolve().parent
@@ -176,7 +178,7 @@ def format_duration(seconds: float) -> str:
 class ModelOptimizer:
     def __init__(
         self,
-        resolution: int = 1024,
+        resolution: Union[int, str] = "auto",
         texture_format: str = "ktx2",
         rechart_uv: bool = False,
         smooth_normals: bool = True,
@@ -212,7 +214,8 @@ class ModelOptimizer:
         self.log("=" * 65)
         self.log(f"🚀 STARTING 3D MODEL OPTIMIZATION: {input_path.name}")
         self.log(f"   Input size: {raw_size / 1024 / 1024:.2f} MB ({raw_size:,} bytes)")
-        self.log(f"   Resolution: {self.resolution}x{self.resolution}")
+        res_display = f"{self.resolution}x{self.resolution}" if isinstance(self.resolution, int) else f"{self.resolution.upper()} (Adaptive)"
+        self.log(f"   Resolution: {res_display}")
         self.log(f"   Texture format: {self.texture_format.upper()}")
         self.log(f"   UV Re-charting: {'ENABLED (xatlas)' if self.rechart_uv else 'DIRECT MASTER UV'}")
         self.log(f"   Rule 11 Compliance: STRICT ZERO-DECIMATION (100% faces preserved)")
@@ -365,8 +368,6 @@ class ModelOptimizer:
                 }, t_step_start=t_s2)
 
             # 3. Extract Texture & UV Processing
-            t_s3 = time.perf_counter()
-            self.log(f"▶️ [Phase 3/5] Texture Processing ({self.resolution}x{self.resolution} + 16px Dilation)...")
             raw_uv = getattr(raw_mesh.visual, "uv", None)
             if raw_uv is None:
                 raw_uv = getattr(grounded_mesh.visual, "uv", np.zeros((len(grounded_mesh.vertices), 2)))
@@ -375,18 +376,49 @@ class ModelOptimizer:
             if raw_tex_img is None and hasattr(grounded_mesh.visual, "material") and hasattr(grounded_mesh.visual.material, "baseColorTexture"):
                 raw_tex_img = grounded_mesh.visual.material.baseColorTexture
             if raw_tex_img is None:
-                raw_tex_img = Image.new("RGB", (self.resolution, self.resolution), (200, 200, 200))
+                default_dim = 1024 if (self.resolution == "auto" or not isinstance(self.resolution, int)) else self.resolution
+                raw_tex_img = Image.new("RGB", (default_dim, default_dim), (200, 200, 200))
 
-            # Enforce NO-UPSCALE policy: clamp requested resolution
-            target_res = clamp_target_resolution(self.resolution, raw_tex_img.size, logger_fn=self.log)
-            self.resolution = target_res
+            # Auto-Resolution determination or Manual Clamping
+            is_auto = self.resolution is None or (isinstance(self.resolution, str) and self.resolution.lower() == "auto")
+            downscale_info = {}
+            uv_adjust_info = {}
+
+            if is_auto:
+                self.log("▶️ [Phase 3/5] Auto-evaluating adaptive resolution (Texel Density & Square UV Packing)...")
+                # 1. Evaluate whether downscaling is possible via can_downscale_texture
+                can_downscale, optimal_res, downscale_info = can_downscale_texture(
+                    grounded_mesh,
+                    raw_tex_img,
+                    uv=raw_uv,
+                    target_res="auto",
+                    logger_fn=self.log
+                )
+                target_res = optimal_res
+
+                # 2. In both branches, apply maximize_uv_space to maximize UV canvas utilization
+                grounded_mesh, raw_tex_img, raw_uv, uv_adjust_info = maximize_uv_space(
+                    grounded_mesh,
+                    raw_tex_img,
+                    uv=raw_uv,
+                    target_res=target_res,
+                    logger_fn=self.log
+                )
+                self.resolution = target_res
+            else:
+                # Enforce NO-UPSCALE policy: clamp requested resolution
+                target_res = clamp_target_resolution(self.resolution, raw_tex_img.size, logger_fn=self.log)
+                self.resolution = target_res
+
+            t_s3 = time.perf_counter()
+            self.log(f"▶️ [Phase 3/5] Texture Processing ({target_res}x{target_res} + 16px Dilation)...")
 
             uv_stats = {}
             if self.rechart_uv:
-                self.log(f"   Re-charting UV islands with xatlas (High-Density Packing, {self.resolution}x{self.resolution})...")
+                self.log(f"   Re-charting UV islands with xatlas (High-Density Packing, {target_res}x{target_res})...")
                 baked_mesh, dilated_pil = rechart_and_bake_high_density(
                     grounded_mesh,
-                    target_res=self.resolution,
+                    target_res=target_res,
                     source_image=raw_tex_img,
                     source_uv=raw_uv,
                     dilation_padding=16,
@@ -395,11 +427,11 @@ class ModelOptimizer:
                 )
                 self.log(f"   ✓ High-Density UV: {uv_stats.get('uv_coverage_ratio_percent', 0)}% coverage | Texel Density: {uv_stats.get('texel_density_linear', 0)} px/unit")
             else:
-                self.log(f"   Direct Master UV mode: Resampling Lanczos ({self.resolution}x{self.resolution}) + 16px dilation...")
+                self.log(f"   Direct Master UV mode: Resampling Lanczos ({target_res}x{target_res}) + 16px dilation...")
                 baked_mesh, dilated_pil = direct_resample_texture(
                     grounded_mesh,
                     source_image=raw_tex_img,
-                    target_res=self.resolution,
+                    target_res=target_res,
                     dilation_padding=16
                 )
 
@@ -420,11 +452,11 @@ class ModelOptimizer:
                 s3_path = self.export_steps_dir / "step3_uv_bake.glb"
                 s3_path.write_bytes(s3_bytes)
                 s3_bbox = [round(float(x), 3) for x in (baked_mesh.bounds[1] - baked_mesh.bounds[0]).tolist()] if hasattr(baked_mesh, 'bounds') and baked_mesh.bounds is not None else s1_bbox
-                emit_step({
+                step3_data = {
                     "step": 3,
                     "name": "UV & Texture Bake",
                     "status": "completed",
-                    "description": f"Master UV texture resampled to {self.resolution}x{self.resolution} with 16px boundary dilation",
+                    "description": f"Master UV texture resampled to {target_res}x{target_res} with 16px boundary dilation",
                     "fileSize": len(s3_bytes),
                     "fileSizeFormatted": format_file_size(len(s3_bytes)),
                     "faces": len(baked_mesh.faces),
@@ -434,10 +466,18 @@ class ModelOptimizer:
                     "primitives": 1,
                     "bbox": s3_bbox,
                     "textureFormat": f"{tex_fmt} (Dilated 16px)",
-                    "textureRes": f"{self.resolution}x{self.resolution}",
-                    "gpuVramMb": round((self.resolution * self.resolution * 4 * 1.33) / (1024 * 1024), 2),
+                    "textureRes": f"{target_res}x{target_res}",
+                    "gpuVramMb": round((target_res * target_res * 4 * 1.33) / (1024 * 1024), 2),
                     "modelFile": "step3_uv_bake.glb"
-                }, t_step_start=t_s3)
+                }
+                if is_auto:
+                    step3_data["autoResolution"] = {
+                        "enabled": True,
+                        "canDownscale": downscale_info.get("can_downscale", False),
+                        "optimalResolution": target_res,
+                        "uvSpaceMaximized": uv_adjust_info.get("adjusted", False)
+                    }
+                emit_step(step3_data, t_step_start=t_s3)
 
             # 4. Extract Palette
             t_s4 = time.perf_counter()

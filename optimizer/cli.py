@@ -12,6 +12,17 @@ from pathlib import Path
 from optimizer.pipeline import ModelOptimizer
 
 
+def parse_resolution_arg(val):
+    s = str(val).strip().lower()
+    if s == "auto":
+        return "auto"
+    try:
+        res = int(s)
+        return res if res > 0 else "auto"
+    except ValueError:
+        return "auto"
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Zero-Decimation 3D Model (.glb) Optimization Pipeline",
@@ -21,10 +32,9 @@ def parse_args():
     parser.add_argument("output", type=str, help="Path to output optimized .glb file")
     parser.add_argument(
         "-r", "--resolution",
-        type=int,
-        default=1024,
-        choices=[512, 1024, 2048, 4096],
-        help="Target texture dimension (strictly capped at original texture size, never upscaled)"
+        default="auto",
+        type=parse_resolution_arg,
+        help="Target texture dimension ('auto', 512, 1024, 2048; strictly capped at original texture size, never upscaled)"
     )
     parser.add_argument(
         "-f", "--format",

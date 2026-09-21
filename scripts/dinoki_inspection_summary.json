@@ -1,0 +1,1870 @@
+[
+  {
+    "file": "examples/models/dinoki_raw.glb",
+    "size_bytes": 2026696,
+    "md5": "ab71395582ecfdfa34793bea21ff591a",
+    "nodes_count": 1,
+    "scenes_count": 1,
+    "meshes_count": 1,
+    "primitives_count": 1,
+    "faces_count": 45000,
+    "vertices_count": 36648,
+    "attributes": [
+      "NORMAL",
+      "POSITION",
+      "TEXCOORD_0"
+    ],
+    "uv_channels": [
+      {
+        "channel": "TEXCOORD_0",
+        "count": 36648,
+        "min": [
+          -0.4339812099933624,
+          -0.48360705375671387
+        ],
+        "max": [
+          1.7421956062316895,
+          1.7788043022155762
+        ],
+        "componentType": 5126,
+        "type": "VEC2"
+      }
+    ],
+    "materials_count": 1,
+    "materials": [
+      {
+        "name": null,
+        "alphaMode": "OPAQUE",
+        "doubleSided": false,
+        "roughness": 0.9527129914246354,
+        "metallic": 0.0,
+        "hasBaseColor": true
+      }
+    ],
+    "textures_count": 1,
+    "images_count": 1,
+    "images": [
+      {
+        "index": 0,
+        "name": "img_0",
+        "mimeType": "image/jpeg",
+        "bytes": 312316,
+        "info": {
+          "format": "JPEG",
+          "compression": "None",
+          "resolution": [
+            1536,
+            1536
+          ],
+          "gpu_vram": 7077888,
+          "uncompressed_vram": 7077888,
+          "mode": "RGB",
+          "channels": 3
+        }
+      }
+    ],
+    "animations_count": 0,
+    "skins_count": 0,
+    "morph_targets_count": 0,
+    "extensionsUsed": [],
+    "extensionsRequired": [],
+    "extras": {}
+  },
+  {
+    "file": "examples/sample_dinoki.glb",
+    "size_bytes": 2026696,
+    "md5": "ab71395582ecfdfa34793bea21ff591a",
+    "nodes_count": 1,
+    "scenes_count": 1,
+    "meshes_count": 1,
+    "primitives_count": 1,
+    "faces_count": 45000,
+    "vertices_count": 36648,
+    "attributes": [
+      "NORMAL",
+      "POSITION",
+      "TEXCOORD_0"
+    ],
+    "uv_channels": [
+      {
+        "channel": "TEXCOORD_0",
+        "count": 36648,
+        "min": [
+          -0.4339812099933624,
+          -0.48360705375671387
+        ],
+        "max": [
+          1.7421956062316895,
+          1.7788043022155762
+        ],
+        "componentType": 5126,
+        "type": "VEC2"
+      }
+    ],
+    "materials_count": 1,
+    "materials": [
+      {
+        "name": null,
+        "alphaMode": "OPAQUE",
+        "doubleSided": false,
+        "roughness": 0.9527129914246354,
+        "metallic": 0.0,
+        "hasBaseColor": true
+      }
+    ],
+    "textures_count": 1,
+    "images_count": 1,
+    "images": [
+      {
+        "index": 0,
+        "name": "img_0",
+        "mimeType": "image/jpeg",
+        "bytes": 312316,
+        "info": {
+          "format": "JPEG",
+          "compression": "None",
+          "resolution": [
+            1536,
+            1536
+          ],
+          "gpu_vram": 7077888,
+          "uncompressed_vram": 7077888,
+          "mode": "RGB",
+          "channels": 3
+        }
+      }
+    ],
+    "animations_count": 0,
+    "skins_count": 0,
+    "morph_targets_count": 0,
+    "extensionsUsed": [],
+    "extensionsRequired": [],
+    "extras": {}
+  },
+  {
+    "file": "examples/sample_dinoki_opt.glb",
+    "size_bytes": 1763976,
+    "md5": "b6e468ffae58393f349c23813f7f00fc",
+    "nodes_count": 1,
+    "scenes_count": 1,
+    "meshes_count": 1,
+    "primitives_count": 1,
+    "faces_count": 45000,
+    "vertices_count": 36648,
+    "attributes": [
+      "NORMAL",
+      "POSITION",
+      "TEXCOORD_0"
+    ],
+    "uv_channels": [
+      {
+        "channel": "TEXCOORD_0",
+        "count": 36648,
+        "min": null,
+        "max": null,
+        "componentType": 5126,
+        "type": "VEC2"
+      }
+    ],
+    "materials_count": 1,
+    "materials": [
+      {
+        "name": null,
+        "alphaMode": "OPAQUE",
+        "doubleSided": false,
+        "roughness": 0.8,
+        "metallic": 0,
+        "hasBaseColor": true
+      }
+    ],
+    "textures_count": 1,
+    "images_count": 1,
+    "images": [
+      {
+        "index": 0,
+        "name": "img_0",
+        "mimeType": "image/ktx2",
+        "bytes": 1121968,
+        "info": {
+          "format": "KTX2",
+          "compression": "UASTC/Basis",
+          "resolution": [
+            1024,
+            1024
+          ],
+          "gpu_vram": 1398101,
+          "uncompressed_vram": 4194304
+        }
+      }
+    ],
+    "animations_count": 0,
+    "skins_count": 0,
+    "morph_targets_count": 0,
+    "extensionsUsed": [
+      "EXT_meshopt_compression",
+      "KHR_mesh_quantization",
+      "KHR_texture_basisu"
+    ],
+    "extensionsRequired": [
+      "EXT_meshopt_compression",
+      "KHR_mesh_quantization",
+      "KHR_texture_basisu"
+    ],
+    "extras": {
+      "palette": [
+        "#578c33",
+        "#3e6c1e",
+        "#11120d",
+        "#2a4911",
+        "#2d2b26",
+        "#b25908",
+        "#484a3f",
+        "#879749",
+        "#b9b7a4",
+        "#26727c"
+      ],
+      "primaryColor": "#578c33",
+      "paletteDetails": [
+        {
+          "hex": "#578c33",
+          "rgb": [
+            87,
+            140,
+            51
+          ],
+          "weight": 0.1877
+        },
+        {
+          "hex": "#3e6c1e",
+          "rgb": [
+            62,
+            108,
+            30
+          ],
+          "weight": 0.1867
+        },
+        {
+          "hex": "#11120d",
+          "rgb": [
+            17,
+            18,
+            13
+          ],
+          "weight": 0.1409
+        },
+        {
+          "hex": "#2a4911",
+          "rgb": [
+            42,
+            73,
+            17
+          ],
+          "weight": 0.1256
+        },
+        {
+          "hex": "#2d2b26",
+          "rgb": [
+            45,
+            43,
+            38
+          ],
+          "weight": 0.1189
+        },
+        {
+          "hex": "#b25908",
+          "rgb": [
+            178,
+            89,
+            8
+          ],
+          "weight": 0.0937
+        },
+        {
+          "hex": "#484a3f",
+          "rgb": [
+            72,
+            74,
+            63
+          ],
+          "weight": 0.0469
+        },
+        {
+          "hex": "#879749",
+          "rgb": [
+            135,
+            151,
+            73
+          ],
+          "weight": 0.0406
+        },
+        {
+          "hex": "#b9b7a4",
+          "rgb": [
+            185,
+            183,
+            164
+          ],
+          "weight": 0.0345
+        },
+        {
+          "hex": "#26727c",
+          "rgb": [
+            38,
+            114,
+            124
+          ],
+          "weight": 0.0245
+        }
+      ],
+      "resolution": "1024x1024",
+      "texture_format": "KTX2",
+      "policy": "STRICT 0-DECIMATION (--ratio 1.0)",
+      "tool": "poc-optimize-3d-model v1.0.0"
+    }
+  },
+  {
+    "file": "workspaces/benchmark_dinoki/dinoki/step_00_raw.glb",
+    "size_bytes": 2026696,
+    "md5": "ab71395582ecfdfa34793bea21ff591a",
+    "nodes_count": 1,
+    "scenes_count": 1,
+    "meshes_count": 1,
+    "primitives_count": 1,
+    "faces_count": 45000,
+    "vertices_count": 36648,
+    "attributes": [
+      "NORMAL",
+      "POSITION",
+      "TEXCOORD_0"
+    ],
+    "uv_channels": [
+      {
+        "channel": "TEXCOORD_0",
+        "count": 36648,
+        "min": [
+          -0.4339812099933624,
+          -0.48360705375671387
+        ],
+        "max": [
+          1.7421956062316895,
+          1.7788043022155762
+        ],
+        "componentType": 5126,
+        "type": "VEC2"
+      }
+    ],
+    "materials_count": 1,
+    "materials": [
+      {
+        "name": null,
+        "alphaMode": "OPAQUE",
+        "doubleSided": false,
+        "roughness": 0.9527129914246354,
+        "metallic": 0.0,
+        "hasBaseColor": true
+      }
+    ],
+    "textures_count": 1,
+    "images_count": 1,
+    "images": [
+      {
+        "index": 0,
+        "name": "img_0",
+        "mimeType": "image/jpeg",
+        "bytes": 312316,
+        "info": {
+          "format": "JPEG",
+          "compression": "None",
+          "resolution": [
+            1536,
+            1536
+          ],
+          "gpu_vram": 7077888,
+          "uncompressed_vram": 7077888,
+          "mode": "RGB",
+          "channels": 3
+        }
+      }
+    ],
+    "animations_count": 0,
+    "skins_count": 0,
+    "morph_targets_count": 0,
+    "extensionsUsed": [],
+    "extensionsRequired": [],
+    "extras": {}
+  },
+  {
+    "file": "workspaces/benchmark_dinoki/dinoki/step_01_cleaned_grounded.glb",
+    "size_bytes": 2026752,
+    "md5": "fa731a5bb7b54db0ad1472aead060477",
+    "nodes_count": 1,
+    "scenes_count": 1,
+    "meshes_count": 1,
+    "primitives_count": 1,
+    "faces_count": 45000,
+    "vertices_count": 36648,
+    "attributes": [
+      "NORMAL",
+      "POSITION",
+      "TEXCOORD_0"
+    ],
+    "uv_channels": [
+      {
+        "channel": "TEXCOORD_0",
+        "count": 36648,
+        "min": [
+          -0.4339812099933624,
+          -0.48360705375671387
+        ],
+        "max": [
+          1.7421956062316895,
+          1.7788043022155762
+        ],
+        "componentType": 5126,
+        "type": "VEC2"
+      }
+    ],
+    "materials_count": 1,
+    "materials": [
+      {
+        "name": null,
+        "alphaMode": "OPAQUE",
+        "doubleSided": false,
+        "roughness": 0.9527129914246354,
+        "metallic": 0.0,
+        "hasBaseColor": true
+      }
+    ],
+    "textures_count": 1,
+    "images_count": 1,
+    "images": [
+      {
+        "index": 0,
+        "name": "img_0",
+        "mimeType": "image/jpeg",
+        "bytes": 312316,
+        "info": {
+          "format": "JPEG",
+          "compression": "None",
+          "resolution": [
+            1536,
+            1536
+          ],
+          "gpu_vram": 7077888,
+          "uncompressed_vram": 7077888,
+          "mode": "RGB",
+          "channels": 3
+        }
+      }
+    ],
+    "animations_count": 0,
+    "skins_count": 0,
+    "morph_targets_count": 0,
+    "extensionsUsed": [],
+    "extensionsRequired": [],
+    "extras": {}
+  },
+  {
+    "file": "workspaces/benchmark_dinoki/dinoki/step_02_oriented.glb",
+    "size_bytes": 2026752,
+    "md5": "3bf31fa3827517f7c8876e527af5552c",
+    "nodes_count": 1,
+    "scenes_count": 1,
+    "meshes_count": 1,
+    "primitives_count": 1,
+    "faces_count": 45000,
+    "vertices_count": 36648,
+    "attributes": [
+      "NORMAL",
+      "POSITION",
+      "TEXCOORD_0"
+    ],
+    "uv_channels": [
+      {
+        "channel": "TEXCOORD_0",
+        "count": 36648,
+        "min": [
+          -0.4339812099933624,
+          -0.48360705375671387
+        ],
+        "max": [
+          1.7421956062316895,
+          1.7788043022155762
+        ],
+        "componentType": 5126,
+        "type": "VEC2"
+      }
+    ],
+    "materials_count": 1,
+    "materials": [
+      {
+        "name": null,
+        "alphaMode": "OPAQUE",
+        "doubleSided": false,
+        "roughness": 0.9527129914246354,
+        "metallic": 0.0,
+        "hasBaseColor": true
+      }
+    ],
+    "textures_count": 1,
+    "images_count": 1,
+    "images": [
+      {
+        "index": 0,
+        "name": "img_0",
+        "mimeType": "image/jpeg",
+        "bytes": 312316,
+        "info": {
+          "format": "JPEG",
+          "compression": "None",
+          "resolution": [
+            1536,
+            1536
+          ],
+          "gpu_vram": 7077888,
+          "uncompressed_vram": 7077888,
+          "mode": "RGB",
+          "channels": 3
+        }
+      }
+    ],
+    "animations_count": 0,
+    "skins_count": 0,
+    "morph_targets_count": 0,
+    "extensionsUsed": [],
+    "extensionsRequired": [],
+    "extras": {}
+  },
+  {
+    "file": "workspaces/benchmark_dinoki/dinoki/step_03_texture_baked.glb",
+    "size_bytes": 3307060,
+    "md5": "0992396058d4307af97b69a0779964d7",
+    "nodes_count": 1,
+    "scenes_count": 1,
+    "meshes_count": 1,
+    "primitives_count": 1,
+    "faces_count": 45000,
+    "vertices_count": 36648,
+    "attributes": [
+      "NORMAL",
+      "POSITION",
+      "TEXCOORD_0"
+    ],
+    "uv_channels": [
+      {
+        "channel": "TEXCOORD_0",
+        "count": 36648,
+        "min": [
+          -0.4339812099933624,
+          -0.48360705375671387
+        ],
+        "max": [
+          1.7421956062316895,
+          1.7788043022155762
+        ],
+        "componentType": 5126,
+        "type": "VEC2"
+      }
+    ],
+    "materials_count": 1,
+    "materials": [
+      {
+        "name": null,
+        "alphaMode": "OPAQUE",
+        "doubleSided": false,
+        "roughness": 0.8,
+        "metallic": 0.0,
+        "hasBaseColor": true
+      }
+    ],
+    "textures_count": 1,
+    "images_count": 1,
+    "images": [
+      {
+        "index": 0,
+        "name": "img_0",
+        "mimeType": "image/png",
+        "bytes": 1592696,
+        "info": {
+          "format": "PNG",
+          "compression": "None",
+          "resolution": [
+            1024,
+            1024
+          ],
+          "gpu_vram": 3145728,
+          "uncompressed_vram": 3145728,
+          "mode": "RGB",
+          "channels": 3
+        }
+      }
+    ],
+    "animations_count": 0,
+    "skins_count": 0,
+    "morph_targets_count": 0,
+    "extensionsUsed": [],
+    "extensionsRequired": [],
+    "extras": {}
+  },
+  {
+    "file": "workspaces/benchmark_dinoki/dinoki/step_04_palette_tagged.glb",
+    "size_bytes": 3307744,
+    "md5": "767929c539f6fb2e2b036278d2f97d08",
+    "nodes_count": 1,
+    "scenes_count": 1,
+    "meshes_count": 1,
+    "primitives_count": 1,
+    "faces_count": 45000,
+    "vertices_count": 36648,
+    "attributes": [
+      "NORMAL",
+      "POSITION",
+      "TEXCOORD_0"
+    ],
+    "uv_channels": [
+      {
+        "channel": "TEXCOORD_0",
+        "count": 36648,
+        "min": [
+          -0.4339812099933624,
+          -0.48360705375671387
+        ],
+        "max": [
+          1.7421956062316895,
+          1.7788043022155762
+        ],
+        "componentType": 5126,
+        "type": "VEC2"
+      }
+    ],
+    "materials_count": 1,
+    "materials": [
+      {
+        "name": null,
+        "alphaMode": "OPAQUE",
+        "doubleSided": false,
+        "roughness": 0.8,
+        "metallic": 0.0,
+        "hasBaseColor": true
+      }
+    ],
+    "textures_count": 1,
+    "images_count": 1,
+    "images": [
+      {
+        "index": 0,
+        "name": "img_0",
+        "mimeType": "image/png",
+        "bytes": 1592696,
+        "info": {
+          "format": "PNG",
+          "compression": "None",
+          "resolution": [
+            1024,
+            1024
+          ],
+          "gpu_vram": 3145728,
+          "uncompressed_vram": 3145728,
+          "mode": "RGB",
+          "channels": 3
+        }
+      }
+    ],
+    "animations_count": 0,
+    "skins_count": 0,
+    "morph_targets_count": 0,
+    "extensionsUsed": [],
+    "extensionsRequired": [],
+    "extras": {
+      "palette": [
+        "#3f6d1f",
+        "#588d34",
+        "#13140f",
+        "#2a4a11",
+        "#323230",
+        "#c3670a",
+        "#8c3e06",
+        "#879648",
+        "#b8b6a3",
+        "#2e6e74"
+      ],
+      "primaryColor": "#3f6d1f",
+      "paletteDetails": [
+        {
+          "hex": "#3f6d1f",
+          "rgb": [
+            63,
+            109,
+            31
+          ],
+          "weight": 0.1938
+        },
+        {
+          "hex": "#588d34",
+          "rgb": [
+            88,
+            141,
+            52
+          ],
+          "weight": 0.1804
+        },
+        {
+          "hex": "#13140f",
+          "rgb": [
+            19,
+            20,
+            15
+          ],
+          "weight": 0.1622
+        },
+        {
+          "hex": "#2a4a11",
+          "rgb": [
+            42,
+            74,
+            17
+          ],
+          "weight": 0.1323
+        },
+        {
+          "hex": "#323230",
+          "rgb": [
+            50,
+            50,
+            48
+          ],
+          "weight": 0.1247
+        },
+        {
+          "hex": "#c3670a",
+          "rgb": [
+            195,
+            103,
+            10
+          ],
+          "weight": 0.0596
+        },
+        {
+          "hex": "#8c3e06",
+          "rgb": [
+            140,
+            62,
+            6
+          ],
+          "weight": 0.0413
+        },
+        {
+          "hex": "#879648",
+          "rgb": [
+            135,
+            150,
+            72
+          ],
+          "weight": 0.04
+        },
+        {
+          "hex": "#b8b6a3",
+          "rgb": [
+            184,
+            182,
+            163
+          ],
+          "weight": 0.0351
+        },
+        {
+          "hex": "#2e6e74",
+          "rgb": [
+            46,
+            110,
+            116
+          ],
+          "weight": 0.0306
+        }
+      ]
+    }
+  },
+  {
+    "file": "workspaces/benchmark_dinoki/dinoki/step_05_meshopt.glb",
+    "size_bytes": 2234492,
+    "md5": "a73b81bdcdf1fb9ba0f72e76c0837f2b",
+    "nodes_count": 1,
+    "scenes_count": 1,
+    "meshes_count": 1,
+    "primitives_count": 1,
+    "faces_count": 45000,
+    "vertices_count": 36648,
+    "attributes": [
+      "NORMAL",
+      "POSITION",
+      "TEXCOORD_0"
+    ],
+    "uv_channels": [
+      {
+        "channel": "TEXCOORD_0",
+        "count": 36648,
+        "min": null,
+        "max": null,
+        "componentType": 5126,
+        "type": "VEC2"
+      }
+    ],
+    "materials_count": 1,
+    "materials": [
+      {
+        "name": null,
+        "alphaMode": "OPAQUE",
+        "doubleSided": false,
+        "roughness": 0.8,
+        "metallic": 0,
+        "hasBaseColor": true
+      }
+    ],
+    "textures_count": 1,
+    "images_count": 1,
+    "images": [
+      {
+        "index": 0,
+        "name": "img_0",
+        "mimeType": "image/png",
+        "bytes": 1592696,
+        "info": {
+          "format": "PNG",
+          "compression": "None",
+          "resolution": [
+            1024,
+            1024
+          ],
+          "gpu_vram": 3145728,
+          "uncompressed_vram": 3145728,
+          "mode": "RGB",
+          "channels": 3
+        }
+      }
+    ],
+    "animations_count": 0,
+    "skins_count": 0,
+    "morph_targets_count": 0,
+    "extensionsUsed": [
+      "EXT_meshopt_compression",
+      "KHR_mesh_quantization"
+    ],
+    "extensionsRequired": [
+      "EXT_meshopt_compression",
+      "KHR_mesh_quantization"
+    ],
+    "extras": {
+      "palette": [
+        "#3f6d1f",
+        "#588d34",
+        "#13140f",
+        "#2a4a11",
+        "#323230",
+        "#c3670a",
+        "#8c3e06",
+        "#879648",
+        "#b8b6a3",
+        "#2e6e74"
+      ],
+      "primaryColor": "#3f6d1f",
+      "paletteDetails": [
+        {
+          "hex": "#3f6d1f",
+          "rgb": [
+            63,
+            109,
+            31
+          ],
+          "weight": 0.1938
+        },
+        {
+          "hex": "#588d34",
+          "rgb": [
+            88,
+            141,
+            52
+          ],
+          "weight": 0.1804
+        },
+        {
+          "hex": "#13140f",
+          "rgb": [
+            19,
+            20,
+            15
+          ],
+          "weight": 0.1622
+        },
+        {
+          "hex": "#2a4a11",
+          "rgb": [
+            42,
+            74,
+            17
+          ],
+          "weight": 0.1323
+        },
+        {
+          "hex": "#323230",
+          "rgb": [
+            50,
+            50,
+            48
+          ],
+          "weight": 0.1247
+        },
+        {
+          "hex": "#c3670a",
+          "rgb": [
+            195,
+            103,
+            10
+          ],
+          "weight": 0.0596
+        },
+        {
+          "hex": "#8c3e06",
+          "rgb": [
+            140,
+            62,
+            6
+          ],
+          "weight": 0.0413
+        },
+        {
+          "hex": "#879648",
+          "rgb": [
+            135,
+            150,
+            72
+          ],
+          "weight": 0.04
+        },
+        {
+          "hex": "#b8b6a3",
+          "rgb": [
+            184,
+            182,
+            163
+          ],
+          "weight": 0.0351
+        },
+        {
+          "hex": "#2e6e74",
+          "rgb": [
+            46,
+            110,
+            116
+          ],
+          "weight": 0.0306
+        }
+      ]
+    }
+  },
+  {
+    "file": "workspaces/benchmark_dinoki/dinoki/step_06_final.glb",
+    "size_bytes": 1763996,
+    "md5": "92d666d42d9e5d59f25077cc8e3bbc65",
+    "nodes_count": 1,
+    "scenes_count": 1,
+    "meshes_count": 1,
+    "primitives_count": 1,
+    "faces_count": 45000,
+    "vertices_count": 36648,
+    "attributes": [
+      "NORMAL",
+      "POSITION",
+      "TEXCOORD_0"
+    ],
+    "uv_channels": [
+      {
+        "channel": "TEXCOORD_0",
+        "count": 36648,
+        "min": null,
+        "max": null,
+        "componentType": 5126,
+        "type": "VEC2"
+      }
+    ],
+    "materials_count": 1,
+    "materials": [
+      {
+        "name": null,
+        "alphaMode": "OPAQUE",
+        "doubleSided": false,
+        "roughness": 0.8,
+        "metallic": 0,
+        "hasBaseColor": true
+      }
+    ],
+    "textures_count": 1,
+    "images_count": 1,
+    "images": [
+      {
+        "index": 0,
+        "name": "img_0",
+        "mimeType": "image/ktx2",
+        "bytes": 1121968,
+        "info": {
+          "format": "KTX2",
+          "compression": "UASTC/Basis",
+          "resolution": [
+            1024,
+            1024
+          ],
+          "gpu_vram": 1398101,
+          "uncompressed_vram": 4194304
+        }
+      }
+    ],
+    "animations_count": 0,
+    "skins_count": 0,
+    "morph_targets_count": 0,
+    "extensionsUsed": [
+      "EXT_meshopt_compression",
+      "KHR_mesh_quantization",
+      "KHR_texture_basisu"
+    ],
+    "extensionsRequired": [
+      "EXT_meshopt_compression",
+      "KHR_mesh_quantization",
+      "KHR_texture_basisu"
+    ],
+    "extras": {
+      "palette": [
+        "#3f6d1f",
+        "#588d34",
+        "#13140f",
+        "#2a4a11",
+        "#323230",
+        "#c3670a",
+        "#8c3e06",
+        "#879648",
+        "#b8b6a3",
+        "#2e6e74"
+      ],
+      "primaryColor": "#3f6d1f",
+      "paletteDetails": [
+        {
+          "hex": "#3f6d1f",
+          "rgb": [
+            63,
+            109,
+            31
+          ],
+          "weight": 0.1938
+        },
+        {
+          "hex": "#588d34",
+          "rgb": [
+            88,
+            141,
+            52
+          ],
+          "weight": 0.1804
+        },
+        {
+          "hex": "#13140f",
+          "rgb": [
+            19,
+            20,
+            15
+          ],
+          "weight": 0.1622
+        },
+        {
+          "hex": "#2a4a11",
+          "rgb": [
+            42,
+            74,
+            17
+          ],
+          "weight": 0.1323
+        },
+        {
+          "hex": "#323230",
+          "rgb": [
+            50,
+            50,
+            48
+          ],
+          "weight": 0.1247
+        },
+        {
+          "hex": "#c3670a",
+          "rgb": [
+            195,
+            103,
+            10
+          ],
+          "weight": 0.0596
+        },
+        {
+          "hex": "#8c3e06",
+          "rgb": [
+            140,
+            62,
+            6
+          ],
+          "weight": 0.0413
+        },
+        {
+          "hex": "#879648",
+          "rgb": [
+            135,
+            150,
+            72
+          ],
+          "weight": 0.04
+        },
+        {
+          "hex": "#b8b6a3",
+          "rgb": [
+            184,
+            182,
+            163
+          ],
+          "weight": 0.0351
+        },
+        {
+          "hex": "#2e6e74",
+          "rgb": [
+            46,
+            110,
+            116
+          ],
+          "weight": 0.0306
+        }
+      ],
+      "resolution": "1024x1024",
+      "texture_format": "KTX2",
+      "policy": "STRICT 0-DECIMATION (--ratio 1.0)",
+      "tool": "poc-optimize-3d-model v1.0.0"
+    }
+  },
+  {
+    "file": "workspaces/exp_dinoki_res1024/step_06_final.glb",
+    "size_bytes": 1794604,
+    "md5": "9fac57b328b257beb827b7aeb3bf5a25",
+    "nodes_count": 1,
+    "scenes_count": 1,
+    "meshes_count": 1,
+    "primitives_count": 1,
+    "faces_count": 45000,
+    "vertices_count": 36648,
+    "attributes": [
+      "NORMAL",
+      "POSITION",
+      "TEXCOORD_0"
+    ],
+    "uv_channels": [
+      {
+        "channel": "TEXCOORD_0",
+        "count": 36648,
+        "min": null,
+        "max": null,
+        "componentType": 5126,
+        "type": "VEC2"
+      }
+    ],
+    "materials_count": 1,
+    "materials": [
+      {
+        "name": null,
+        "alphaMode": "OPAQUE",
+        "doubleSided": false,
+        "roughness": 0.9527129914246354,
+        "metallic": 0,
+        "hasBaseColor": true
+      }
+    ],
+    "textures_count": 1,
+    "images_count": 1,
+    "images": [
+      {
+        "index": 0,
+        "name": "img_0",
+        "mimeType": "image/ktx2",
+        "bytes": 1152563,
+        "info": {
+          "format": "KTX2",
+          "compression": "UASTC/Basis",
+          "resolution": [
+            1024,
+            1024
+          ],
+          "gpu_vram": 1398101,
+          "uncompressed_vram": 4194304
+        }
+      }
+    ],
+    "animations_count": 0,
+    "skins_count": 0,
+    "morph_targets_count": 0,
+    "extensionsUsed": [
+      "EXT_meshopt_compression",
+      "KHR_mesh_quantization",
+      "KHR_texture_basisu"
+    ],
+    "extensionsRequired": [
+      "EXT_meshopt_compression",
+      "KHR_mesh_quantization",
+      "KHR_texture_basisu"
+    ],
+    "extras": {
+      "palette": [
+        "#4c7d2a",
+        "#386419",
+        "#67953a",
+        "#20211a",
+        "#284410",
+        "#3d3a35",
+        "#b35908",
+        "#0b0c09",
+        "#b2b19c",
+        "#257179"
+      ],
+      "primaryColor": "#4c7d2a",
+      "paletteDetails": [
+        {
+          "hex": "#4c7d2a",
+          "rgb": [
+            76,
+            125,
+            42
+          ],
+          "weight": 0.16
+        },
+        {
+          "hex": "#386419",
+          "rgb": [
+            56,
+            100,
+            25
+          ],
+          "weight": 0.15
+        },
+        {
+          "hex": "#67953a",
+          "rgb": [
+            103,
+            149,
+            58
+          ],
+          "weight": 0.133
+        },
+        {
+          "hex": "#20211a",
+          "rgb": [
+            32,
+            33,
+            26
+          ],
+          "weight": 0.1224
+        },
+        {
+          "hex": "#284410",
+          "rgb": [
+            40,
+            68,
+            16
+          ],
+          "weight": 0.0966
+        },
+        {
+          "hex": "#3d3a35",
+          "rgb": [
+            61,
+            58,
+            53
+          ],
+          "weight": 0.0954
+        },
+        {
+          "hex": "#b35908",
+          "rgb": [
+            179,
+            89,
+            8
+          ],
+          "weight": 0.0931
+        },
+        {
+          "hex": "#0b0c09",
+          "rgb": [
+            11,
+            12,
+            9
+          ],
+          "weight": 0.085
+        },
+        {
+          "hex": "#b2b19c",
+          "rgb": [
+            178,
+            177,
+            156
+          ],
+          "weight": 0.0396
+        },
+        {
+          "hex": "#257179",
+          "rgb": [
+            37,
+            113,
+            121
+          ],
+          "weight": 0.0249
+        }
+      ],
+      "resolution": "1024x1024",
+      "texture_format": "KTX2",
+      "policy": "STRICT 0-DECIMATION (--ratio 1.0)",
+      "tool": "poc-optimize-3d-model v1.0.0"
+    }
+  },
+  {
+    "file": "workspaces/exp_dinoki_res2048/step_06_final.glb",
+    "size_bytes": 1794608,
+    "md5": "902b85bcdecfb09a3eb27f0e5c554550",
+    "nodes_count": 1,
+    "scenes_count": 1,
+    "meshes_count": 1,
+    "primitives_count": 1,
+    "faces_count": 45000,
+    "vertices_count": 36648,
+    "attributes": [
+      "NORMAL",
+      "POSITION",
+      "TEXCOORD_0"
+    ],
+    "uv_channels": [
+      {
+        "channel": "TEXCOORD_0",
+        "count": 36648,
+        "min": null,
+        "max": null,
+        "componentType": 5126,
+        "type": "VEC2"
+      }
+    ],
+    "materials_count": 1,
+    "materials": [
+      {
+        "name": null,
+        "alphaMode": "OPAQUE",
+        "doubleSided": false,
+        "roughness": 0.9527129914246354,
+        "metallic": 0,
+        "hasBaseColor": true
+      }
+    ],
+    "textures_count": 1,
+    "images_count": 1,
+    "images": [
+      {
+        "index": 0,
+        "name": "img_0",
+        "mimeType": "image/ktx2",
+        "bytes": 1152563,
+        "info": {
+          "format": "KTX2",
+          "compression": "UASTC/Basis",
+          "resolution": [
+            1024,
+            1024
+          ],
+          "gpu_vram": 1398101,
+          "uncompressed_vram": 4194304
+        }
+      }
+    ],
+    "animations_count": 0,
+    "skins_count": 0,
+    "morph_targets_count": 0,
+    "extensionsUsed": [
+      "EXT_meshopt_compression",
+      "KHR_mesh_quantization",
+      "KHR_texture_basisu"
+    ],
+    "extensionsRequired": [
+      "EXT_meshopt_compression",
+      "KHR_mesh_quantization",
+      "KHR_texture_basisu"
+    ],
+    "extras": {
+      "palette": [
+        "#4d7f2d",
+        "#13140f",
+        "#39651a",
+        "#343432",
+        "#6a963a",
+        "#274310",
+        "#c4670a",
+        "#8b3d06",
+        "#b3b19c",
+        "#24717a"
+      ],
+      "primaryColor": "#4d7f2d",
+      "paletteDetails": [
+        {
+          "hex": "#4d7f2d",
+          "rgb": [
+            77,
+            127,
+            45
+          ],
+          "weight": 0.168
+        },
+        {
+          "hex": "#13140f",
+          "rgb": [
+            19,
+            20,
+            15
+          ],
+          "weight": 0.1657
+        },
+        {
+          "hex": "#39651a",
+          "rgb": [
+            57,
+            101,
+            26
+          ],
+          "weight": 0.1628
+        },
+        {
+          "hex": "#343432",
+          "rgb": [
+            52,
+            52,
+            50
+          ],
+          "weight": 0.12
+        },
+        {
+          "hex": "#6a963a",
+          "rgb": [
+            106,
+            150,
+            58
+          ],
+          "weight": 0.1154
+        },
+        {
+          "hex": "#274310",
+          "rgb": [
+            39,
+            67,
+            16
+          ],
+          "weight": 0.1022
+        },
+        {
+          "hex": "#c4670a",
+          "rgb": [
+            196,
+            103,
+            10
+          ],
+          "weight": 0.0594
+        },
+        {
+          "hex": "#8b3d06",
+          "rgb": [
+            139,
+            61,
+            6
+          ],
+          "weight": 0.0427
+        },
+        {
+          "hex": "#b3b19c",
+          "rgb": [
+            179,
+            177,
+            156
+          ],
+          "weight": 0.0393
+        },
+        {
+          "hex": "#24717a",
+          "rgb": [
+            36,
+            113,
+            122
+          ],
+          "weight": 0.0245
+        }
+      ],
+      "resolution": "1024x1024",
+      "texture_format": "KTX2",
+      "policy": "STRICT 0-DECIMATION (--ratio 1.0)",
+      "tool": "poc-optimize-3d-model v1.0.0"
+    }
+  },
+  {
+    "file": "workspaces/test_job_webp/step_06_final.glb",
+    "size_bytes": 807848,
+    "md5": "e2b00f471089ec553c7c0d9014060929",
+    "nodes_count": 1,
+    "scenes_count": 1,
+    "meshes_count": 1,
+    "primitives_count": 1,
+    "faces_count": 45000,
+    "vertices_count": 36648,
+    "attributes": [
+      "NORMAL",
+      "POSITION",
+      "TEXCOORD_0"
+    ],
+    "uv_channels": [
+      {
+        "channel": "TEXCOORD_0",
+        "count": 36648,
+        "min": null,
+        "max": null,
+        "componentType": 5126,
+        "type": "VEC2"
+      }
+    ],
+    "materials_count": 1,
+    "materials": [
+      {
+        "name": null,
+        "alphaMode": "OPAQUE",
+        "doubleSided": false,
+        "roughness": 0.8,
+        "metallic": 0,
+        "hasBaseColor": true
+      }
+    ],
+    "textures_count": 1,
+    "images_count": 1,
+    "images": [
+      {
+        "index": 0,
+        "name": "img_0",
+        "mimeType": "image/webp",
+        "bytes": 165826,
+        "info": {
+          "format": "WEBP",
+          "compression": "None",
+          "resolution": [
+            1024,
+            1024
+          ],
+          "gpu_vram": 3145728,
+          "uncompressed_vram": 3145728,
+          "mode": "RGB",
+          "channels": 3
+        }
+      }
+    ],
+    "animations_count": 0,
+    "skins_count": 0,
+    "morph_targets_count": 0,
+    "extensionsUsed": [
+      "EXT_meshopt_compression",
+      "EXT_texture_webp",
+      "KHR_mesh_quantization"
+    ],
+    "extensionsRequired": [
+      "EXT_meshopt_compression",
+      "EXT_texture_webp",
+      "KHR_mesh_quantization"
+    ],
+    "extras": {
+      "palette": [
+        "#345c17",
+        "#2d3325",
+        "#4a7b28",
+        "#12130e",
+        "#5f933f",
+        "#c3670a",
+        "#8c3e06",
+        "#b4b29d",
+        "#306a70",
+        "#8a9622"
+      ],
+      "primaryColor": "#345c17",
+      "paletteDetails": [
+        {
+          "hex": "#345c17",
+          "rgb": [
+            52,
+            92,
+            23
+          ],
+          "weight": 0.1827
+        },
+        {
+          "hex": "#2d3325",
+          "rgb": [
+            45,
+            51,
+            37
+          ],
+          "weight": 0.1797
+        },
+        {
+          "hex": "#4a7b28",
+          "rgb": [
+            74,
+            123,
+            40
+          ],
+          "weight": 0.1646
+        },
+        {
+          "hex": "#12130e",
+          "rgb": [
+            18,
+            19,
+            14
+          ],
+          "weight": 0.1509
+        },
+        {
+          "hex": "#5f933f",
+          "rgb": [
+            95,
+            147,
+            63
+          ],
+          "weight": 0.1227
+        },
+        {
+          "hex": "#c3670a",
+          "rgb": [
+            195,
+            103,
+            10
+          ],
+          "weight": 0.0596
+        },
+        {
+          "hex": "#8c3e06",
+          "rgb": [
+            140,
+            62,
+            6
+          ],
+          "weight": 0.0411
+        },
+        {
+          "hex": "#b4b29d",
+          "rgb": [
+            180,
+            178,
+            157
+          ],
+          "weight": 0.0402
+        },
+        {
+          "hex": "#306a70",
+          "rgb": [
+            48,
+            106,
+            112
+          ],
+          "weight": 0.0338
+        },
+        {
+          "hex": "#8a9622",
+          "rgb": [
+            138,
+            150,
+            34
+          ],
+          "weight": 0.0247
+        }
+      ],
+      "resolution": "1024x1024",
+      "texture_format": "WEBP",
+      "policy": "STRICT 0-DECIMATION (--ratio 1.0)",
+      "tool": "poc-optimize-3d-model v1.0.0"
+    }
+  },
+  {
+    "file": "examples/jobs/default_sample/steps/step6_final.glb",
+    "size_bytes": 1781924,
+    "md5": "04e56d3b26a12e6dada1b7448df0196b",
+    "nodes_count": 1,
+    "scenes_count": 1,
+    "meshes_count": 1,
+    "primitives_count": 1,
+    "faces_count": 45000,
+    "vertices_count": 36648,
+    "attributes": [
+      "NORMAL",
+      "POSITION",
+      "TEXCOORD_0"
+    ],
+    "uv_channels": [
+      {
+        "channel": "TEXCOORD_0",
+        "count": 36648,
+        "min": null,
+        "max": null,
+        "componentType": 5126,
+        "type": "VEC2"
+      }
+    ],
+    "materials_count": 1,
+    "materials": [
+      {
+        "name": null,
+        "alphaMode": "OPAQUE",
+        "doubleSided": false,
+        "roughness": 0.9527129914246354,
+        "metallic": 0,
+        "hasBaseColor": true
+      }
+    ],
+    "textures_count": 1,
+    "images_count": 1,
+    "images": [
+      {
+        "index": 0,
+        "name": "img_0",
+        "mimeType": "image/ktx2",
+        "bytes": 1139873,
+        "info": {
+          "format": "KTX2",
+          "compression": "UASTC/Basis",
+          "resolution": [
+            1024,
+            1024
+          ],
+          "gpu_vram": 1398101,
+          "uncompressed_vram": 4194304
+        }
+      }
+    ],
+    "animations_count": 0,
+    "skins_count": 0,
+    "morph_targets_count": 0,
+    "extensionsUsed": [
+      "EXT_meshopt_compression",
+      "KHR_mesh_quantization",
+      "KHR_texture_basisu"
+    ],
+    "extensionsRequired": [
+      "EXT_meshopt_compression",
+      "KHR_mesh_quantization",
+      "KHR_texture_basisu"
+    ],
+    "extras": {
+      "palette": [
+        "#4d802c",
+        "#39651a",
+        "#0f0f0b",
+        "#6a963a",
+        "#262621",
+        "#284510",
+        "#b45a08",
+        "#453f36",
+        "#b3b19c",
+        "#247179"
+      ],
+      "primaryColor": "#4d802c",
+      "paletteDetails": [
+        {
+          "hex": "#4d802c",
+          "rgb": [
+            77,
+            128,
+            44
+          ],
+          "weight": 0.1629
+        },
+        {
+          "hex": "#39651a",
+          "rgb": [
+            57,
+            101,
+            26
+          ],
+          "weight": 0.1568
+        },
+        {
+          "hex": "#0f0f0b",
+          "rgb": [
+            15,
+            15,
+            11
+          ],
+          "weight": 0.1184
+        },
+        {
+          "hex": "#6a963a",
+          "rgb": [
+            106,
+            150,
+            58
+          ],
+          "weight": 0.1166
+        },
+        {
+          "hex": "#262621",
+          "rgb": [
+            38,
+            38,
+            33
+          ],
+          "weight": 0.1161
+        },
+        {
+          "hex": "#284510",
+          "rgb": [
+            40,
+            69,
+            16
+          ],
+          "weight": 0.0987
+        },
+        {
+          "hex": "#b45a08",
+          "rgb": [
+            180,
+            90,
+            8
+          ],
+          "weight": 0.0914
+        },
+        {
+          "hex": "#453f36",
+          "rgb": [
+            69,
+            63,
+            54
+          ],
+          "weight": 0.0748
+        },
+        {
+          "hex": "#b3b19c",
+          "rgb": [
+            179,
+            177,
+            156
+          ],
+          "weight": 0.0393
+        },
+        {
+          "hex": "#247179",
+          "rgb": [
+            36,
+            113,
+            121
+          ],
+          "weight": 0.0248
+        }
+      ],
+      "resolution": "1024x1024",
+      "texture_format": "KTX2",
+      "policy": "STRICT 0-DECIMATION (--ratio 1.0)",
+      "tool": "poc-optimize-3d-model v1.0.0"
+    }
+  }
+]

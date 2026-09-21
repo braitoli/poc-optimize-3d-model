@@ -12,7 +12,12 @@ from PIL import Image
 from scipy import ndimage
 import trimesh
 import xatlas
-from optimizer.core.texture_utils import clamp_target_resolution, optimize_mesh_texture_for_export
+from optimizer.core.texture_utils import (
+    clamp_target_resolution,
+    optimize_mesh_texture_for_export,
+    can_downscale_texture,
+    maximize_uv_space
+)
 
 
 def _sample_texture_bilinear(image_rgb: np.ndarray, uv: np.ndarray) -> np.ndarray:
@@ -43,15 +48,19 @@ def _rasterize_uv_atlas(
     faces: np.ndarray,
     uv: np.ndarray,
     dim: int,
-    max_batch_samples: int = 2000000
+    max_batch_samples: int = 4000000
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
-    Rasterizes UV atlas into a (dim x dim) grid using memory-bounded batching.
+    Rasterizes UV atlas into a (dim x dim) grid using memory-bounded direct canvas buffering.
+    Eliminates heavy list concatenation and large-array sorting for extreme speed.
     Returns:
-      sel: 1D flat pixel indices covered by triangles
+      sel: 1D flat pixel indices covered by triangles (sorted)
       fid: triangle index covering each selected pixel
       bary: barycentric weights (N, 3) for each selected pixel
     """
+    if len(faces) == 0 or len(uv) == 0:
+        return np.array([], dtype=np.int64), np.array([], dtype=np.int64), np.empty((0, 3))
+
     tri_uv = uv[faces]  # (N, 3, 2)
     px = tri_uv[:, :, 0] * (dim - 1)
     py = (1.0 - tri_uv[:, :, 1]) * (dim - 1)
@@ -72,71 +81,66 @@ def _rasterize_uv_atlas(
     idx = np.where(valid)[0]
     reps = areas[idx]
 
-    all_flat_idx = []
-    all_fids = []
-    all_bary = []
+    canvas_fid = np.full(dim * dim, -1, dtype=np.int64)
+    canvas_bary = np.zeros((dim * dim, 3), dtype=np.float64)
 
-    n_triangles = len(idx)
-    batch_start = 0
+    cum = np.concatenate([[0], np.cumsum(reps)])
+    total_samples = cum[-1]
+    batch_start_sample = 0
 
-    while batch_start < n_triangles:
-        cum = np.cumsum(reps[batch_start:])
-        batch_end = batch_start + np.searchsorted(cum, max_batch_samples, side='right')
-        batch_end = max(batch_end, batch_start + 1)
-        batch_end = min(batch_end, n_triangles)
+    while batch_start_sample < total_samples:
+        batch_end_sample = min(batch_start_sample + max_batch_samples, total_samples)
+        t_start = np.searchsorted(cum, batch_start_sample, side='right') - 1
+        t_end = np.searchsorted(cum, batch_end_sample, side='right')
+        t_end = max(t_end, t_start + 1)
+        t_end = min(t_end, len(idx))
 
-        b_idx = idx[batch_start:batch_end]
-        b_reps = reps[batch_start:batch_end]
+        b_idx = idx[t_start:t_end]
+        b_reps = reps[t_start:t_end]
         b_total = int(np.sum(b_reps))
 
         b_fids = np.repeat(b_idx, b_reps)
         b_offsets = np.concatenate([[0], np.cumsum(b_reps)])[:-1]
         b_seq = np.arange(b_total) - np.repeat(b_offsets, b_reps)
-        b_sx = np.repeat(span_x[b_idx], b_reps)
+        b_sx = span_x[b_fids]
 
-        grid_x = np.repeat(min_x[b_idx], b_reps) + (b_seq % b_sx)
-        grid_y = np.repeat(min_y[b_idx], b_reps) + (b_seq // b_sx)
+        gx = min_x[b_fids] + (b_seq % b_sx)
+        gy = min_y[b_fids] + (b_seq // b_sx)
 
         p0x, p0y = px[b_fids, 0], py[b_fids, 0]
         p1x, p1y = px[b_fids, 1], py[b_fids, 1]
         p2x, p2y = px[b_fids, 2], py[b_fids, 2]
 
         det = (p1y - p2y) * (p0x - p2x) + (p2x - p1x) * (p0y - p2y)
-        nonzero_det = np.abs(det) > 1e-10
+        nonzero = np.abs(det) > 1e-10
 
-        gx = grid_x[nonzero_det]
-        gy = grid_y[nonzero_det]
-        ff = b_fids[nonzero_det]
-        d = det[nonzero_det]
+        gx_s = gx[nonzero]
+        gy_s = gy[nonzero]
+        ff = b_fids[nonzero]
+        d = det[nonzero]
 
-        p0x_s, p0y_s = p0x[nonzero_det], p0y[nonzero_det]
-        p1x_s, p1y_s = p1x[nonzero_det], p1y[nonzero_det]
-        p2x_s, p2y_s = p2x[nonzero_det], p2y[nonzero_det]
+        p0x_s, p0y_s = p0x[nonzero], p0y[nonzero]
+        p1x_s, p1y_s = p1x[nonzero], p1y[nonzero]
+        p2x_s, p2y_s = p2x[nonzero], p2y[nonzero]
 
-        w0 = ((p1y_s - p2y_s) * (gx - p2x_s) + (p2x_s - p1x_s) * (gy - p2y_s)) / d
-        w1 = ((p2y_s - p0y_s) * (gx - p2x_s) + (p0x_s - p2x_s) * (gy - p2y_s)) / d
+        w0 = ((p1y_s - p2y_s) * (gx_s - p2x_s) + (p2x_s - p1x_s) * (gy_s - p2y_s)) / d
+        w1 = ((p2y_s - p0y_s) * (gx_s - p2x_s) + (p0x_s - p2x_s) * (gy_s - p2y_s)) / d
         w2 = 1.0 - w0 - w1
 
         inside = (w0 >= -1e-4) & (w1 >= -1e-4) & (w2 >= -1e-4)
         if np.any(inside):
-            gx_in = gx[inside]
-            gy_in = gy[inside]
-            all_flat_idx.append(gy_in * dim + gx_in)
-            all_fids.append(ff[inside])
-            all_bary.append(np.column_stack([w0[inside], w1[inside], w2[inside]]))
+            pix_idx = gy_s[inside] * dim + gx_s[inside]
+            canvas_fid[pix_idx] = ff[inside]
+            canvas_bary[pix_idx, 0] = w0[inside]
+            canvas_bary[pix_idx, 1] = w1[inside]
+            canvas_bary[pix_idx, 2] = w2[inside]
 
-        batch_start = batch_end
+        batch_start_sample = cum[t_end]
 
-    if not all_flat_idx:
+    sel = np.where(canvas_fid >= 0)[0]
+    if len(sel) == 0:
         return np.array([], dtype=np.int64), np.array([], dtype=np.int64), np.empty((0, 3))
-
-    flat_idx = np.concatenate(all_flat_idx)
-    final_fids = np.concatenate(all_fids)
-    final_bary = np.vstack(all_bary)
-
-    # Deduplicate pixels in case multiple triangles cover the same pixel
-    uniq_idx, first_idx = np.unique(flat_idx, return_index=True)
-    return uniq_idx, final_fids[first_idx], final_bary[first_idx]
+    return sel, canvas_fid[sel], canvas_bary[sel]
 
 
 def dilate_texture(image_rgb: np.ndarray, mask_covered: np.ndarray, padding: int = 16) -> np.ndarray:
@@ -227,6 +231,184 @@ def compute_uv_metrics(
     }
 
 
+def get_adaptive_chart_options(n_faces: int) -> xatlas.ChartOptions:
+    """
+    Configures xatlas.ChartOptions with adaptive iterations and micro-chart merging
+    to achieve ultra-fast unwrapping even on large meshes (>200k faces like Gravilux).
+    """
+    c_opts = xatlas.ChartOptions()
+    if n_faces > 100_000:
+        c_opts.max_iterations = 1
+        c_opts.max_cost = 4.0
+        c_opts.normal_deviation_weight = 0.5
+        c_opts.roundness_weight = 0.0
+        c_opts.straightness_weight = 1.0
+        c_opts.normal_seam_weight = 1.0
+        c_opts.texture_seam_weight = 0.25
+        c_opts.fix_winding = False
+    elif n_faces > 40_000:
+        c_opts.max_iterations = 2
+        c_opts.max_cost = 3.0
+        c_opts.normal_deviation_weight = 1.0
+        c_opts.roundness_weight = 0.005
+        c_opts.straightness_weight = 3.0
+        c_opts.normal_seam_weight = 2.0
+        c_opts.texture_seam_weight = 0.5
+        c_opts.fix_winding = True
+    else:
+        c_opts.max_iterations = 4
+        c_opts.max_cost = 2.0
+        c_opts.normal_deviation_weight = 2.0
+        c_opts.roundness_weight = 0.01
+        c_opts.straightness_weight = 6.0
+        c_opts.normal_seam_weight = 4.0
+        c_opts.texture_seam_weight = 0.5
+        c_opts.fix_winding = True
+    return c_opts
+
+
+def get_adaptive_pack_options(n_faces: int, target_res: int, padding: int = 2) -> xatlas.PackOptions:
+    """
+    Configures xatlas.PackOptions with adaptive chart rotation and padding.
+    """
+    p_opts = xatlas.PackOptions()
+    p_opts.resolution = target_res
+    p_opts.padding = padding
+    p_opts.bilinear = True
+    p_opts.bruteForce = False
+    if n_faces > 50_000:
+        p_opts.rotate_charts = False
+        p_opts.rotate_charts_to_axis = False
+    else:
+        p_opts.rotate_charts = True
+        p_opts.rotate_charts_to_axis = True
+    return p_opts
+
+
+def can_downscale_texture(
+    mesh: trimesh.Trimesh,
+    current_res: int,
+    old_uv: Optional[np.ndarray],
+    new_uv: np.ndarray,
+    new_faces: Optional[np.ndarray] = None,
+    min_res: int = 1024,
+    td_threshold_ratio: float = 0.85,
+    sample_dim: int = 256
+) -> Tuple[bool, int, Dict[str, Any]]:
+    """
+    Bước B: Checks if texture resolution can be safely downscaled to the next power-of-two tier
+    (e.g., 4096 -> 2048, or 2048 -> 1024) without visual loss, by comparing Texel Density:
+      TD = effective_uv_area * Res^2 / surface_area_3d
+
+    Downscales only if:
+    1. current_res in (4096, 2048) and current_res > min_res
+    2. TD_new_downscaled >= td_threshold_ratio * TD_orig (e.g., >= 0.85 * TD_orig)
+
+    Returns:
+      (can_downscale, target_res, details)
+    """
+    mesh_area = float(max(mesh.area, 1e-6))
+
+    # 1. Measure effective UV area for old UV
+    if old_uv is not None and len(old_uv) > 0 and len(mesh.faces) > 0:
+        sel_old, _, _ = _rasterize_uv_atlas(mesh.faces, old_uv, dim=sample_dim)
+        effective_uv_area_old = float(len(sel_old)) / float(sample_dim * sample_dim)
+    else:
+        effective_uv_area_old = 0.5
+
+    effective_uv_area_old = max(effective_uv_area_old, 1e-4)
+
+    # 2. Measure effective UV area for new packed UV
+    faces_to_check = new_faces if new_faces is not None else mesh.faces
+    if new_uv is not None and len(new_uv) > 0 and len(faces_to_check) > 0:
+        sel_new, _, _ = _rasterize_uv_atlas(faces_to_check, new_uv, dim=sample_dim)
+        effective_uv_area_new = float(len(sel_new)) / float(sample_dim * sample_dim)
+    else:
+        effective_uv_area_new = 0.75
+
+    effective_uv_area_new = max(effective_uv_area_new, 1e-4)
+
+    # 3. Calculate original Texel Density
+    # TD = effective_uv_area * Res^2 / surface_area_3d
+    td_orig = (effective_uv_area_old * (current_res ** 2)) / mesh_area
+
+    # 4. Determine next lower power-of-two tier
+    if current_res >= 4096:
+        downscaled_res = 2048
+    elif current_res >= 2048:
+        downscaled_res = 1024
+    else:
+        downscaled_res = current_res
+
+    can_downscale = False
+    if current_res > min_res and downscaled_res < current_res and downscaled_res >= min_res:
+        td_new_downscaled = (effective_uv_area_new * (downscaled_res ** 2)) / mesh_area
+        if td_new_downscaled >= td_threshold_ratio * td_orig:
+            can_downscale = True
+            target_res = downscaled_res
+            td_final = td_new_downscaled
+        else:
+            can_downscale = False
+            target_res = current_res
+            td_final = (effective_uv_area_new * (target_res ** 2)) / mesh_area
+    else:
+        can_downscale = False
+        target_res = current_res
+        td_final = (effective_uv_area_new * (target_res ** 2)) / mesh_area
+
+    td_delta = td_final - td_orig
+    td_delta_pct = (td_delta / td_orig * 100.0) if td_orig > 0 else 0.0
+
+    details = {
+        "downscaled": can_downscale,
+        "originalResolution": f"{current_res}x{current_res}",
+        "finalResolution": f"{target_res}x{target_res}",
+        "original_resolution": current_res,
+        "final_resolution": target_res,
+        "uvCoverageRatio": round(effective_uv_area_new, 4),
+        "uvCoverageRatioOrig": round(effective_uv_area_old, 4),
+        "texelDensityOrig": round(td_orig, 2),
+        "texelDensityFinal": round(td_final, 2),
+        "texelDensityDelta": round(td_delta, 2),
+        "texelDensityDeltaPercent": round(td_delta_pct, 2),
+        "td_threshold_ratio": td_threshold_ratio,
+        "mesh_surface_area": round(mesh_area, 4)
+    }
+    return can_downscale, target_res, details
+
+
+def maximize_uv_bounds(
+    uv: np.ndarray,
+    target_res: int,
+    padding_px: int = 4
+) -> np.ndarray:
+    """
+    Bước C: Normalizes and scales UV coordinates uniformly to expand UV islands to the maximum
+    extent within [0, 1] x [0, 1] of target_res, with safe margins so charts do not
+    touch edges or overlap each other.
+    """
+    if uv is None or len(uv) == 0:
+        return uv
+    uv_out = np.array(uv, dtype=np.float64, copy=True)
+    margin = float(padding_px) / float(max(target_res, 1))
+
+    u_min, v_min = np.min(uv_out, axis=0)
+    u_max, v_max = np.max(uv_out, axis=0)
+
+    span_u = max(u_max - u_min, 1e-7)
+    span_v = max(v_max - v_min, 1e-7)
+
+    avail = max(1.0 - 2.0 * margin, 1e-4)
+    scale = min(avail / span_u, avail / span_v)
+
+    offset_u = margin + (avail - span_u * scale) / 2.0
+    offset_v = margin + (avail - span_v * scale) / 2.0
+
+    uv_out[:, 0] = offset_u + (uv_out[:, 0] - u_min) * scale
+    uv_out[:, 1] = offset_v + (uv_out[:, 1] - v_min) * scale
+    return uv_out
+
+
 def rechart_and_bake_high_density(
     mesh: trimesh.Trimesh,
     target_res: int = 1024,
@@ -237,15 +419,16 @@ def rechart_and_bake_high_density(
     pack_options: Optional[Dict[str, Any]] = None,
     double_sided: bool = False,
     stats: Optional[Dict[str, Any]] = None,
-    return_stats: bool = False
+    return_stats: bool = False,
+    min_downscale_res: int = 1024,
+    td_threshold_ratio: float = 0.85
 ) -> Tuple[trimesh.Trimesh, Image.Image] | Tuple[trimesh.Trimesh, Image.Image, Dict[str, Any]]:
     """
-    Unwraps and repacks UV charts using xatlas to maximize canvas space utilization
-    and Texel Density across remaining exterior faces.
-    
-    Bakes color from source texture with direct barycentric interpolation and 16px dilation.
-    Configures PBRMaterial with FrontSide rendering (`doubleSided=False`) while maintaining
-    smooth, continuous surfaces.
+    4-Stage Adaptive UV & Resolution Optimization Pipeline:
+    - Bước A: Tổ chức lại UV gom vào hình vuông [0, 1] x [0, 1] qua xatlas với adaptive ChartOptions.
+    - Bước B: can_downscale_texture kiểm tra Texel Density hạ bậc độ phân giải (4096->2048, 2048->1024).
+    - Bước C: maximize_uv_bounds hiệu chỉnh tọa độ UV nở rộng tối đa không gian canvas an toàn.
+    - Bước D: Barycentric sampling bake texture, 16px EDT dilation & FrontSide rendering (doubleSided=False).
     """
     # 1. Resolve source image and source UVs
     if source_image is None:
@@ -257,6 +440,7 @@ def rechart_and_bake_high_density(
 
     # Defense-in-depth: Never upscale texture
     target_res = clamp_target_resolution(target_res, source_image.size)
+    initial_res = target_res
 
     if source_uv is None:
         source_uv = getattr(mesh.visual, "uv", None)
@@ -284,50 +468,75 @@ def rechart_and_bake_high_density(
         channels = 3
         out_mode = "RGB"
 
-    # 2. Configure xatlas Chart Options (max iterations, boundary optimization, fix winding)
-    c_opts = xatlas.ChartOptions()
-    c_opts.max_iterations = 4
-    c_opts.fix_winding = True
-    c_opts.normal_deviation_weight = 2.0
-    c_opts.roundness_weight = 0.01
-    c_opts.straightness_weight = 6.0
-    c_opts.normal_seam_weight = 4.0
-    c_opts.texture_seam_weight = 0.5
-    c_opts.max_cost = 2.0
-
+    # =========================================================================
+    # BƯỚC A: Tổ chức lại UV gom vào hình vuông [0, 1] x [0, 1]
+    # =========================================================================
+    n_faces = len(mesh.faces)
+    c_opts = get_adaptive_chart_options(n_faces)
     if chart_options:
         for k, v in chart_options.items():
             if hasattr(c_opts, k):
                 setattr(c_opts, k, v)
 
-    # 3. Configure xatlas Pack Options (high-density pack, bilinear margin, 2px chart padding)
-    p_opts = xatlas.PackOptions()
-    p_opts.resolution = target_res
-    p_opts.padding = 2
-    p_opts.bilinear = True
-    p_opts.rotate_charts = True
-    p_opts.rotate_charts_to_axis = True
-    p_opts.bruteForce = False
-
+    p_opts = get_adaptive_pack_options(n_faces, target_res=initial_res, padding=2)
     if pack_options:
         for k, v in pack_options.items():
             if hasattr(p_opts, k):
                 setattr(p_opts, k, v)
 
-    # 4. Generate high-density UV Atlas
     atlas = xatlas.Atlas()
-    atlas.add_mesh(
-        np.ascontiguousarray(mesh.vertices, dtype=np.float32),
-        np.ascontiguousarray(mesh.faces, dtype=np.uint32)
+    has_valid_source_uv = (
+        source_uv is not None
+        and len(source_uv) > 0
+        and np.ptp(source_uv[:, 0]) > 1e-5
+        and np.ptp(source_uv[:, 1]) > 1e-5
     )
-    atlas.generate(chart_options=c_opts, pack_options=p_opts)
+    atlas_generated = False
+    if has_valid_source_uv and not chart_options:
+        try:
+            atlas.add_uv_mesh(
+                np.ascontiguousarray(source_uv, dtype=np.float32),
+                np.ascontiguousarray(mesh.faces, dtype=np.uint32)
+            )
+            atlas.generate(pack_options=p_opts)
+            atlas_generated = True
+        except Exception:
+            atlas = xatlas.Atlas()
+
+    if not atlas_generated:
+        atlas.add_mesh(
+            np.ascontiguousarray(mesh.vertices, dtype=np.float32),
+            np.ascontiguousarray(mesh.faces, dtype=np.uint32)
+        )
+        atlas.generate(chart_options=c_opts, pack_options=p_opts)
 
     vmapping, indices, new_uv = atlas[0]
     vertices_recharted = np.asarray(mesh.vertices, dtype=np.float64)[np.asarray(vmapping, dtype=np.int64)]
     faces_recharted = np.asarray(indices, dtype=np.int64)
     uv_recharted = np.asarray(new_uv, dtype=np.float64)
 
-    # 5. Rasterize new atlas and sample source texture with Barycentric interpolation
+    # =========================================================================
+    # BƯỚC B: Kiểm tra xem có thể downscale không (can_downscale_texture)
+    # =========================================================================
+    can_downscale, active_target_res, downscale_info = can_downscale_texture(
+        mesh=mesh,
+        current_res=initial_res,
+        old_uv=source_uv,
+        new_uv=uv_recharted,
+        new_faces=faces_recharted,
+        min_res=min_downscale_res,
+        td_threshold_ratio=td_threshold_ratio
+    )
+    target_res = active_target_res
+
+    # =========================================================================
+    # BƯỚC C: Hiệu chỉnh UV để tối đa hóa không gian texture
+    # =========================================================================
+    uv_recharted = maximize_uv_bounds(uv_recharted, target_res=target_res, padding_px=4)
+
+    # =========================================================================
+    # BƯỚC D: Nướng (Bake) texture & Lan viền 16px
+    # =========================================================================
     sel, fid, bary = _rasterize_uv_atlas(faces_recharted, uv_recharted, target_res)
     if len(sel) == 0:
         raise RuntimeError("Failed to rasterize UV atlas during xatlas baking.")
@@ -347,11 +556,10 @@ def rechart_and_bake_high_density(
     covered[sel] = True
     covered = covered.reshape(target_res, target_res)
 
-    # 6. Apply 16px dilation to prevent black edge bleeding during mipmapping
     dilated_img = dilate_texture(base_img, covered, padding=dilation_padding)
     dilated_pil = Image.fromarray(dilated_img, mode=out_mode)
 
-    # 7. Material setup with doubleSided=double_sided (FrontSide rendering by default)
+    # Configure PBRMaterial with FrontSide rendering (doubleSided=double_sided, default False)
     orig_mat = getattr(mesh.visual, "material", None) if hasattr(mesh, "visual") and mesh.visual is not None else None
     if isinstance(orig_mat, trimesh.visual.material.PBRMaterial):
         mat = orig_mat.copy()
@@ -389,17 +597,15 @@ def rechart_and_bake_high_density(
             faces=faces_recharted,
             process=False
         )
-        # Recompute smooth vertex normals for smooth shading
         _ = recharted_mesh.vertex_normals
 
     recharted_mesh.visual = trimesh.visual.TextureVisuals(uv=uv_recharted, material=mat)
 
-    # Attach optimized fast_save texture to mesh material and update dilated_pil
     opt_img = optimize_mesh_texture_for_export(recharted_mesh)
     if opt_img is not None:
         dilated_pil = opt_img
 
-    # 8. Compute Texel Density & UV Coverage metrics
+    # Comprehensive metrics recording
     mesh_area = float(mesh.area)
     covered_pixels = int(len(sel))
     total_pixels = target_res * target_res
@@ -408,6 +614,17 @@ def rechart_and_bake_high_density(
     texel_density_area = round(float(covered_pixels / max(mesh_area, 1e-6)), 2)
 
     result_stats = {
+        "downscaled": downscale_info["downscaled"],
+        "originalResolution": downscale_info["originalResolution"],
+        "finalResolution": downscale_info["finalResolution"],
+        "original_resolution": initial_res,
+        "final_resolution": target_res,
+        "uvCoverageRatio": round(float(covered_pixels / total_pixels), 4),
+        "uvCoverageRatioOrig": downscale_info["uvCoverageRatioOrig"],
+        "texelDensityOrig": downscale_info["texelDensityOrig"],
+        "texelDensityFinal": texel_density_area,
+        "texelDensityDelta": round(float(texel_density_area - downscale_info["texelDensityOrig"]), 2),
+        "texelDensityDeltaPercent": round(float((texel_density_area - downscale_info["texelDensityOrig"]) / max(downscale_info["texelDensityOrig"], 1e-6) * 100.0), 2),
         "target_resolution": target_res,
         "canvas_pixels": total_pixels,
         "covered_pixels": covered_pixels,

@@ -366,6 +366,21 @@ class TestPipelineParity1to1(unittest.TestCase):
                 f"File size disparity exceeds 1%: New={new_meta['data_len']}B, Prod={prod_meta['data_len']}B ({pct_diff:.3f}%)"
             )
 
+    def test_auto_resolution_pipeline(self):
+        """Verify ModelOptimizer with resolution='auto' optimizes a model successfully preserving faces."""
+        sample_dinoki = REPO_ROOT / "examples" / "sample_dinoki.glb"
+        if not sample_dinoki.exists():
+            self.skipTest(f"Sample model not found: {sample_dinoki}")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out_glb = Path(tmp) / "auto_res_opt.glb"
+            optimizer = ModelOptimizer(resolution="auto", texture_format="webp", verbose=False)
+            res = optimizer.optimize(sample_dinoki, out_glb)
+
+            self.assertTrue(out_glb.exists())
+            self.assertEqual(res["initial_faces"], res["final_faces"])
+            self.assertEqual(res["final_faces"], 45000)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -24,7 +24,7 @@ import shutil
 import argparse
 import subprocess
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Union
 
 import numpy as np
 from PIL import Image
@@ -36,7 +36,9 @@ from optimizer.core.uv_baker import (
     rebake_texture_xatlas,
     direct_resample_texture,
     rechart_and_bake_high_density,
-    compute_uv_metrics
+    compute_uv_metrics,
+    can_downscale_texture,
+    maximize_uv_bounds
 )
 from optimizer.core.palette import extract_palette, embed_gltf_extras
 from optimizer.core.texture_utils import (
@@ -102,7 +104,7 @@ class StepPipeline:
 
     def __init__(
         self,
-        resolution: int = 1024,
+        resolution: Union[int, str] = "auto",
         texture_format: str = "ktx2",
         rechart_uv: bool = False,
         smooth_normals: bool = True,
@@ -222,7 +224,7 @@ class StepPipeline:
                 "success": True,
                 "model": input_path.name,
                 "outputDir": str(output_dir),
-                "resolution": f"{self.resolution}x{self.resolution}",
+                "resolution": f"{self.resolution}x{self.resolution}" if isinstance(self.resolution, int) else str(self.resolution),
                 "textureFormat": self.texture_format.upper(),
                 "steps": steps_record,
                 "lastCompletedStep": step_idx
@@ -244,7 +246,8 @@ class StepPipeline:
         self.log("=" * 68)
         self.log(f"🚀 STEP-BY-STEP 3D OPTIMIZATION PIPELINE: {input_path.name}")
         self.log(f"   Target Directory: {output_dir}")
-        self.log(f"   Target Resolution: {self.resolution}x{self.resolution} | Format: {self.texture_format.upper()}")
+        res_display = f"{self.resolution}x{self.resolution}" if isinstance(self.resolution, int) else f"{self.resolution.upper()} (Adaptive)"
+        self.log(f"   Target Resolution: {res_display} | Format: {self.texture_format.upper()}")
         self.log("=" * 68)
 
         # =====================================================================
@@ -307,7 +310,6 @@ class StepPipeline:
         # =====================================================================
         # STEP 3: Texture Baking / Resampling & 16px Dilation
         # =====================================================================
-        self.log(f"▶️ [Step 3/6] Baking Texture ({self.resolution}x{self.resolution}) + 16px Dilation...")
         t_s3 = time.perf_counter()
         raw_uv = getattr(raw_mesh.visual, "uv", None)
         if raw_uv is None:
@@ -317,37 +319,44 @@ class StepPipeline:
         if raw_tex_img is None and hasattr(grounded_mesh.visual, "material") and hasattr(grounded_mesh.visual.material, "baseColorTexture"):
             raw_tex_img = grounded_mesh.visual.material.baseColorTexture
         if raw_tex_img is None:
-            raw_tex_img = Image.new("RGB", (self.resolution, self.resolution), (200, 200, 200))
+            default_dim = 1024 if (self.resolution == "auto" or not isinstance(self.resolution, int)) else self.resolution
+            raw_tex_img = Image.new("RGB", (default_dim, default_dim), (200, 200, 200))
 
         # Enforce NO-UPSCALE policy: clamp requested resolution
-        target_res = clamp_target_resolution(self.resolution, raw_tex_img.size, logger_fn=self.log)
-        self.resolution = target_res
+        initial_res = clamp_target_resolution(self.resolution, raw_tex_img.size, logger_fn=self.log)
+        self.resolution = initial_res
 
-        uv_stats = {}
+        self.log(f"▶️ [Step 3/6] Baking Texture ({initial_res}x{initial_res}) + Adaptive Downscale & UV Maximizer...")
+
+        uv_stats: Dict[str, Any] = {}
         if self.rechart_uv:
-            self.log(f"   Re-charting UV islands with xatlas (High-Density Packing, {target_res}x{target_res})...")
-            baked_mesh, dilated_pil = rechart_and_bake_high_density(
+            self.log(f"   Re-charting UV islands with xatlas (Square UV Packing, {initial_res}x{initial_res})...")
+            baked_mesh, dilated_pil, uv_stats = rechart_and_bake_high_density(
                 grounded_mesh,
-                target_res=target_res,
+                target_res=initial_res,
                 source_image=raw_tex_img,
                 source_uv=raw_uv,
                 dilation_padding=16,
-                double_sided=False,
-                stats=uv_stats
+                double_sided=self.double_sided,
+                stats=uv_stats,
+                return_stats=True
             )
-            self.log(f"   ✓ High-Density UV: {uv_stats.get('uv_coverage_ratio_percent', 0)}% coverage | Texel Density: {uv_stats.get('texel_density_linear', 0)} px/unit")
+            final_res = uv_stats.get("final_resolution", dilated_pil.size[0])
+            self.resolution = final_res
         else:
-            self.log(f"   Direct Master UV mode: Lanczos resample ({target_res}x{target_res}) + 16px dilation...")
+            self.log(f"   Direct Master UV mode: Lanczos resample ({initial_res}x{initial_res}) + 16px dilation...")
             baked_mesh, dilated_pil = direct_resample_texture(
                 grounded_mesh,
                 source_image=raw_tex_img,
-                target_res=target_res,
+                target_res=initial_res,
                 dilation_padding=16
             )
+            final_res = dilated_pil.size[0]
+            self.resolution = final_res
 
-        # Ensure doubleSided=True so browser viewer does not backface-cull triangles
+        # FrontSide rendering (doubleSided=False by default)
         if hasattr(baked_mesh, "visual") and hasattr(baked_mesh.visual, "material") and baked_mesh.visual.material is not None:
-            baked_mesh.visual.material.doubleSided = True
+            baked_mesh.visual.material.doubleSided = self.double_sided
 
         # Optimize texture before export (defense-in-depth: format JPEG if opaque, or optimized PNG)
         opt_pil = optimize_mesh_texture_for_export(baked_mesh, orig_tex_info=orig_tex_info)
@@ -356,16 +365,29 @@ class StepPipeline:
 
         step3_scene = trimesh.Scene({"Model": baked_mesh})
         step3_bytes = trimesh.exchange.gltf.export_glb(step3_scene, include_normals=True)
-        step3_bytes = set_doublesided_material(step3_bytes)
+        if self.double_sided:
+            step3_bytes = set_doublesided_material(step3_bytes)
         step3_file = output_dir / "step_03_texture_baked.glb"
         step3_file.write_bytes(step3_bytes)
         tex_fmt = getattr(dilated_pil, "format", "JPEG")
-        m3 = save_and_record_metrics(3, step3_file, {
+
+        step3_extra = {
             "textureResolution": f"{dilated_pil.size[0]}x{dilated_pil.size[1]}",
             "textureFormat": tex_fmt,
-            "dilationPadding": 16
-        }, t_step_start=t_s3)
-        self.log(f"   ✓ Step 3 complete ({m3['durationFormatted']}): Baked texture {dilated_pil.size[0]}x{dilated_pil.size[1]} ({tex_fmt})")
+            "dilationPadding": 16,
+            "downscaled": uv_stats.get("downscaled", False),
+            "originalResolution": uv_stats.get("originalResolution", f"{initial_res}x{initial_res}"),
+            "finalResolution": uv_stats.get("finalResolution", f"{final_res}x{final_res}"),
+            "uvCoverageRatio": uv_stats.get("uvCoverageRatio", uv_stats.get("uv_coverage_ratio_percent", 0.0) / 100.0 if "uv_coverage_ratio_percent" in uv_stats else 0.0),
+            "texelDensityDelta": uv_stats.get("texelDensityDelta", 0.0),
+            "uvMetrics": uv_stats
+        }
+        m3 = save_and_record_metrics(3, step3_file, step3_extra, t_step_start=t_s3)
+        self.log(
+            f"   ✓ Step 3 complete ({m3['durationFormatted']}): Baked texture {dilated_pil.size[0]}x{dilated_pil.size[1]} ({tex_fmt}) | "
+            f"Downscaled: {step3_extra['downscaled']} ({step3_extra['originalResolution']} -> {step3_extra['finalResolution']}) | "
+            f"UV Coverage: {step3_extra['uvCoverageRatio']:.2%} | TD Delta: {step3_extra['texelDensityDelta']:+.1f}"
+        )
 
         # =====================================================================
         # STEP 4: Palette Tagging (10 Dominant Colors via K-Means)
@@ -560,6 +582,17 @@ class StepPipeline:
         return final_payload
 
 
+def parse_resolution_arg(val: Any) -> Union[int, str]:
+    s = str(val).strip().lower()
+    if s == "auto":
+        return "auto"
+    try:
+        res = int(s)
+        return res if res > 0 else "auto"
+    except ValueError:
+        return "auto"
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Zero-Decimation Step-by-Step 3D Model Optimization Pipeline",
@@ -567,7 +600,7 @@ def main():
     )
     parser.add_argument("input", help="Path to raw source .glb model")
     parser.add_argument("--output-dir", "-o", required=True, help="Destination directory for 7 GLB step files and metrics.json")
-    parser.add_argument("--resolution", "-r", type=int, default=1024, help="Target texture dimension (strictly capped at original texture size, never upscaled; e.g. 512, 1024, 2048)")
+    parser.add_argument("--resolution", "-r", default="auto", type=parse_resolution_arg, help="Target texture dimension ('auto', 512, 1024, 2048; strictly capped at original texture size, never upscaled)")
     parser.add_argument("--format", "-f", choices=["ktx2", "webp"], default="ktx2", help="GPU texture compression format")
     parser.add_argument("--rechart-uv", action="store_true", help="Re-chart UVs using xatlas (default: direct master UV)")
     parser.add_argument("--no-smooth-normals", action="store_true", help="Disable angle-weighted normal smoothing across seams")
