@@ -23,8 +23,12 @@ from optimizer.core.texture_utils import (
 def _sample_texture_bilinear(image_rgb: np.ndarray, uv: np.ndarray) -> np.ndarray:
     """Samples RGB or RGBA image at normalized UV coordinates [0, 1] using bilinear interpolation."""
     h, w = image_rgb.shape[:2]
-    u = (uv[:, 0] % 1.0) * (w - 1)
-    v = (1.0 - (uv[:, 1] % 1.0)) * (h - 1)
+    # Clamp UVs strictly to [0.0, 1.0] to prevent wrapping artifacts (white seams from canvas border)
+    u_norm = np.clip(uv[:, 0], 0.0, 1.0)
+    v_norm = np.clip(uv[:, 1], 0.0, 1.0)
+
+    u = u_norm * (w - 1)
+    v = (1.0 - v_norm) * (h - 1)
 
     x0 = np.floor(u).astype(np.int64)
     x1 = np.clip(x0 + 1, 0, w - 1)
@@ -62,13 +66,13 @@ def _rasterize_uv_atlas(
         return np.array([], dtype=np.int64), np.array([], dtype=np.int64), np.empty((0, 3))
 
     tri_uv = uv[faces]  # (N, 3, 2)
-    px = tri_uv[:, :, 0] * (dim - 1)
-    py = (1.0 - tri_uv[:, :, 1]) * (dim - 1)
+    px = tri_uv[:, :, 0] * dim
+    py = (1.0 - tri_uv[:, :, 1]) * dim
 
-    min_x = np.clip(np.floor(px.min(axis=1)).astype(np.int32), 0, dim - 1)
-    max_x = np.clip(np.ceil(px.max(axis=1)).astype(np.int32), 0, dim - 1)
-    min_y = np.clip(np.floor(py.min(axis=1)).astype(np.int32), 0, dim - 1)
-    max_y = np.clip(np.ceil(py.max(axis=1)).astype(np.int32), 0, dim - 1)
+    min_x = np.clip(np.floor(px.min(axis=1) - 0.5).astype(np.int32), 0, dim - 1)
+    max_x = np.clip(np.ceil(px.max(axis=1) - 0.5).astype(np.int32), 0, dim - 1)
+    min_y = np.clip(np.floor(py.min(axis=1) - 0.5).astype(np.int32), 0, dim - 1)
+    max_y = np.clip(np.ceil(py.max(axis=1) - 0.5).astype(np.int32), 0, dim - 1)
 
     span_x = max_x - min_x + 1
     span_y = max_y - min_y + 1
@@ -123,8 +127,12 @@ def _rasterize_uv_atlas(
         p1x_s, p1y_s = p1x[nonzero], p1y[nonzero]
         p2x_s, p2y_s = p2x[nonzero], p2y[nonzero]
 
-        w0 = ((p1y_s - p2y_s) * (gx_s - p2x_s) + (p2x_s - p1x_s) * (gy_s - p2y_s)) / d
-        w1 = ((p2y_s - p0y_s) * (gx_s - p2x_s) + (p0x_s - p2x_s) * (gy_s - p2y_s)) / d
+        # Evaluate barycentric coordinates at exact pixel center (gx + 0.5, gy + 0.5)
+        gx_c = gx_s.astype(np.float64) + 0.5
+        gy_c = gy_s.astype(np.float64) + 0.5
+
+        w0 = ((p1y_s - p2y_s) * (gx_c - p2x_s) + (p2x_s - p1x_s) * (gy_c - p2y_s)) / d
+        w1 = ((p2y_s - p0y_s) * (gx_c - p2x_s) + (p0x_s - p2x_s) * (gy_c - p2y_s)) / d
         w2 = 1.0 - w0 - w1
 
         inside = (w0 >= -1e-4) & (w1 >= -1e-4) & (w2 >= -1e-4)
@@ -136,6 +144,27 @@ def _rasterize_uv_atlas(
             canvas_bary[pix_idx, 2] = w2[inside]
 
         batch_start_sample = cum[t_end]
+
+    # Sub-pixel Triangle Splatting: Ensure 100% triangles have at least one rasterized texel
+    assigned_triangles = np.unique(canvas_fid[canvas_fid >= 0])
+    unassigned = np.setdiff1d(idx, assigned_triangles)
+
+    if len(unassigned) > 0:
+        c_px = px[unassigned].mean(axis=1)
+        c_py = py[unassigned].mean(axis=1)
+        splat_gx = np.clip(np.floor(c_px).astype(np.int64), 0, dim - 1)
+        splat_gy = np.clip(np.floor(c_py).astype(np.int64), 0, dim - 1)
+        splat_pix = splat_gy * dim + splat_gx
+
+        unocc = canvas_fid[splat_pix] < 0
+        if np.any(unocc):
+            canvas_fid[splat_pix[unocc]] = unassigned[unocc]
+            canvas_bary[splat_pix[unocc]] = [1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0]
+
+        rem = canvas_fid[splat_pix] != unassigned
+        if np.any(rem):
+            canvas_fid[splat_pix[rem]] = unassigned[rem]
+            canvas_bary[splat_pix[rem]] = [1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0]
 
     sel = np.where(canvas_fid >= 0)[0]
     if len(sel) == 0:
@@ -485,30 +514,12 @@ def rechart_and_bake_high_density(
                 setattr(p_opts, k, v)
 
     atlas = xatlas.Atlas()
-    has_valid_source_uv = (
-        source_uv is not None
-        and len(source_uv) > 0
-        and np.ptp(source_uv[:, 0]) > 1e-5
-        and np.ptp(source_uv[:, 1]) > 1e-5
+    # Use 3D mesh unwrap to eliminate giant sliver triangles and unassigned (0, 0) UV artifacts from add_uv_mesh
+    atlas.add_mesh(
+        np.ascontiguousarray(mesh.vertices, dtype=np.float32),
+        np.ascontiguousarray(mesh.faces, dtype=np.uint32)
     )
-    atlas_generated = False
-    if has_valid_source_uv and not chart_options:
-        try:
-            atlas.add_uv_mesh(
-                np.ascontiguousarray(source_uv, dtype=np.float32),
-                np.ascontiguousarray(mesh.faces, dtype=np.uint32)
-            )
-            atlas.generate(pack_options=p_opts)
-            atlas_generated = True
-        except Exception:
-            atlas = xatlas.Atlas()
-
-    if not atlas_generated:
-        atlas.add_mesh(
-            np.ascontiguousarray(mesh.vertices, dtype=np.float32),
-            np.ascontiguousarray(mesh.faces, dtype=np.uint32)
-        )
-        atlas.generate(chart_options=c_opts, pack_options=p_opts)
+    atlas.generate(chart_options=c_opts, pack_options=p_opts)
 
     vmapping, indices, new_uv = atlas[0]
     vertices_recharted = np.asarray(mesh.vertices, dtype=np.float64)[np.asarray(vmapping, dtype=np.int64)]
@@ -541,14 +552,19 @@ def rechart_and_bake_high_density(
     if len(sel) == 0:
         raise RuntimeError("Failed to rasterize UV atlas during xatlas baking.")
 
-    orig_faces = mesh.faces[fid]
-    raw_tri_uv = source_uv[orig_faces]
+    # Map recharted faces through vmapping back to exact original mesh vertices
+    orig_face_verts = np.asarray(vmapping, dtype=np.int64)[faces_recharted]  # (N, 3)
+    raw_tri_uv = source_uv[orig_face_verts[fid]]  # (len(sel), 3, 2)
     src_uv = (raw_tri_uv * bary[:, :, None]).sum(axis=1)
+    src_uv = np.clip(src_uv, 0.0, 1.0)
 
     colors = _sample_texture_bilinear(src_img, src_uv)
     colors = np.nan_to_num(colors, nan=128.0)
 
-    base_flat = np.zeros((target_res * target_res, channels), dtype=np.uint8)
+    # Defensive canvas initialization: use mean source image color instead of black (0,0,0)
+    # to guarantee zero black edge bleeding during GPU texture mipmapping
+    mean_color = np.mean(src_img[..., :channels], axis=(0, 1)).astype(np.uint8)
+    base_flat = np.tile(mean_color, (target_res * target_res, 1))
     base_flat[sel] = np.clip(colors, 0.0, 255.0).astype(np.uint8)
     base_img = base_flat.reshape(target_res, target_res, channels)
 
@@ -725,19 +741,23 @@ def direct_resample_texture(
         resampled = img.resize((target_res, target_res), Image.Resampling.LANCZOS)
     arr = np.array(resampled, dtype=np.uint8)
 
-    # Detect covered pixels for dilation
+    # Detect covered pixels for dilation using true geometric UV coverage
+    # Eliminates the dangerous 'is_black <= 2' heuristic that mistakenly erased black eyes / pupils
+    is_covered = np.zeros((target_res, target_res), dtype=bool)
+    orig_uv = getattr(mesh.visual, "uv", None)
+    if orig_uv is not None and len(orig_uv) > 0 and len(mesh.faces) > 0:
+        uv_norm = orig_uv % 1.0 if (np.any(orig_uv < 0.0) or np.any(orig_uv > 1.0)) else orig_uv
+        sel_dir, _, _ = _rasterize_uv_atlas(mesh.faces, uv_norm, target_res)
+        if len(sel_dir) > 0:
+            is_covered.flat[sel_dir] = True
+
     if has_alpha:
         alpha = arr[:, :, 3]
         if np.any(alpha == 0):
-            is_covered = alpha > 0
-        else:
-            is_black = np.all(arr[:, :, :3] <= 2, axis=-1)
-            is_covered = ~is_black
-    else:
-        is_black = np.all(arr <= 2, axis=-1)
-        is_covered = ~is_black
+            is_covered = is_covered | (alpha > 0)
 
-    if np.any(~is_covered) and not np.all(~is_covered):
+    # Dilate outward into true background only if geometric islands were detected
+    if np.any(is_covered) and not np.all(is_covered):
         arr = dilate_texture(arr, is_covered, padding=dilation_padding)
 
     clean_pil = Image.fromarray(arr, mode=out_mode)

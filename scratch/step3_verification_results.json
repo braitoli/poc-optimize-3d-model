@@ -1,0 +1,97 @@
+{
+  "dinoki": {
+    "model": "Dinoki",
+    "passed": true,
+    "bake_time_sec": 3.34,
+    "texture_res": "1024x1024",
+    "overlap_metrics": {
+      "dim": 1024,
+      "total_covered_pixels": 581562,
+      "overlapped_pixels": 202,
+      "overlap_ratio_percent": 0.03
+    },
+    "canvas_pure_black_pixels": 53,
+    "canvas_pure_black_percent": 0.01,
+    "white_feet_vertices": 0,
+    "dark_pupil_vertices": 101,
+    "stats": {
+      "downscaled": false,
+      "originalResolution": "1024x1024",
+      "finalResolution": "1024x1024",
+      "original_resolution": 1024,
+      "final_resolution": 1024,
+      "uvCoverageRatio": 0.5562,
+      "uvCoverageRatioOrig": 0.5956,
+      "texelDensityOrig": 47872.06,
+      "texelDensityFinal": 44701.15,
+      "texelDensityDelta": -3170.91,
+      "texelDensityDeltaPercent": -6.62,
+      "target_resolution": 1024,
+      "canvas_pixels": 1048576,
+      "covered_pixels": 583191,
+      "uv_coverage_ratio_percent": 55.62,
+      "texel_density_linear": 211.43,
+      "texel_density_area": 44701.15,
+      "mesh_surface_area": 13.0464,
+      "xatlas_chart_count": 889,
+      "xatlas_atlas_count": 1,
+      "xatlas_utilization_percent": 79.06,
+      "dilation_padding": 16,
+      "double_sided": false
+    }
+  },
+  "flamibo": {
+    "model": "Flamibo",
+    "passed": true,
+    "bake_time_sec": 34.25,
+    "texture_res": "2048x2048",
+    "overlap_metrics": {
+      "dim": 1024,
+      "total_covered_pixels": 453198,
+      "overlapped_pixels": 1,
+      "overlap_ratio_percent": 0.0
+    },
+    "color_mae": 3.98,
+    "hat_mean_rgb": [
+      29,
+      29,
+      30
+    ],
+    "hat_dark_percent": 99.05,
+    "red_mean_rgb": [
+      170,
+      31,
+      19
+    ],
+    "yellow_mean_rgb": [
+      214,
+      153,
+      59
+    ],
+    "stats": {
+      "downscaled": false,
+      "originalResolution": "2048x2048",
+      "finalResolution": "2048x2048",
+      "original_resolution": 2048,
+      "final_resolution": 2048,
+      "uvCoverageRatio": 0.4342,
+      "uvCoverageRatioOrig": 0.5587,
+      "texelDensityOrig": 144187.96,
+      "texelDensityFinal": 112038.91,
+      "texelDensityDelta": -32149.05,
+      "texelDensityDeltaPercent": -22.3,
+      "target_resolution": 2048,
+      "canvas_pixels": 4194304,
+      "covered_pixels": 1821019,
+      "uv_coverage_ratio_percent": 43.42,
+      "texel_density_linear": 334.72,
+      "texel_density_area": 112038.91,
+      "mesh_surface_area": 16.2535,
+      "xatlas_chart_count": 5343,
+      "xatlas_atlas_count": 1,
+      "xatlas_utilization_percent": 70.98,
+      "dilation_padding": 16,
+      "double_sided": false
+    }
+  }
+}
