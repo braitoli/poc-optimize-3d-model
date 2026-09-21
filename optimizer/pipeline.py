@@ -181,7 +181,7 @@ class ModelOptimizer:
         resolution: Union[int, str] = "auto",
         texture_format: str = "ktx2",
         rechart_uv: bool = False,
-        smooth_normals: bool = True,
+        smooth_normals: Optional[bool] = None,
         double_sided: bool = False,
         verbose: bool = True,
         export_steps_dir: Optional[Path] = None,
@@ -190,7 +190,10 @@ class ModelOptimizer:
         self.resolution = resolution
         self.texture_format = texture_format.lower()
         self.rechart_uv = rechart_uv
-        self.smooth_normals = smooth_normals
+        if smooth_normals is None:
+            self.smooth_normals = rechart_uv
+        else:
+            self.smooth_normals = smooth_normals
         self.double_sided = double_sided
         self.verbose = verbose
         self.export_steps_dir = Path(export_steps_dir).resolve() if export_steps_dir else None
@@ -427,20 +430,39 @@ class ModelOptimizer:
                 )
                 self.log(f"   ✓ High-Density UV: {uv_stats.get('uv_coverage_ratio_percent', 0)}% coverage | Texel Density: {uv_stats.get('texel_density_linear', 0)} px/unit")
             else:
-                self.log(f"   Direct Master UV mode: Resampling Lanczos ({target_res}x{target_res}) + 16px dilation...")
-                baked_mesh, dilated_pil = direct_resample_texture(
-                    grounded_mesh,
-                    source_image=raw_tex_img,
-                    target_res=target_res,
-                    dilation_padding=16
-                )
+                orig_max_dim = max(raw_tex_img.size)
+                is_auto_res = (self.resolution == "auto" or not isinstance(self.resolution, int))
+                user_requested_downscale = (not is_auto_res and isinstance(self.resolution, int) and self.resolution < orig_max_dim)
+
+                if not user_requested_downscale:
+                    target_res = orig_max_dim
+                    self.resolution = target_res
+                    self.log(f"   Direct Master UV mode: True Zero-Loss Bitstream Pass-through ({target_res}x{target_res})...")
+                    baked_mesh, dilated_pil = direct_resample_texture(
+                        grounded_mesh,
+                        source_image=raw_tex_img,
+                        target_res=target_res,
+                        dilation_padding=0,
+                        preserve_bitstream=True
+                    )
+                    preserve_mesh_textures(baked_mesh, orig_tex_info)
+                else:
+                    self.log(f"   Direct Master UV mode: Gamma-Correct Linear Resampling ({target_res}x{target_res})...")
+                    baked_mesh, dilated_pil = direct_resample_texture(
+                        grounded_mesh,
+                        source_image=raw_tex_img,
+                        target_res=target_res,
+                        dilation_padding=16,
+                        preserve_bitstream=False
+                    )
 
             # Ensure doubleSided=True so browser viewer does not backface-cull triangles
             if hasattr(baked_mesh, "visual") and hasattr(baked_mesh.visual, "material") and baked_mesh.visual.material is not None:
                 baked_mesh.visual.material.doubleSided = True
 
-            # Optimize texture before export (defense-in-depth: JPEG if opaque, optimized PNG if alpha)
-            opt_pil = optimize_mesh_texture_for_export(baked_mesh, orig_tex_info=orig_tex_info, jpeg_quality=95)
+            # Optimize texture before export (True Zero-Loss: preserve original bitstream if not downscaled)
+            pref_fmt = "ORIGINAL" if (not self.rechart_uv and not user_requested_downscale) else None
+            opt_pil = optimize_mesh_texture_for_export(baked_mesh, orig_tex_info=orig_tex_info, preferred_format=pref_fmt, jpeg_quality=99)
             if opt_pil is not None:
                 dilated_pil = opt_pil
 
@@ -552,10 +574,13 @@ class ModelOptimizer:
             else:
                 node_cmd.append("--no-smooth-normals")
 
-            if self.texture_format == "webp":
+            if self.texture_format in ("original", "passthrough", "raw"):
+                node_cmd.extend(["--no-ktx2"])
+            elif self.texture_format == "webp":
                 node_cmd.extend(["--webp", "--webp-quality", "85"])
             else:
-                node_cmd.extend(["--ktx2", "--ktx2-mode", "uastc", "--ktx2-level", "2", "--ktx2-rdo", "1.0"])
+                ktx2_rdo = "0.0" if not self.rechart_uv else "1.0"
+                node_cmd.extend(["--ktx2", "--ktx2-mode", "uastc", "--ktx2-level", "2", "--ktx2-rdo", ktx2_rdo])
 
             if not self.double_sided:
                 node_cmd.append("--single-sided")

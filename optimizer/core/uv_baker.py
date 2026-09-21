@@ -18,7 +18,9 @@ from optimizer.core.texture_utils import (
     clamp_target_resolution,
     optimize_mesh_texture_for_export,
     can_downscale_texture,
-    maximize_uv_space
+    maximize_uv_space,
+    resample_texture_linear_gamma,
+    apply_bitstream_passthrough
 )
 
 
@@ -300,20 +302,118 @@ def get_adaptive_chart_options(n_faces: int) -> xatlas.ChartOptions:
 
 def get_adaptive_pack_options(n_faces: int, target_res: int, padding: int = 2) -> xatlas.PackOptions:
     """
-    Configures xatlas.PackOptions with adaptive chart rotation and padding.
+    Configures xatlas.PackOptions with strict non-rotation.
+    Eliminates diagonal chart rotation blur ('chống nhòe do xoay chéo')
+    and preserves exact source pixel grid alignment.
     """
     p_opts = xatlas.PackOptions()
     p_opts.resolution = target_res
     p_opts.padding = padding
     p_opts.bilinear = True
     p_opts.bruteForce = False
-    if n_faces > 50_000:
-        p_opts.rotate_charts = False
-        p_opts.rotate_charts_to_axis = False
-    else:
-        p_opts.rotate_charts = True
-        p_opts.rotate_charts_to_axis = True
+    # Anti-blur: zero chart rotation to prevent diagonal pixel resampling blurring
+    p_opts.rotate_charts = False
+    p_opts.rotate_charts_to_axis = False
     return p_opts
+
+
+def compute_original_island_pixels(
+    mesh: trimesh.Trimesh,
+    source_image: Image.Image,
+    uv: Optional[np.ndarray] = None,
+    sample_dim: int = 1024
+) -> Tuple[float, float]:
+    """
+    Calculates the actual pixel area occupied by all UV islands on the original texture:
+      1. Rasterizes the original UV triangles onto a sample_dim x sample_dim grid.
+      2. Computes coverage ratio = len(covered_pixels) / (sample_dim * sample_dim).
+      3. Calculates orig_island_pixels = coverage_ratio * (orig_width * orig_height).
+    Returns:
+      (orig_island_pixels, coverage_ratio)
+    """
+    w, h = source_image.size
+    total_pixels = float(w * h)
+    if uv is None:
+        uv = getattr(mesh.visual, "uv", None)
+
+    if uv is None or len(uv) == 0 or len(mesh.faces) == 0:
+        return total_pixels, 1.0
+
+    uv_clean = np.clip(uv, 0.0, 1.0)
+    grid_dim = min(sample_dim, max(w, h))
+    grid_dim = max(256, grid_dim)
+
+    sel, _, _ = _rasterize_uv_atlas(mesh.faces, uv_clean, dim=grid_dim)
+    if len(sel) == 0:
+        return total_pixels, 1.0
+
+    coverage_ratio = float(len(sel)) / float(grid_dim * grid_dim)
+    orig_island_pixels = coverage_ratio * total_pixels
+    return float(orig_island_pixels), float(coverage_ratio)
+
+
+def select_repack_canvas_resolution(
+    mesh: trimesh.Trimesh,
+    source_image: Image.Image,
+    source_uv: Optional[np.ndarray] = None,
+    requested_res: Union[int, str] = "auto",
+    sample_dim: int = 1024
+) -> Tuple[int, Dict[str, Any]]:
+    """
+    Capacity Check 1:1 UV Island Packing:
+    Finds the smallest canvas size S in {1024, 2048, 4096} such that UV islands
+    fit into S x S while preserving their 1:1 texel scale (no island shrinking).
+
+    - S = 1024 if orig_island_pixels <= 1_048_576 (~1M pixels, e.g. scans with 80% wasted canvas)
+    - S = 2048 if 1_048_576 < orig_island_pixels <= 4_350_000 (~4.2M - 4.3M pixels, e.g. Flamibo)
+    - S = 4096 if orig_island_pixels > 4_350_000
+
+    Strictly adheres to NO-UPSCALE policy: S <= max_pot(max(w, h)).
+    """
+    w, h = source_image.size
+    orig_max = max(w, h)
+    orig_island_pixels, coverage_ratio = compute_original_island_pixels(
+        mesh, source_image, uv=source_uv, sample_dim=sample_dim
+    )
+
+    max_pot = 1 << int(math.floor(math.log2(orig_max)))
+    max_pot = max(256, max_pot)
+
+    is_auto = isinstance(requested_res, str) and requested_res.lower() == "auto"
+
+    if not is_auto:
+        try:
+            req_int = int(requested_res)
+            selected_res = min(req_int, max_pot)
+            reason = f"manual_override ({req_int})"
+        except (ValueError, TypeError):
+            is_auto = True
+
+    if is_auto:
+        if orig_island_pixels <= 1_048_576:
+            candidate_res = 1024
+            reason = f"capacity_1024 (orig_islands={orig_island_pixels:,.0f} <= 1,048,576)"
+        elif orig_island_pixels <= 4_350_000:
+            candidate_res = 2048
+            reason = f"capacity_2048 (orig_islands={orig_island_pixels:,.0f} fits in 2048x2048 1:1)"
+        else:
+            candidate_res = 4096
+            reason = f"capacity_4096 (orig_islands={orig_island_pixels:,.0f} > 4.35M)"
+
+        selected_res = min(candidate_res, max_pot)
+        if selected_res < candidate_res:
+            reason += f" (clamped to max_pot={selected_res} by NO-UPSCALE policy)"
+
+    details = {
+        "orig_size": (w, h),
+        "orig_max": orig_max,
+        "orig_island_pixels": round(orig_island_pixels, 1),
+        "coverage_ratio": round(coverage_ratio, 4),
+        "selected_resolution": selected_res,
+        "capacity_reason": reason,
+        "is_auto": is_auto
+    }
+    return selected_res, details
 
 
 def can_downscale_texture(
@@ -324,16 +424,20 @@ def can_downscale_texture(
     new_faces: Optional[np.ndarray] = None,
     min_res: int = 1024,
     td_threshold_ratio: float = 0.85,
-    sample_dim: int = 256
+    sample_dim: int = 256,
+    orig_island_pixels: Optional[float] = None
 ) -> Tuple[bool, int, Dict[str, Any]]:
     """
     Bước B: Checks if texture resolution can be safely downscaled to the next power-of-two tier
-    (e.g., 4096 -> 2048, or 2048 -> 1024) without visual loss, by comparing Texel Density:
+    (e.g., 4096 -> 2048, or 2048 -> 1024) without visual loss, by comparing Texel Density
+    AND strictly enforcing 1:1 island capacity check:
       TD = effective_uv_area * Res^2 / surface_area_3d
 
     Downscales only if:
     1. current_res in (4096, 2048) and current_res > min_res
-    2. TD_new_downscaled >= td_threshold_ratio * TD_orig (e.g., >= 0.85 * TD_orig)
+    2. Capacity Check: downscaling to 1024 is permitted ONLY if orig_island_pixels <= 1,048,576 (~1M)
+       and downscaling to 2048 is permitted if orig_island_pixels <= 4,350,000 (~4.3M)
+    3. TD_new_downscaled >= td_threshold_ratio * TD_orig (e.g., >= 0.85 * TD_orig)
 
     Returns:
       (can_downscale, target_res, details)
@@ -363,6 +467,9 @@ def can_downscale_texture(
     # TD = effective_uv_area * Res^2 / surface_area_3d
     td_orig = (effective_uv_area_old * (current_res ** 2)) / mesh_area
 
+    if orig_island_pixels is None:
+        orig_island_pixels = effective_uv_area_old * (current_res ** 2)
+
     # 4. Determine next lower power-of-two tier
     if current_res >= 4096:
         downscaled_res = 2048
@@ -372,9 +479,16 @@ def can_downscale_texture(
         downscaled_res = current_res
 
     can_downscale = False
+    capacity_passed = True
     if current_res > min_res and downscaled_res < current_res and downscaled_res >= min_res:
+        # Enforce 1:1 capacity check
+        if downscaled_res == 1024 and orig_island_pixels > 1_048_576:
+            capacity_passed = False
+        elif downscaled_res == 2048 and orig_island_pixels > 4_350_000:
+            capacity_passed = False
+
         td_new_downscaled = (effective_uv_area_new * (downscaled_res ** 2)) / mesh_area
-        if td_new_downscaled >= td_threshold_ratio * td_orig:
+        if capacity_passed and td_new_downscaled >= td_threshold_ratio * td_orig:
             can_downscale = True
             target_res = downscaled_res
             td_final = td_new_downscaled
@@ -396,6 +510,8 @@ def can_downscale_texture(
         "finalResolution": f"{target_res}x{target_res}",
         "original_resolution": current_res,
         "final_resolution": target_res,
+        "orig_island_pixels": round(float(orig_island_pixels), 1),
+        "capacity_passed": capacity_passed,
         "uvCoverageRatio": round(effective_uv_area_new, 4),
         "uvCoverageRatioOrig": round(effective_uv_area_old, 4),
         "texelDensityOrig": round(td_orig, 2),
@@ -414,20 +530,18 @@ def determine_safe_downscale_resolution(
     uv: Optional[np.ndarray] = None,
     min_texel_density: float = 120.0,
     requested_res: Union[int, str] = "auto",
-    sample_dim: int = 256
+    sample_dim: int = 256,
+    preserve_original: bool = False
 ) -> Tuple[int, Dict[str, Any]]:
     """
     Direct Pure Downscale Strategy:
-    Analyzes original texture resolution and determines the smallest safe power-of-two resolution:
-    - 4096 (4K like Flamibo, Gravilux, Koidrax):
-      Evaluates linear Texel Density at 1024:
-        TD = (1024 * sqrt(effective_uv_area)) / sqrt(mesh_surface_area)
-      If TD >= min_texel_density (default 120 px/unit), safely downscales to 1024 (e.g. Flamibo, Koidrax).
-      Else downscales to 2048 (e.g. Gravilux with large surface area ~120 units) where TD >= 120 px/unit.
-    - 1536 (1.5K like Dinoki) or 2048 (2K):
-      Automatically downscales to 1024 (1K).
-    - <= 1024:
-      Clamps to power-of-two <= orig_max (no upscaling).
+    Analyzes original texture resolution and determines the target resolution.
+    - If preserve_original is True and requested_res == 'auto':
+      Preserves 100% original texture resolution (True Zero-Loss Direct Mode).
+    - Otherwise (auto-adaptive downscale):
+      4096 -> 2048, 1536/2048 -> 1024.
+    - If requested_res is numeric:
+      Clamps strictly <= orig_max (no upscaling).
 
     Guarantees 100% original UV coordinates are preserved (no chart tearing, rotation, or distortion).
     """
@@ -453,13 +567,14 @@ def determine_safe_downscale_resolution(
     is_auto = isinstance(requested_res, str) and requested_res.lower() == "auto"
 
     if is_auto:
-        if orig_max >= 4096:
-            # 4K textures (like Flamibo, Gravilux, Koidrax):
-            # Safely downscale 1 power-of-two tier from 4096 to 2048 (2K).
-            # This cuts 75% GPU VRAM while preserving 100% of micro-details (eyes, pupils, specular reflections, fine decals).
+        if preserve_original:
+            # True Zero-Loss: Preserve 100% original resolution bit-for-bit
+            target_res = orig_max
+        elif orig_max >= 4096:
+            # 4K textures: Safely downscale 1 POT tier from 4096 to 2048 (2K)
             target_res = 2048
         elif orig_max > 1024:
-            # 1536 (1.5K like Dinoki) or 2048 (2K): automatically drop to 1024 (1K)
+            # 1536 or 2048: drop to 1024 (1K)
             target_res = 1024
         else:
             # <= 1024: largest POT <= orig_max
@@ -557,6 +672,10 @@ def rechart_and_bake_high_density(
     target_res = clamp_target_resolution(target_res, source_image.size)
     initial_res = target_res
 
+    orig_island_pixels, orig_coverage_ratio = compute_original_island_pixels(
+        mesh, source_image, uv=source_uv, sample_dim=1024
+    )
+
     if source_uv is None:
         source_uv = getattr(mesh.visual, "uv", None)
         if source_uv is None or len(source_uv) == 0:
@@ -620,6 +739,10 @@ def rechart_and_bake_high_density(
             for k, v in pack_options.items():
                 if hasattr(p_opts, k):
                     setattr(p_opts, k, v)
+        # Anti-blur: Always ensure rotate_charts is False to avoid diagonal resampling blur
+        if not pack_options or "rotate_charts" not in pack_options:
+            p_opts.rotate_charts = False
+            p_opts.rotate_charts_to_axis = False
 
         atlas = xatlas.Atlas()
         # Use 3D mesh unwrap to eliminate giant sliver triangles and unassigned (0, 0) UV artifacts from add_uv_mesh
@@ -641,6 +764,7 @@ def rechart_and_bake_high_density(
 
     # =========================================================================
     # BƯỚC B: Kiểm tra xem có thể downscale không (can_downscale_texture)
+    # Enforces 1:1 capacity check so islands are never scaled down below 1:1
     # =========================================================================
     can_downscale, active_target_res, downscale_info = can_downscale_texture(
         mesh=mesh,
@@ -649,7 +773,8 @@ def rechart_and_bake_high_density(
         new_uv=uv_recharted,
         new_faces=faces_recharted,
         min_res=min_downscale_res,
-        td_threshold_ratio=td_threshold_ratio
+        td_threshold_ratio=td_threshold_ratio,
+        orig_island_pixels=orig_island_pixels
     )
     target_res = active_target_res
 
@@ -730,7 +855,8 @@ def rechart_and_bake_high_density(
 
     recharted_mesh.visual = trimesh.visual.TextureVisuals(uv=uv_recharted, material=mat)
 
-    opt_img = optimize_mesh_texture_for_export(recharted_mesh)
+    # Step 3 export format: PNG LOSSLESS to eliminate compression generational loss
+    opt_img = optimize_mesh_texture_for_export(recharted_mesh, preferred_format="PNG")
     if opt_img is not None:
         dilated_pil = opt_img
 
@@ -748,6 +874,8 @@ def rechart_and_bake_high_density(
         "finalResolution": downscale_info["finalResolution"],
         "original_resolution": initial_res,
         "final_resolution": target_res,
+        "orig_island_pixels": round(float(orig_island_pixels), 1),
+        "textureFormat": "PNG",
         "uvCoverageRatio": round(float(covered_pixels / total_pixels), 4),
         "uvCoverageRatioOrig": downscale_info["uvCoverageRatioOrig"],
         "texelDensityOrig": downscale_info["texelDensityOrig"],
@@ -848,59 +976,68 @@ def direct_resample_texture(
     target_res: int = 1024,
     dilation_padding: int = 16,
     double_sided: bool = False,
-    copy_mesh: bool = False
+    copy_mesh: bool = False,
+    preserve_bitstream: bool = False
 ) -> Tuple[trimesh.Trimesh, Image.Image]:
     """
-    Direct mode: Keeps 100% original UVs, resamples texture with orthogonal Lanczos and applies 16px dilation.
-    Preserves vertex normals, alpha channel, and material properties.
+    Direct mode: Keeps 100% original UVs.
+    - If preserve_bitstream or no resize is needed: keeps 100% bit-for-bit original texture bytes.
+    - If downscaling: applies Gamma-Corrected Linear Color Space Resampling (Lanczos in linear float32)
+      to preserve specular highlight dots and eyes from darkening.
+    Preserves vertex normals, alpha channel, and PBR material properties.
     Configures FrontSide rendering (doubleSided=double_sided, default False).
     """
-    # Defense-in-depth: Never upscale texture
-    target_res = clamp_target_resolution(target_res, source_image.size)
     orig_uv = getattr(mesh.visual, "uv", None)
+    is_same_res = (source_image.size == (target_res, target_res))
+    has_raw_bytes = hasattr(source_image, "_fast_save_data") and source_image._fast_save_data is not None
 
-    # Check for active transparency in source image
-    has_alpha = source_image.mode in ("RGBA", "LA") or (
-        source_image.mode == "P" and "transparency" in source_image.info
-    )
-    has_transparency = False
-    if has_alpha:
-        if source_image.mode in ("RGBA", "LA"):
-            alpha_arr = np.asarray(source_image.convert("RGBA"))[..., 3]
-            if np.any(alpha_arr < 255):
+    if preserve_bitstream or (is_same_res and has_raw_bytes):
+        # TRUE ZERO-LOSS BITSTREAM PASS-THROUGH:
+        # Zero decode, zero re-encode, preserve exact original bitstream.
+        clean_pil = source_image
+        clean_pil._is_bitstream_passthrough = True
+    else:
+        # Defense-in-depth: Never upscale texture
+        target_res = clamp_target_resolution(target_res, source_image.size)
+
+        # Check for active transparency in source image
+        has_alpha = source_image.mode in ("RGBA", "LA") or (
+            source_image.mode == "P" and "transparency" in source_image.info
+        )
+        has_transparency = False
+        if has_alpha:
+            if source_image.mode in ("RGBA", "LA"):
+                alpha_arr = np.asarray(source_image.convert("RGBA"))[..., 3]
+                if np.any(alpha_arr < 255):
+                    has_transparency = True
+            else:
                 has_transparency = True
+
+        if has_transparency:
+            img = source_image.convert("RGBA") if source_image.mode != "RGBA" else source_image
+            out_mode = "RGBA"
         else:
-            has_transparency = True
+            img = source_image.convert("RGB") if source_image.mode != "RGB" else source_image
+            out_mode = "RGB"
 
-    if has_transparency:
-        img = source_image.convert("RGBA") if source_image.mode != "RGBA" else source_image
-        out_mode = "RGBA"
-    else:
-        img = source_image.convert("RGB") if source_image.mode != "RGB" else source_image
-        out_mode = "RGB"
+        if img.size == (target_res, target_res):
+            resampled = img
+        else:
+            # Gamma-Corrected Linear Color Space Resampling:
+            # Preserves specular highlights, eye reflection points, and optical energy
+            resampled = resample_texture_linear_gamma(img, (target_res, target_res), unsharp_strength=0.2)
 
-    if img.size == (target_res, target_res):
-        resampled = img
-    else:
-        resampled = img.resize((target_res, target_res), Image.Resampling.LANCZOS)
-    arr = np.array(resampled, dtype=np.uint8)
+        arr = np.array(resampled, dtype=np.uint8)
 
-    # ZERO DILATION ON COMPLETE / OPAQUE TEXTURES IN DIRECT MODE:
-    # When preserving 100% original artist UVs on opaque textures (e.g. JPEG, RGB, or PNG without alpha transparency),
-    # the artist's original texture is already fully painted with proper gutter/margin bleeds and anti-aliasing.
-    # Running geometric rasterization and dilation on complete textures is harmful: it erroneously treats
-    # un-rasterized gutters, micro-details (e.g. eye pupils, specular highlights, fine crevices) as "empty background"
-    # and smudges them with neighbouring colors.
-    #
-    # Therefore: In Direct mode, dilation is ONLY executed if the source image has an active transparent alpha channel,
-    # dilating colors from visible pixels (alpha > 0) into transparent background (alpha == 0) to prevent dark halos.
-    if has_transparency and dilation_padding > 0:
-        alpha = arr[:, :, 3]
-        if np.any(alpha == 0) and np.any(alpha > 0):
-            is_covered = alpha > 0
-            arr = dilate_texture(arr, is_covered, padding=dilation_padding)
+        # ZERO DILATION ON COMPLETE / OPAQUE TEXTURES IN DIRECT MODE:
+        # Dilation is ONLY executed if the source image has an active transparent alpha channel.
+        if has_transparency and dilation_padding > 0:
+            alpha = arr[:, :, 3]
+            if np.any(alpha == 0) and np.any(alpha > 0):
+                is_covered = alpha > 0
+                arr = dilate_texture(arr, is_covered, padding=dilation_padding)
 
-    clean_pil = Image.fromarray(arr, mode=out_mode)
+        clean_pil = Image.fromarray(arr, mode=out_mode)
 
     orig_mat = getattr(mesh.visual, "material", None) if hasattr(mesh, "visual") and mesh.visual is not None else None
     if isinstance(orig_mat, trimesh.visual.material.PBRMaterial):

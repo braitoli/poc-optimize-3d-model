@@ -167,11 +167,11 @@ class TestStepPipeline(unittest.TestCase):
 
             self.assertEqual(len(metrics_data["steps"]), 7)
 
-            # Step 3 must have resolved to 1024x1024 (Dinoki orig 1536 clamped/evaluated to 1024)
+            # Step 3 must preserve 100% original texture in direct mode (zero implicit downscale)
             step3 = metrics_data["steps"][3]
-            self.assertIn("1024x1024", step3["metrics"]["textureResolution"])
+            self.assertIn("1536x1536", step3["metrics"]["textureResolution"])
             self.assertEqual(step3["metrics"]["faces"], 45000)
-            self.assertTrue(step3["metrics"]["downscaled"])
+            self.assertFalse(step3["metrics"]["downscaled"])
             self.assertTrue(step3["metrics"].get("uvPreserved100Percent", False))
             self.assertFalse(step3["metrics"]["materials"][0]["doubleSided"])
 

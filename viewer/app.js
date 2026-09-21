@@ -11,7 +11,7 @@ const CANONICAL_STEPS = [
   { step: 3, key: 'step3', name: 'UV & Texture Bake', desc: '16px dilation, master UV resample', file: 'step3_uv_bake.glb' },
   { step: 4, key: 'step4', name: 'Palette Extraction', desc: '10 dominant surface swatches', file: 'step4_palette.glb' },
   { step: 5, key: 'step5', name: 'Meshopt Compression', desc: '14b pos, 16b UV, oct norm, cache reorder', file: 'step5_meshopt.glb' },
-  { step: 6, key: 'step6', name: 'KTX2 GPU Compression', desc: 'Basis UASTC L2 GPU mipmaps', file: 'step6_final.glb' }
+  { step: 6, key: 'step6', name: 'Final Model Polish', desc: 'GPU format / 100% Lossless Bitstream', file: 'step6_final.glb' }
 ];
 
 class AppState {
@@ -139,7 +139,7 @@ function normalizeMetrics(m) {
   }
   const bbox = m.bbox || (m.boundingBox?.dimensions ? m.boundingBox.dimensions.map(v => Number(v.toFixed(2))) : null);
   const textureRes = m.textureRes || m.textures?.[0]?.resolutionFormatted || (m.textureResolution ? m.textureResolution : '1024x1024');
-  const textureFormat = m.textureFormat || m.textures?.[0]?.format || (m.step >= 6 ? 'KTX2 UASTC' : 'PNG/JPEG');
+  const textureFormat = m.textureFormat || m.textures?.[0]?.format || m.texture_format || (m.step >= 6 ? 'KTX2 UASTC' : 'PNG/JPEG');
   const palette = m.palette || m.extras?.palette || [];
   const paletteDetails = m.paletteDetails || m.extras?.paletteDetails || palette.map((h, i) => ({ hex: h, weight: 0.1 }));
   const clamped = Boolean(m.clamped || m.textureClamped || m.noUpscale || (m.step === 3 && state.textureClamped));

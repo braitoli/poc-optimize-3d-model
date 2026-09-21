@@ -13,6 +13,7 @@ import math
 import sys
 import numpy as np
 from PIL import Image
+from scipy.ndimage import gaussian_filter
 import trimesh
 
 
@@ -115,6 +116,16 @@ def preserve_mesh_textures(mesh: trimesh.Trimesh, tex_info: Dict[str, Any]) -> N
                     return fast_save
                 img.save = make_fast_save(raw_bytes)
                 img._fast_save_data = raw_bytes
+                img._is_bitstream_passthrough = True
+
+
+def apply_bitstream_passthrough(mesh: trimesh.Trimesh, orig_tex_info: Dict[str, Any]) -> None:
+    """
+    Applies True Zero-Loss Bitstream Pass-through to a mesh's material textures.
+    Re-attaches original raw binary bytes and marks textures with _is_bitstream_passthrough.
+    """
+    preserve_mesh_textures(mesh, orig_tex_info)
+
 
 
 def clamp_target_resolution(
@@ -373,17 +384,65 @@ def maximize_uv_space(
 
 
 
+def resample_texture_linear_gamma(
+    image: Image.Image,
+    target_size: Tuple[int, int],
+    unsharp_strength: float = 0.2
+) -> Image.Image:
+    """
+    Downsamples or resamples an image in Linear Color Space (gamma-correct IEC 61966-2-1),
+    preserving specular highlights, eye reflection dots, and optical energy.
+    Prevents the darkening bias and washed-out eyes of standard sRGB non-linear resampling.
+    """
+    if image.size == target_size:
+        return image
+
+    has_alpha = image.mode in ("RGBA", "LA") or (image.mode == "P" and "transparency" in image.info)
+    img = image.convert("RGBA") if has_alpha else image.convert("RGB")
+    channels = list(img.split())
+    target_w, target_h = target_size
+    resized_channels = []
+
+    for idx, ch in enumerate(channels):
+        if idx < 3:
+            # Color channel: sRGB -> Linear Float32 [0.0, 1.0]
+            s = np.asarray(ch).astype(np.float32) / 255.0
+            linear = np.where(s <= 0.04045, s / 12.92, ((s + 0.055) / 1.055) ** 2.4)
+            pil_f = Image.fromarray(linear, mode="F")
+            resized_f = pil_f.resize((target_w, target_h), Image.Resampling.LANCZOS)
+            res_lin = np.array(resized_f, dtype=np.float32)
+
+            if unsharp_strength > 0:
+                blurred = gaussian_filter(res_lin, sigma=0.8)
+                detail = res_lin - blurred
+                res_lin = np.clip(res_lin + unsharp_strength * detail, 0.0, 1.0)
+            else:
+                res_lin = np.clip(res_lin, 0.0, 1.0)
+
+            # Linear Float32 -> sRGB uint8
+            s_out = np.where(res_lin <= 0.0031308, res_lin * 12.92, 1.055 * (res_lin ** (1.0 / 2.4)) - 0.055)
+            ch_out = np.clip(np.round(s_out * 255.0), 0, 255).astype(np.uint8)
+            resized_channels.append(Image.fromarray(ch_out, mode="L"))
+        else:
+            # Alpha channel: direct Lanczos resize
+            resized_channels.append(ch.resize((target_w, target_h), Image.Resampling.LANCZOS))
+
+    return Image.merge("RGBA" if has_alpha else "RGB", resized_channels)
+
+
 def optimize_mesh_texture_for_export(
     mesh: trimesh.Trimesh,
     orig_tex_info: Optional[Dict[str, Any]] = None,
     preferred_format: Optional[str] = None,
-    jpeg_quality: int = 92
+    jpeg_quality: int = 99
 ) -> Optional[Image.Image]:
     """
     Optimizes the mesh texture before trimesh.exchange.gltf.export_glb to prevent
     uncompressed PNG bloat.
-    - If texture has no alpha channel (RGB) or original format was JPEG, saves as high quality
-      JPEG (quality=92, optimize=True) and sets format='JPEG' with fast_save.
+    - If preferred_format is 'ORIGINAL' or 'PASSTHROUGH', or texture is marked with
+      _is_bitstream_passthrough, keeps the original raw bytes untouched (Bit-for-Bit Lossless).
+    - If texture has no alpha channel (RGB) or original format was JPEG, saves as ultra-high quality
+      JPEG (quality=99, subsampling=0 for 4:4:4 chroma, optimize=True) with fast_save.
     - If texture has an active alpha channel, optimizes PNG compression (optimize=True, compress_level=9)
       and sets format='PNG' with fast_save.
     Returns the optimized PIL Image object.
@@ -397,6 +456,11 @@ def optimize_mesh_texture_for_export(
     img = getattr(mat, "baseColorTexture", None) or getattr(mat, "image", None)
     if img is None or not isinstance(img, Image.Image):
         return None
+
+    pref_upper = (preferred_format or "").upper()
+    if pref_upper in ("ORIGINAL", "PASSTHROUGH") or getattr(img, "_is_bitstream_passthrough", False):
+        if hasattr(img, "_fast_save_data") and img._fast_save_data:
+            return img
 
     # Check if texture has an active alpha channel with true transparency
     has_alpha = False
@@ -413,7 +477,7 @@ def optimize_mesh_texture_for_export(
     # Determine target format:
     # 1. If preferred_format is specified, respect it.
     # 2. If texture has an active alpha channel (RGBA/LA with transparency), it MUST be PNG.
-    # 3. If texture has NO active alpha channel (RGB or opaque RGBA), save as high-quality JPEG (quality=92, optimize=True).
+    # 3. If texture has NO active alpha channel (RGB or opaque RGBA), save as high-quality JPEG (quality=99, subsampling=0).
     if preferred_format:
         target_fmt = preferred_format.upper()
     elif has_alpha:
@@ -431,7 +495,7 @@ def optimize_mesh_texture_for_export(
     if target_fmt in ("JPEG", "JPG"):
         rgb_img = img.convert("RGB") if img.mode != "RGB" else img
         buf = io.BytesIO()
-        rgb_img.save(buf, format="JPEG", quality=jpeg_quality, optimize=True)
+        rgb_img.save(buf, format="JPEG", quality=jpeg_quality, subsampling=0, optimize=True)
         data = buf.getvalue()
 
         rgb_img.format = "JPEG"

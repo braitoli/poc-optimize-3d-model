@@ -5,6 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>3D Model Optimization Showcase | Zero-Decimation Pipeline</title>
   
+  <!-- meshopt decoder for EXT_meshopt_compression GLBs (model-viewer ships none by default).
+       vendor/meshopt_decoder.js = node_modules/meshoptimizer/meshopt_decoder.cjs (UMD build, v1.2.0) -->
+  <script>
+    self.ModelViewerElement = self.ModelViewerElement || {};
+    self.ModelViewerElement.meshoptDecoderLocation = '/viewer/vendor/meshopt_decoder.js';
+  </script>
   <!-- Google <model-viewer> v4.0.0 -->
   <script type="module" src="https://ajax.googleapis.com/ajax/libs/model-viewer/4.0.0/model-viewer.min.js"></script>
   
@@ -59,19 +65,20 @@
         <div class="config-item config-item-uv">
           <label class="config-label" for="uvModeSelect">
             UV Unwrap Mode
-            <span class="policy-tooltip-trigger" title="Tự động tính toán Texel Density tối ưu và tối đa hóa không gian UV">Auto TD ⓘ</span>
+            <span class="policy-tooltip-trigger" title="Direct mode bảo toàn 100% bit-for-bit texture và UV gốc; Re-chart tối đa hóa Texel Density">UV Policy ⓘ</span>
           </label>
           <select class="config-select" id="uvModeSelect">
             <option value="rechart" selected>Re-chart (xatlas)</option>
             <option value="uvatlas">Re-chart (Microsoft UVAtlas)</option>
-            <option value="direct">Direct Master UV</option>
+            <option value="direct">Direct Master UV (Bit-for-Bit Lossless)</option>
           </select>
         </div>
 
         <!-- GPU Format (Step 6) -->
         <div class="config-item config-item-format">
-          <label class="config-label" for="formatSelect">GPU Format</label>
+          <label class="config-label" for="formatSelect">Texture &amp; GPU Format</label>
           <select class="config-select" id="formatSelect">
+            <option value="original">Original Texture (Lossless 100%)</option>
             <option value="ktx2" selected>KTX2 UASTC</option>
             <option value="webp">WebP (Q85)</option>
           </select>

@@ -82,7 +82,7 @@ function scanModels() {
 
 // Allowed Optimization Parameters
 const ALLOWED_RESOLUTIONS = ['auto', 256, 512, 1024, 2048, 4096];
-const ALLOWED_FORMATS = ['ktx2', 'webp', 'png', 'jpeg', 'jpg'];
+const ALLOWED_FORMATS = ['ktx2', 'webp', 'png', 'jpeg', 'jpg', 'original', 'passthrough'];
 const ALLOWED_UV_MODES = ['direct', 'rechart', 'xatlas', 'uvatlas'];
 
 function sanitizeOptimizationOptions({ resolution, format, uvMode } = {}) {
@@ -105,6 +105,7 @@ function sanitizeOptimizationOptions({ resolution, format, uvMode } = {}) {
   }
 
   let fmt = String(format || 'ktx2').toLowerCase().trim();
+  if (fmt === 'passthrough') fmt = 'original';
   if (!ALLOWED_FORMATS.includes(fmt)) {
     fmt = 'ktx2';
   }
