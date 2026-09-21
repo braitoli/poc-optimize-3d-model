@@ -5,8 +5,8 @@ Comprehensive Automated Test Suite & Benchmark Verification for 3D Model Optimiz
 Strictly verifies Rule 11 (Zero-Decimation Policy) and 1:1 pipeline parity.
 
 Run via:
-    python3 -m unittest tests/test_pipeline.py
     python3 tests/test_pipeline.py
+    python3 -m unittest tests/test_pipeline.py
     pytest tests/test_pipeline.py (if pytest installed)
 """
 
@@ -16,6 +16,7 @@ import json
 import struct
 import time
 import tempfile
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -85,6 +86,48 @@ def inspect_glb_metadata(glb_path: Path):
     }
 
 
+def load_mesh_safe(glb_path: Path) -> trimesh.Trimesh:
+    """
+    Safely loads a GLB into trimesh.
+    If the GLB is encoded with EXT_meshopt_compression, it decompresses
+    the buffer first using Node.js gltf-transform and meshoptimizer.
+    """
+    data = glb_path.read_bytes()
+    if len(data) < 20:
+        return trimesh.load(str(glb_path), force="mesh", process=False)
+
+    json_len, _ = struct.unpack("<II", data[12:20])
+    gltf = json.loads(data[20:20 + json_len].decode("utf-8"))
+    exts = gltf.get("extensionsUsed", [])
+
+    if "EXT_meshopt_compression" not in exts:
+        return trimesh.load(str(glb_path), force="mesh", process=False)
+
+    with tempfile.NamedTemporaryFile(suffix=".glb") as tmp:
+        node_script = f"""
+import fs from "node:fs";
+import {{ NodeIO }} from "@gltf-transform/core";
+import {{ ALL_EXTENSIONS }} from "@gltf-transform/extensions";
+import {{ MeshoptDecoder }} from "meshoptimizer";
+
+const io = new NodeIO().registerExtensions(ALL_EXTENSIONS).registerDependencies({{ "meshopt.decoder": MeshoptDecoder }});
+const doc = await io.read("{glb_path}");
+const ext = doc.getRoot().listExtensionsUsed().find(e => e.extensionName === "EXT_meshopt_compression");
+if (ext) ext.dispose();
+const glb = await io.writeBinary(doc);
+fs.writeFileSync("{tmp.name}", Buffer.from(glb));
+"""
+        res = subprocess.run(
+            ["node", "--input-type=module", "-e", node_script],
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True
+        )
+        if res.returncode != 0:
+            raise RuntimeError(f"Failed to decompress meshopt for trimesh: {res.stderr}")
+        return trimesh.load(tmp.name, force="mesh", process=False)
+
+
 class TestRule11ZeroDecimation(unittest.TestCase):
     """
     Test suite for Rule 11 (Zero-Decimation Policy):
@@ -106,13 +149,13 @@ class TestRule11ZeroDecimation(unittest.TestCase):
 
         orig_faces = create_synthetic_textured_glb(raw_glb, subdivisions=2)
         optimizer = ModelOptimizer(resolution=512, texture_format="webp", rechart_uv=False, verbose=False)
-        summary = optimizer.optimize(raw_glb, opt_glb)
+        optimizer.optimize(raw_glb, opt_glb)
 
         self.assertTrue(opt_glb.exists(), "Optimized GLB was not created")
 
-        # Load both via trimesh
-        mesh_before = trimesh.load(str(raw_glb), force="mesh", process=False)
-        mesh_after = trimesh.load(str(opt_glb), force="mesh", process=False)
+        # Load both via safe trimesh loader
+        mesh_before = load_mesh_safe(raw_glb)
+        mesh_after = load_mesh_safe(opt_glb)
 
         self.assertEqual(
             len(mesh_after.faces),
@@ -137,7 +180,7 @@ class TestRule11ZeroDecimation(unittest.TestCase):
 
         opt_glb = self.tmp_path / "dinoki_test_opt.glb"
         optimizer = ModelOptimizer(resolution=512, texture_format="webp", rechart_uv=False, verbose=False)
-        summary = optimizer.optimize(sample_dinoki, opt_glb)
+        optimizer.optimize(sample_dinoki, opt_glb)
 
         meta_before = inspect_glb_metadata(sample_dinoki)
         meta_after = inspect_glb_metadata(opt_glb)
@@ -171,7 +214,7 @@ class TestWindingAndNormals(unittest.TestCase):
         optimizer = ModelOptimizer(resolution=512, texture_format="webp", smooth_normals=True, verbose=False)
         optimizer.optimize(raw_glb, opt_glb)
 
-        mesh = trimesh.load(str(opt_glb), force="mesh", process=False)
+        mesh = load_mesh_safe(opt_glb)
         normals = mesh.vertex_normals
 
         # Check finite
@@ -216,7 +259,6 @@ class TestFileIntegrityAndExtensions(unittest.TestCase):
         exts = meta["exts"]
 
         self.assertIn("EXT_meshopt_compression", exts, "EXT_meshopt_compression is missing from extensionsUsed")
-        # Texture extension can be KHR_texture_basisu or EXT_texture_webp
         has_compressed_tex = ("KHR_texture_basisu" in exts) or ("EXT_texture_webp" in exts)
         self.assertTrue(has_compressed_tex, f"Expected texture compression extension in {exts}")
 
