@@ -18,10 +18,13 @@ On failure the CLI prints {"event": "pipeline_error", "error": "<reason>", "erro
 as its last stdout line (full traceback on stderr) and exits 1.
 """
 
+import io
 import os
 import sys
 import time
 import json
+import base64
+import binascii
 import shutil
 import argparse
 import subprocess
@@ -36,18 +39,67 @@ import trimesh
 from optimizer.core.cleaner import clean_and_repair_mesh, auto_ground_and_center
 from optimizer.core.shell_orient import orient_faces_by_visibility, DEFAULT_VIEWS, DEFAULT_RESOLUTION
 from optimizer.core.uv_baker import SIZE_MODES, plan_uv_canvas, bake_uv_plan
+from optimizer.core.uvatlas import is_uvatlas_available, UVATLAS_UNAVAILABLE
 from optimizer.core.palette import extract_palette, embed_gltf_extras
 from optimizer.core.texture_utils import (
+    SUPPORTED_TEXTURE_FORMATS,
     extract_original_texture_info,
     preserve_mesh_textures,
     optimize_mesh_texture_for_export
 )
-from optimizer.core.glb_utils import set_frontside_material, set_doublesided_material, check_glb_double_sided
-from optimizer.core.errors import describe_failure
+from optimizer.core.glb_utils import (
+    read_glb,
+    set_frontside_material,
+    set_doublesided_material,
+    check_glb_double_sided
+)
+from optimizer.core.errors import PipelineAbort, describe_failure
 
 MODULE_ROOT = Path(__file__).resolve().parent
 INSPECT_SCRIPT = MODULE_ROOT / "inspect_metrics.mjs"
 NODE_OPT_SCRIPT = MODULE_ROOT / "node" / "optimize_meshopt.mjs"
+
+TEXTURE_FORMATS = ("ktx2", "webp", "original", "passthrough", "raw")
+# An input carrying one of these is an already optimized output; there is no decompression step
+COMPRESSED_INPUT_EXTENSIONS = ("EXT_meshopt_compression", "KHR_draco_mesh_compression", "KHR_texture_basisu")
+# First stderr line of a failed Node script (optimize_meshopt.mjs / inspect_metrics.mjs): the reason
+NODE_ERROR_PREFIXES = ("Fatal optimization error:", "Failed to inspect GLB metrics:")
+
+
+def node_step_failure(what: str, proc: subprocess.CompletedProcess) -> PipelineAbort:
+    """PipelineAbort for a failed Node sub-step: `what`, then the one-line reason the script printed.
+    The full output is chained as the cause, so it stays in the traceback on stderr only."""
+    output = (proc.stderr or "").strip() or (proc.stdout or "").strip()
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    reason = next((line.split(":", 1)[1].strip() for line in lines if line.startswith(NODE_ERROR_PREFIXES)), None)
+    if reason is None:
+        reason = next((line for line in lines if "error" in line.lower()), None)
+    if reason is None:
+        reason = lines[0] if lines else f"node exited with code {proc.returncode} without output"
+    err = PipelineAbort(f"{what}: {reason}")
+    err.__cause__ = RuntimeError(f"node exited with code {proc.returncode}:\n{output}")
+    return err
+
+
+def _node_json(proc: subprocess.CompletedProcess, what: str) -> Dict[str, Any]:
+    """The JSON object a Node script printed as its (last) result line on stdout."""
+    for line in reversed(proc.stdout.splitlines()):
+        line = line.strip()
+        if line.startswith("{") and line.endswith("}"):
+            try:
+                return json.loads(line)
+            except json.JSONDecodeError as err:
+                raise PipelineAbort(f"{what}: invalid JSON result from Node: {err}") from err
+    raise PipelineAbort(f"{what}: the Node script printed no JSON result")
+
+
+def encoded_texture_summary(proc: subprocess.CompletedProcess, fmt: str) -> Dict[str, Any]:
+    """The `fmt` ('ktx2' / 'webp') entry of the Step 6 Node summary; PipelineAbort unless it encoded
+    at least one texture (and was not skipped)."""
+    result = _node_json(proc, f"Step 6: {fmt.upper()} texture compression").get(fmt)
+    if not isinstance(result, dict) or result.get("skipped") or not result.get("count", 0) > 0:
+        raise PipelineAbort(f"Step 6: {fmt.upper()} compression encoded no texture (Node summary: {json.dumps(result)})")
+    return result
 
 
 def inspect_glb_metrics(glb_path: Path) -> Dict[str, Any]:
@@ -55,18 +107,118 @@ def inspect_glb_metrics(glb_path: Path) -> Dict[str, Any]:
     cmd = ["node", str(INSPECT_SCRIPT), str(glb_path), "--compact"]
     proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.returncode != 0:
-        raise RuntimeError(f"Failed to inspect GLB metrics for {glb_path.name}: {proc.stderr or proc.stdout}")
+        raise node_step_failure(f"Cannot inspect {glb_path.name}", proc)
+    return _node_json(proc, f"Cannot inspect {glb_path.name}")
 
-    stdout = proc.stdout.strip()
-    for line in stdout.splitlines():
-        line = line.strip()
-        if line.startswith("{") and line.endswith("}"):
-            try:
-                return json.loads(line)
-            except json.JSONDecodeError:
-                pass
 
-    return json.loads(stdout)
+def preflight_tools(texture_format: str, uv_mode: str, downscale: bool) -> None:
+    """Raises PipelineAbort before Step 0 when a tool this run needs is missing."""
+    if shutil.which("node") is None:
+        raise PipelineAbort("Node.js ('node') is not on PATH: the metrics, meshopt and texture steps run Node scripts")
+    # Both Node scripts load sharp (via @gltf-transform/functions -> ndarray-pixels), and
+    # optimize_meshopt.mjs reads, converts and resizes textures with it: needed for every format
+    proc = subprocess.run(
+        ["node", "--input-type=module", "-e", "await import('sharp')"],
+        cwd=str(NODE_OPT_SCRIPT.parent), capture_output=True, text=True
+    )
+    if proc.returncode != 0:
+        raise node_step_failure("The Node package 'sharp' cannot be loaded (run npm install)", proc)
+    if texture_format == "ktx2" and shutil.which("basisu") is None:
+        raise PipelineAbort("Texture format KTX2 needs the basisu CLI (Basis Universal), which is not on PATH")
+    if uv_mode == "uvatlas" and downscale and not is_uvatlas_available()[0]:
+        raise PipelineAbort(UVATLAS_UNAVAILABLE)
+
+
+def _gltf_item(gltf: Dict[str, Any], key: str, index: Any, what: str) -> Dict[str, Any]:
+    items = gltf.get(key, [])
+    if not isinstance(index, int) or not 0 <= index < len(items):
+        raise PipelineAbort(f"The {what} refers to {key}[{index}], which does not exist ({len(items)} {key})")
+    return items[index]
+
+
+def _image_bytes(gltf: Dict[str, Any], bin_chunk: Optional[bytes], image: Dict[str, Any]) -> bytes:
+    """Encoded bytes of a glTF image stored in the GLB's BIN chunk or in a data: URI."""
+    if "bufferView" in image:
+        view = _gltf_item(gltf, "bufferViews", image["bufferView"], "baseColorTexture image")
+        start, length = view.get("byteOffset", 0), view.get("byteLength", 0)
+        if view.get("buffer") != 0 or bin_chunk is None or start + length > len(bin_chunk):
+            raise PipelineAbort("The baseColorTexture image data is not inside the GLB's BIN chunk")
+        return bin_chunk[start:start + length]
+    uri = image.get("uri", "")
+    if uri.startswith("data:") and ";base64," in uri:
+        try:
+            return base64.b64decode(uri.split(";base64,", 1)[1], validate=True)
+        except binascii.Error as err:
+            raise PipelineAbort(f"The baseColorTexture data: URI is not valid base64: {err}") from err
+    raise PipelineAbort(f"The baseColorTexture image is an external file ({uri or 'no uri'}): only self-contained GLBs are supported")
+
+
+def validate_input_glb(path: Path) -> None:
+    """
+    Checks, from the input GLB's JSON (and the base colour image bytes), that it is a model the
+    pipeline supports; raises PipelineAbort with the specific reason otherwise:
+    - not an already optimized/compressed output (COMPRESSED_INPUT_EXTENSIONS);
+    - exactly one mesh primitive (across all meshes), placed by one node, with a material;
+    - that material has a baseColorTexture read through TEXCOORD_0, whose JPEG / PNG / WebP image decodes;
+    - the primitive has POSITION and TEXCOORD_0 with one UV per vertex.
+    Non-finite vertex positions are refused by the cleaner (Step 1).
+    """
+    gltf, bin_chunk = read_glb(path)
+    listed = [*gltf.get("extensionsRequired", []), *gltf.get("extensionsUsed", [])]
+    compressed = [ext for ext in COMPRESSED_INPUT_EXTENSIONS if ext in listed]
+    if compressed:
+        raise PipelineAbort(
+            f"Input is already optimized/compressed ({', '.join(compressed)}); upload the original uncompressed model."
+        )
+
+    meshes = gltf.get("meshes", [])
+    primitives = [prim for mesh in meshes for prim in mesh.get("primitives", [])]
+    if not primitives:
+        raise PipelineAbort("input has no mesh primitives")
+    mesh_nodes = [node for node in gltf.get("nodes", []) if "mesh" in node]
+    if len(primitives) != 1 or len(mesh_nodes) != 1:
+        raise PipelineAbort(
+            f"input has {len(primitives)} mesh primitive(s) in {len(meshes)} mesh(es) placed by {len(mesh_nodes)} "
+            f"node(s): only single-mesh, single-material models are supported"
+        )
+
+    prim = primitives[0]
+    if "material" not in prim:
+        raise PipelineAbort("The mesh primitive has no material: only textured models are supported")
+    material = _gltf_item(gltf, "materials", prim["material"], "mesh primitive")
+    base = material.get("pbrMetallicRoughness", {}).get("baseColorTexture")
+    if base is None:
+        raise PipelineAbort("input has no baseColorTexture: only textured models are supported")
+    if base.get("texCoord", 0) != 0:
+        raise PipelineAbort(f"The baseColorTexture uses TEXCOORD_{base['texCoord']}: only TEXCOORD_0 is supported")
+
+    attributes = prim.get("attributes", {})
+    if "POSITION" not in attributes:
+        raise PipelineAbort("The mesh primitive has no POSITION attribute")
+    if "TEXCOORD_0" not in attributes:
+        raise PipelineAbort("The mesh primitive has no TEXCOORD_0 (UVs): only UV-mapped models are supported")
+    n_vertices = _gltf_item(gltf, "accessors", attributes["POSITION"], "POSITION attribute").get("count")
+    n_uvs = _gltf_item(gltf, "accessors", attributes["TEXCOORD_0"], "TEXCOORD_0 attribute").get("count")
+    if n_uvs != n_vertices:
+        raise PipelineAbort(f"TEXCOORD_0 has {n_uvs} UVs for {n_vertices} vertices (POSITION)")
+
+    texture = _gltf_item(gltf, "textures", base.get("index"), "baseColorTexture")
+    source = texture.get("source", texture.get("extensions", {}).get("EXT_texture_webp", {}).get("source"))
+    image = _gltf_item(gltf, "images", source, "baseColorTexture")
+    data = _image_bytes(gltf, bin_chunk, image)
+    try:
+        with Image.open(io.BytesIO(data)) as img:
+            img_format = img.format
+            img.load()
+    except Exception as err:
+        raise PipelineAbort(
+            f"The baseColorTexture image ({image.get('mimeType', 'no MIME type')}, {len(data)} bytes) "
+            f"cannot be decoded: {err}"
+        ) from err
+    if img_format not in SUPPORTED_TEXTURE_FORMATS:
+        raise PipelineAbort(
+            f"The baseColorTexture image is {img_format}: supported formats are {', '.join(SUPPORTED_TEXTURE_FORMATS)}"
+        )
 
 
 def format_duration(seconds: float) -> str:
@@ -112,6 +264,8 @@ class StepPipeline:
         ktx2_min_vram_mb: float = 20.0
     ):
         self.texture_format = texture_format.lower()
+        if self.texture_format not in TEXTURE_FORMATS:
+            raise ValueError(f"Unsupported texture_format '{texture_format}' (expected one of {', '.join(TEXTURE_FORMATS)})")
         self.uv_mode = uv_mode.lower()
         if self.uv_mode not in ("xatlas", "uvatlas"):
             raise ValueError(f"Unsupported uv_mode '{uv_mode}' (expected 'xatlas' or 'uvatlas')")
@@ -185,11 +339,14 @@ class StepPipeline:
     def _run_steps(self, input_path: Path, output_dir: Path) -> Dict[str, Any]:
         t_total_start = time.perf_counter()
         t0 = time.time()
+        # Before Step 0: every tool this run needs, then an input the pipeline supports
+        preflight_tools(self.texture_format, self.uv_mode, self.downscale)
         input_path = Path(input_path).resolve()
         output_dir = Path(output_dir).resolve()
 
         if not input_path.exists():
             raise FileNotFoundError(f"Input file not found: {input_path}")
+        validate_input_glb(input_path)
 
         output_dir.mkdir(parents=True, exist_ok=True)
         metrics_json_path = output_dir / "metrics.json"
@@ -296,7 +453,7 @@ class StepPipeline:
         initial_faces = m0["faces"]
         initial_verts = m0["vertices"]
         initial_bytes = m0["fileSizeBytes"]
-        orig_tex_info = extract_original_texture_info(step0_file, metrics=m0)
+        orig_tex_info = extract_original_texture_info(step0_file)
         self.log(f"   ✓ Step 0 complete ({m0['durationFormatted']}): {initial_faces:,} faces, {initial_verts:,} verts, {m0['fileSizeFormatted']} (texture: {orig_tex_info.get('default_format')})")
 
         # Auto-detect doubleSided from input materials (or CLI flag)
@@ -353,16 +510,13 @@ class StepPipeline:
         # =====================================================================
         self._current_step = 3
         t_s3 = time.perf_counter()
-        raw_uv = getattr(raw_mesh.visual, "uv", None)
-        if raw_uv is None:
-            raw_uv = getattr(grounded_mesh.visual, "uv", np.zeros((len(grounded_mesh.vertices), 2)))
+        # UVs of the Step 1/2 mesh: the cleaner keeps them aligned with its vertices (the raw mesh's may not be)
+        source_uv = getattr(grounded_mesh.visual, "uv", None)
+        n_uv = 0 if source_uv is None else len(source_uv)
+        if n_uv != len(grounded_mesh.vertices):
+            raise PipelineAbort(f"The oriented mesh has {n_uv} UVs for {len(grounded_mesh.vertices)} vertices")
 
-        raw_tex_img = orig_tex_info.get("base_image")
-        if raw_tex_img is None and hasattr(grounded_mesh.visual, "material") and hasattr(grounded_mesh.visual.material, "baseColorTexture"):
-            raw_tex_img = grounded_mesh.visual.material.baseColorTexture
-        if raw_tex_img is None:
-            raw_tex_img = Image.new("RGB", (1024, 1024), (200, 200, 200))
-
+        raw_tex_img = orig_tex_info["base_image"]
         orig_w, orig_h = raw_tex_img.size
         original_resolution = f"{orig_w}x{orig_h}"
 
@@ -377,7 +531,7 @@ class StepPipeline:
             plan = plan_uv_canvas(
                 grounded_mesh,
                 source_image=raw_tex_img,
-                source_uv=raw_uv,
+                source_uv=source_uv,
                 size_mode=self.size_mode,
                 unwrap_method=self.uv_mode
             )
@@ -398,7 +552,7 @@ class StepPipeline:
                 grounded_mesh,
                 plan,
                 source_image=raw_tex_img,
-                source_uv=raw_uv,
+                source_uv=source_uv,
                 dilation_padding=16,
                 double_sided=self.double_sided
             )
@@ -418,13 +572,7 @@ class StepPipeline:
             baked_mesh.visual.material.doubleSided = self.double_sided
 
         # Optimize texture before export (PNG Lossless or Original Bitstream Passthrough)
-        opt_pil = optimize_mesh_texture_for_export(
-            baked_mesh,
-            orig_tex_info=orig_tex_info,
-            preferred_format=pref_fmt
-        )
-        if opt_pil is not None:
-            dilated_pil = opt_pil
+        dilated_pil = optimize_mesh_texture_for_export(baked_mesh, preferred_format=pref_fmt)
 
         step3_scene = trimesh.Scene({"Model": baked_mesh})
         step3_bytes = trimesh.exchange.gltf.export_glb(step3_scene, include_normals=True)
@@ -519,8 +667,10 @@ class StepPipeline:
             node_cmd_step5.append("--keep-double-sided")
 
         proc5 = subprocess.run(node_cmd_step5, capture_output=True, text=True)
-        if proc5.returncode != 0 or not step5_file.exists():
-            raise RuntimeError(f"Step 5 Meshopt geometry compression failed: {proc5.stderr or proc5.stdout}")
+        if proc5.returncode != 0:
+            raise node_step_failure("Step 5: meshopt geometry compression failed", proc5)
+        if not step5_file.exists():
+            raise PipelineAbort(f"Step 5: meshopt geometry compression wrote no {step5_file.name}")
 
         m5 = save_and_record_metrics(5, step5_file, t_step_start=t_s5)
         self.log(f"   ✓ Step 5 complete ({m5['durationFormatted']}): Geometry compressed ({m5['faces']:,} faces preserved 100%, {m5['fileSizeFormatted']})")
@@ -586,9 +736,13 @@ class StepPipeline:
             else:
                 node_cmd_step6.append("--keep-double-sided")
 
+            step6_fmt = "webp" if self.texture_format == "webp" else "ktx2"
             proc6 = subprocess.run(node_cmd_step6, capture_output=True, text=True)
-            if proc6.returncode != 0 or not step6_temp_file.exists():
-                raise RuntimeError(f"Step 6 Texture compression failed: {proc6.stderr or proc6.stdout}")
+            if proc6.returncode != 0:
+                raise node_step_failure(f"Step 6: {step6_fmt.upper()} texture compression failed", proc6)
+            if not step6_temp_file.exists():
+                raise PipelineAbort(f"Step 6: {step6_fmt.upper()} texture compression wrote no {step6_temp_file.name}")
+            encoded_texture_summary(proc6, step6_fmt)
 
             final_bytes = step6_temp_file.read_bytes()
             step6_temp_file.unlink(missing_ok=True)

@@ -1,7 +1,7 @@
 """
 glb_utils.py
 
-Binary GLB helpers: material doubleSided rewriting/detection and
+Binary GLB helpers: reading (JSON + BIN chunks), material doubleSided rewriting/detection and
 EXT_meshopt_compression decompression for trimesh compatibility.
 """
 
@@ -9,7 +9,7 @@ import json
 import struct
 import subprocess
 from pathlib import Path
-from typing import Any, Dict, Tuple, Union
+from typing import Any, Dict, Optional, Tuple, Union
 
 from optimizer.core.errors import PipelineAbort
 
@@ -38,6 +38,28 @@ def _parse_glb_json(glb_bytes: bytes, source: str) -> Tuple[int, int, Dict[str, 
     if not isinstance(gltf, dict):
         raise PipelineAbort(f"{source} has an invalid JSON chunk: top level is {type(gltf).__name__}, expected an object")
     return ver, chunk_len, gltf
+
+
+def read_glb(path: Union[Path, str]) -> Tuple[Dict[str, Any], Optional[bytes]]:
+    """(glTF JSON, BIN chunk bytes or None) of a GLB file; raises PipelineAbort when the file is not a
+    GLB with a valid JSON chunk, or its second chunk is not a complete BIN chunk."""
+    path = Path(path)
+    try:
+        data = path.read_bytes()
+    except OSError as e:
+        raise PipelineAbort(f"Cannot read {path.name}: {e}") from e
+    _, chunk_len, gltf = _parse_glb_json(data, path.name)
+    offset = 20 + chunk_len
+    if offset == len(data):
+        return gltf, None
+    if offset + 8 > len(data):
+        raise PipelineAbort(f"{path.name} is truncated after its JSON chunk")
+    bin_len, bin_type = struct.unpack("<I4s", data[offset:offset + 8])
+    if bin_type != b"BIN\x00":
+        raise PipelineAbort(f"{path.name} is not a valid GLB: second chunk type is {bin_type!r}, expected b'BIN\\x00'")
+    if offset + 8 + bin_len > len(data):
+        raise PipelineAbort(f"{path.name} is truncated: BIN chunk declares {bin_len} bytes, only {len(data) - offset - 8} present")
+    return gltf, data[offset + 8:offset + 8 + bin_len]
 
 
 def set_frontside_material(glb_bytes: bytes) -> bytes:

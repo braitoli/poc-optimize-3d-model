@@ -321,6 +321,31 @@ describe('upload parameter validation', () => {
     const job = await waitForJobEnd(server.url, body.jobId);
     assert.equal(job.status, 'completed', JSON.stringify(job));
   });
+
+  test('/api/models hides already-compressed GLBs, which are then refused as samplePath', async () => {
+    const listModels = async () => {
+      const res = await fetch(`${server.url}/api/models`);
+      assert.equal(res.status, 200);
+      return (await res.json()).map((m) => m.url);
+    };
+    const urls = await listModels();
+    // meshopt + basisu, meshopt only
+    for (const hidden of ['/examples/models/coramini.glb', '/examples/models/zelvanox_opt.glb']) {
+      assert.ok(!urls.includes(hidden), `${hidden} must not be listed`);
+    }
+    // zelvanox_raw uses KHR_mesh_quantization only, which the pipeline reads fine
+    for (const shown of ['/examples/models/koidrax_raw.glb', '/examples/models/zelvanox_raw.glb', SAMPLE]) {
+      assert.ok(urls.includes(shown), `${shown} must be listed`);
+    }
+    await listModels();
+    const logLines = server.output().split('\n').filter((l) => l.includes('already-compressed GLB'));
+    assert.equal(logLines.length, 1, `skipped models are logged once:\n${logLines.join('\n')}`);
+    assert.match(logLines[0], /\/examples\/models\/coramini\.glb \(EXT_meshopt_compression, KHR_texture_basisu\)/);
+
+    const res = await postJson(server.url, { samplePath: '/examples/models/coramini.glb' });
+    assert.equal(res.status, 400, JSON.stringify(res.body));
+    assert.match(res.body.error, /samplePath '\/examples\/models\/coramini\.glb' is not one of the models listed/);
+  });
 });
 
 describe('pipeline outcome handling (fake pipeline)', () => {

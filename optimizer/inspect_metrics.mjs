@@ -222,18 +222,15 @@ export async function inspectGlbMetrics(input) {
     else if (isPng) formatName = 'PNG';
     else if (isJpeg) formatName = 'JPEG';
 
-    // Resolution
-    let size = tex.getSize();
-    if (!size || size[0] === 0) {
-      if (repTex.resolution && typeof repTex.resolution === 'string') {
-        const parts = repTex.resolution.split('x').map(n => parseInt(n, 10));
-        if (parts.length === 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
-          size = parts;
-        }
-      }
+    // Resolution, read from the encoded image; without it the texture and VRAM metrics would be made up
+    const size = tex.getSize();
+    if (!size || !(size[0] > 0) || !(size[1] > 0)) {
+      throw new Error(
+        `Cannot read the size of texture ${i} (${tex.getName() || 'unnamed'}, ${mimeType}, ` +
+        `${tex.getImage()?.byteLength ?? 0} bytes): the image is missing, corrupt or in an unsupported format`
+      );
     }
-    const width = size ? size[0] : 0;
-    const height = size ? size[1] : 0;
+    const [width, height] = size;
 
     const imgBuffer = tex.getImage();
     const texFileBytes = imgBuffer ? imgBuffer.byteLength : (repTex.size || 0);
@@ -354,7 +351,9 @@ async function runCli() {
       console.log(JSON.stringify(metrics, null, 2));
     }
   } catch (err) {
-    console.error('Failed to inspect GLB metrics:', err);
+    // First stderr line: the one-line reason (step_pipeline reports it); then the full error
+    console.error(`Failed to inspect GLB metrics: ${String(err?.message ?? err).split('\n')[0]}`);
+    console.error(err);
     process.exit(1);
   }
 }

@@ -73,8 +73,31 @@ function formatBytes(bytes, decimals = 2) {
   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(dm))} ${sizes[i]}`;
 }
 
+// An already optimized GLB carries one of these; the pipeline refuses it (no decompression), so the
+// model picker does not list it
+const COMPRESSED_GLB_EXTENSIONS = ['EXT_meshopt_compression', 'KHR_draco_mesh_compression', 'KHR_texture_basisu'];
+const loggedSkippedModels = new Set();
+
+// Compression extensions a GLB lists in extensionsRequired / extensionsUsed (throws if unreadable)
+function compressedExtensionsOf(filePath) {
+  let gltf;
+  try {
+    gltf = readGlbJson(filePath);
+  } catch (err) {
+    throw new Error(`${filePath}: ${err.message}`);
+  }
+  const listed = [];
+  for (const key of ['extensionsRequired', 'extensionsUsed']) {
+    if (gltf[key] === undefined) continue;
+    if (!Array.isArray(gltf[key])) throw new Error(`${filePath}: invalid GLB JSON chunk: "${key}" is not an array`);
+    listed.push(...gltf[key]);
+  }
+  return COMPRESSED_GLB_EXTENSIONS.filter(ext => listed.includes(ext));
+}
+
 function scanModels() {
   const models = [];
+  const skipped = [];
   const searchDirs = [
     { dir: path.join(__dirname, 'examples'), prefix: '/examples/' },
     { dir: path.join(__dirname, 'examples', 'models'), prefix: '/examples/models/' }
@@ -86,6 +109,11 @@ function scanModels() {
     for (const file of files) {
       if (file.endsWith('.glb')) {
         const fullPath = path.join(dir, file);
+        const compressed = compressedExtensionsOf(fullPath);
+        if (compressed.length > 0) {
+          skipped.push({ url: `${prefix}${file}`, compressed });
+          continue;
+        }
         const stat = fs.statSync(fullPath);
         const isOptimized = file.includes('opt') || file.includes('baseline');
         models.push({
@@ -99,6 +127,14 @@ function scanModels() {
         });
       }
     }
+  }
+  const newlySkipped = skipped.filter(s => !loggedSkippedModels.has(s.url));
+  if (newlySkipped.length > 0) {
+    newlySkipped.forEach(s => loggedSkippedModels.add(s.url));
+    console.log(
+      `[models] Not listing ${newlySkipped.length} already-compressed GLB(s): ` +
+      newlySkipped.map(s => `${s.url} (${s.compressed.join(', ')})`).join('; ')
+    );
   }
   return models;
 }
@@ -115,9 +151,9 @@ function readFully(fd, length, position) {
   return { buffer, bytesRead: total };
 }
 
-// True if any material of the GLB is doubleSided. Reads the whole JSON chunk; throws when the file
-// is not a readable GLB with a valid JSON chunk (the upload is then rejected with a 400).
-function detectGlbDoubleSided(filePath) {
+// The glTF JSON of a GLB file. Reads the whole JSON chunk; throws when the file is not a readable
+// GLB with a valid JSON chunk.
+function readGlbJson(filePath) {
   const fd = fs.openSync(filePath, 'r');
   try {
     const fileSize = fs.fstatSync(fd).size;
@@ -145,12 +181,19 @@ function detectGlbDoubleSided(filePath) {
     if (gltf === null || typeof gltf !== 'object' || Array.isArray(gltf)) {
       throw new Error('invalid GLB JSON chunk: not a JSON object');
     }
-    if (gltf.materials === undefined) return false;
-    if (!Array.isArray(gltf.materials)) throw new Error('invalid GLB JSON chunk: "materials" is not an array');
-    return gltf.materials.some(mat => mat && mat.doubleSided === true);
+    return gltf;
   } finally {
     fs.closeSync(fd);
   }
+}
+
+// True if any material of the GLB is doubleSided; throws when the file is not a readable GLB with a
+// valid JSON chunk (the upload is then rejected with a 400).
+function detectGlbDoubleSided(filePath) {
+  const gltf = readGlbJson(filePath);
+  if (gltf.materials === undefined) return false;
+  if (!Array.isArray(gltf.materials)) throw new Error('invalid GLB JSON chunk: "materials" is not an array');
+  return gltf.materials.some(mat => mat && mat.doubleSided === true);
 }
 
 // A client error: the upload is rejected with HTTP 400 and this message
@@ -621,7 +664,15 @@ const server = http.createServer(async (req, res) => {
 
   // 1. API: List available models
   if (pathname === '/api/models' && req.method === 'GET') {
-    const models = scanModels();
+    let models;
+    try {
+      models = scanModels();
+    } catch (err) {
+      console.error(`[API /models] ${err.message}`);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: `Cannot list the models: ${err.message}` }));
+      return;
+    }
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(models, null, 2));
     return;

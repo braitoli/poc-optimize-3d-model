@@ -4,13 +4,15 @@ cleaner.py
 Geometric cleaning and auto-grounding for 3D statues.
 Strictly adheres to Rule 11 (Zero-Decimation Policy):
 - Preserves 100% geometric triangles.
-- Eliminates invalid vertices and unreferenced artifacts.
+- Rejects non-finite vertices (PipelineAbort) and removes unreferenced artifacts.
 - Grounds base at Y=0 and centers on X/Z axes.
 """
 
 from typing import Tuple
 import numpy as np
 import trimesh
+
+from optimizer.core.errors import PipelineAbort
 
 
 def _preserve_texture_attributes(src: trimesh.Trimesh, dst: trimesh.Trimesh) -> None:
@@ -42,33 +44,25 @@ def _preserve_texture_attributes(src: trimesh.Trimesh, dst: trimesh.Trimesh) -> 
 def clean_and_repair_mesh(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
     """
     Cleans mesh geometry while strictly preserving 100% valid triangles.
-    Removes infinite values, unreferenced vertices, and fixes basic winding.
+    Removes unreferenced vertices and fixes basic winding. A non-finite vertex raises PipelineAbort
+    before anything changes: dropping its faces would break the zero-decimation rule.
     """
     m = mesh.copy()
     if isinstance(m, trimesh.Scene):
         m = m.dump(concatenate=True)
 
-    _preserve_texture_attributes(mesh, m)
+    non_finite = int(np.count_nonzero(~np.isfinite(np.asarray(m.vertices)).all(axis=1)))
+    if non_finite:
+        raise PipelineAbort(f"mesh has {non_finite} non-finite vertex coordinates")
 
-    if hasattr(m, "remove_infinite_values"):
-        m.remove_infinite_values()
-    elif not np.isfinite(m.vertices).all():
-        valid_verts = np.isfinite(m.vertices).all(axis=1)
-        m.update_vertices(valid_verts)
+    _preserve_texture_attributes(mesh, m)
 
     # Rule 11 Zero-Decimation: Strictly preserve 100% faces (do not drop any face)
     if hasattr(m, "remove_unreferenced_vertices"):
         m.remove_unreferenced_vertices()
 
-    try:
-        trimesh.repair.fix_normals(m)
-    except Exception:
-        pass
-
-    try:
-        trimesh.repair.fix_winding(m)
-    except Exception:
-        pass
+    trimesh.repair.fix_normals(m)
+    trimesh.repair.fix_winding(m)
 
     return m
 

@@ -13,6 +13,7 @@ from PIL import Image
 from scipy import ndimage
 import trimesh
 import xatlas
+from optimizer.core.errors import PipelineAbort
 from optimizer.core.uvatlas import unwrap_mesh_uvatlas
 from optimizer.core.texture_utils import optimize_mesh_texture_for_export
 
@@ -285,6 +286,28 @@ MAX_PACK_PASSES = 4           # bound on every sizing loop (xatlas re-packs, UVA
 UVATLAS_INITIAL_FILL = 0.5    # first guess of the UV area fraction UVAtlas fills (gutter 4 px)
 
 
+def _check_source_uv(mesh: trimesh.Trimesh, source_uv: np.ndarray) -> np.ndarray:
+    """Source UVs as (V, 2) float64, one finite UV per mesh vertex; anything else raises PipelineAbort."""
+    uv = np.asarray(source_uv, dtype=np.float64)
+    if uv.ndim != 2 or uv.shape[1] != 2 or len(uv) != len(mesh.vertices):
+        raise PipelineAbort(
+            f"Got {len(uv) if uv.ndim else 0} source UVs for {len(mesh.vertices)} vertices "
+            f"(shape {uv.shape}): expected one (u, v) per vertex"
+        )
+    bad = ~np.isfinite(uv).all(axis=1)
+    if bad.any():
+        raise PipelineAbort(f"{int(bad.sum())} source UVs are non-finite (NaN / inf)")
+    return uv
+
+
+def _check_no_nan(values: np.ndarray, what: str) -> np.ndarray:
+    """Sampled texel values must be numbers; a NaN would otherwise be painted as a made-up colour."""
+    nan = np.isnan(values)
+    if nan.any():
+        raise PipelineAbort(f"Sampling the {what} produced {int(nan.any(axis=-1).sum())} NaN texels")
+    return values
+
+
 def _uv_triangle_areas(uv: np.ndarray, faces: np.ndarray) -> np.ndarray:
     tri = np.asarray(uv, dtype=np.float64)[np.asarray(faces, dtype=np.int64)]
     e1 = tri[:, 1] - tri[:, 0]
@@ -481,6 +504,7 @@ def plan_uv_canvas(
     if unwrap_method not in UNWRAP_METHODS:
         raise ValueError(f"Unsupported unwrap_method '{unwrap_method}' (expected one of {', '.join(UNWRAP_METHODS)})")
 
+    source_uv = _check_source_uv(mesh, source_uv)
     src_w, src_h = source_image.size
     t_src = texel_density(mesh.vertices, mesh.faces, source_uv, src_w, src_h)
     if t_src <= 0.0:
@@ -680,14 +704,12 @@ def _rebake_material_slots(
     padding: int
 ) -> Tuple[Dict[str, Image.Image], int]:
     """
-    Re-bakes every non-base-colour texture slot of a PBRMaterial into the new UV layout with the base
+    Re-bakes every non-base-colour texture slot of the PBRMaterial `mat` into the new UV layout with the base
     colour's rasterization (sel / fid / bary / src_uv), canvas and dilation: the re-charted mesh no longer
     carries the UVs those images were painted for. normalTexture is re-encoded into the new tangent frames
     (flat-normal background); the other slots are resampled like the base colour (mean sampled background).
     Returns ({slot: new image}, degenerate normal-frame pixel count).
     """
-    if not isinstance(mat, trimesh.visual.material.PBRMaterial):
-        return {}, 0
     res = covered.shape[0]
     rebaked: Dict[str, Image.Image] = {}
     degenerate = 0
@@ -708,7 +730,7 @@ def _rebake_material_slots(
             values = np.round(values)
             background = np.array(_FLAT_NORMAL_RGB, dtype=np.uint8)
         else:
-            values = np.nan_to_num(_sample_texture_bilinear(slot_rgb, src_uv), nan=128.0)
+            values = _check_no_nan(_sample_texture_bilinear(slot_rgb, src_uv), slot)
             background = np.mean(values, axis=0).astype(np.uint8)
         canvas = np.tile(background, (res * res, 1))
         canvas[sel] = np.clip(values, 0.0, 255.0).astype(np.uint8)
@@ -730,7 +752,14 @@ def bake_uv_plan(
     into it: barycentric sampling, EDT dilation into the gutters, FrontSide material
     (doubleSided=double_sided). Returns (recharted_mesh, baked_image, stats).
     """
-    source_uv = np.asarray(source_uv, dtype=np.float64)
+    source_uv = _check_source_uv(mesh, source_uv)
+    # The baked material is the source glTF PBR material with the new textures: nothing is invented
+    orig_mat = getattr(getattr(mesh, "visual", None), "material", None)
+    if not isinstance(orig_mat, trimesh.visual.material.PBRMaterial):
+        raise PipelineAbort(
+            f"The source material is {type(orig_mat).__name__}, not a glTF PBR material: "
+            f"its factors cannot be carried over to the baked texture"
+        )
     layout, repacked = _final_layout(mesh, plan)
     target_res = layout["canvas"]
     vertices_recharted = layout["vertices"]
@@ -779,8 +808,7 @@ def bake_uv_plan(
     src_uv = (raw_tri_uv * bary[:, :, None]).sum(axis=1)
     src_uv = np.clip(src_uv, 0.0, 1.0)
 
-    colors = _sample_texture_bilinear(src_img, src_uv)
-    colors = np.nan_to_num(colors, nan=128.0)
+    colors = _check_no_nan(_sample_texture_bilinear(src_img, src_uv), "base colour texture")
 
     # Defensive canvas background initialization: initialize the canvas with the average
     # sampled surface color rather than stark pure white (255, 255, 255) or black (0, 0, 0).
@@ -812,31 +840,16 @@ def bake_uv_plan(
     dilated_pil = Image.fromarray(dilated_img, mode=out_mode)
 
     # Configure PBRMaterial with FrontSide rendering (doubleSided=double_sided, default False)
-    orig_mat = getattr(mesh.visual, "material", None) if hasattr(mesh, "visual") and mesh.visual is not None else None
     # normal / metallicRoughness / occlusion / emissive maps re-baked into the NEW layout as well
     rebaked_textures, normal_degenerate_px = _rebake_material_slots(
         orig_mat, mesh, source_uv, orig_face_verts, uv_recharted[faces_recharted],
         sel, fid, bary, src_uv, covered, eff_dilation_padding
     )
-    if isinstance(orig_mat, trimesh.visual.material.PBRMaterial):
-        mat = orig_mat.copy()
-        mat.baseColorTexture = dilated_pil
-        mat.doubleSided = double_sided
-        for slot, img in rebaked_textures.items():
-            setattr(mat, slot, img)
-    else:
-        mat = trimesh.visual.material.PBRMaterial(
-            baseColorTexture=dilated_pil,
-            metallicFactor=getattr(orig_mat, "metallicFactor", 0.0) if orig_mat else 0.0,
-            roughnessFactor=getattr(orig_mat, "roughnessFactor", 0.8) if orig_mat else 0.8,
-            doubleSided=double_sided
-        )
-        if orig_mat and hasattr(orig_mat, "baseColorFactor") and orig_mat.baseColorFactor is not None:
-            mat.baseColorFactor = orig_mat.baseColorFactor
-        if orig_mat and hasattr(orig_mat, "alphaMode") and orig_mat.alphaMode is not None:
-            mat.alphaMode = orig_mat.alphaMode
-        if orig_mat and hasattr(orig_mat, "alphaCutoff") and orig_mat.alphaCutoff is not None:
-            mat.alphaCutoff = orig_mat.alphaCutoff
+    mat = orig_mat.copy()
+    mat.baseColorTexture = dilated_pil
+    mat.doubleSided = double_sided
+    for slot, img in rebaked_textures.items():
+        setattr(mat, slot, img)
 
     # Preserve smooth vertex normals
     normals_recharted = None
@@ -861,9 +874,7 @@ def bake_uv_plan(
     recharted_mesh.visual = trimesh.visual.TextureVisuals(uv=uv_recharted, material=mat)
 
     # Step 3 export format: PNG LOSSLESS to eliminate compression generational loss
-    opt_img = optimize_mesh_texture_for_export(recharted_mesh, preferred_format="PNG")
-    if opt_img is not None:
-        dilated_pil = opt_img
+    dilated_pil = optimize_mesh_texture_for_export(recharted_mesh, preferred_format="PNG")
 
     # Comprehensive metrics recording
     mesh_area = float(mesh.area)

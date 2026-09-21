@@ -12,7 +12,8 @@ Strictly adheres to Rule 11 (Zero-Decimation Policy):
 High-Performance Parallel Architecture:
 - Vectorized NumPy z-buffer with precomputed edge determinants (avoids degenerate allocations).
 - Exact float64 lexsort tie-breaking for 100% bit-for-bit mathematical parity.
-- Multi-core parallel view rasterization (Apple Silicon / Linux / Windows auto-fallback).
+- Multi-core parallel view rasterization (process pool; a thread pool with identical output, logged,
+  when the process pool cannot start).
 - Concurrent connected-components graph decomposition.
 """
 
@@ -23,6 +24,8 @@ import multiprocessing as mp
 import concurrent.futures
 import numpy as np
 from scipy.sparse import csgraph, csr_matrix
+
+from optimizer.core.errors import PipelineAbort
 
 logger = logging.getLogger(__name__)
 
@@ -156,7 +159,9 @@ def _rasterize_votes(
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Computes visibility votes for each face in parallel across CPU cores.
-    Uses multi-processing (or thread pool fallback) across all Fibonacci camera angles.
+    Uses a fork process pool across all Fibonacci camera angles; if that pool cannot start, a thread
+    pool renders the same views (identical output) and a warning is logged. Worker errors propagate.
+    A zero-size (or non-finite) bounding box raises PipelineAbort.
     Returns:
         vote: net visibility vote (vote_front - vote_back)
         seen_px: total pixels where face was closest surface
@@ -172,8 +177,10 @@ def _rasterize_votes(
 
     centre = (vertices.max(axis=0) + vertices.min(axis=0)) / 2.0
     span = float((vertices.max(axis=0) - vertices.min(axis=0)).max())
-    if span <= 0:
-        return vote, seen_px, vis_count, vote_front, vote_back
+    if not np.isfinite(span) or span <= 0:
+        raise PipelineAbort(
+            f"Cannot orient faces: the mesh bounding box has zero size (extent {span}), so no view sees any face"
+        )
 
     sphere_directions = _sphere_dirs(views)
     tasks = [(d, vertices, faces, centre, span, resolution) for d in sphere_directions]
@@ -182,17 +189,23 @@ def _rasterize_votes(
     workers = max_workers if max_workers is not None else min(cpu_count, 10)
 
     if workers > 1 and len(tasks) > 1:
-        use_threads = False
+        pool = None
         try:
             # Fork is fastest on macOS and Linux (zero process bootstrap overhead)
-            ctx = mp.get_context("fork")
-            chunksize = max(1, len(tasks) // (workers * 2))
-            with ctx.Pool(workers) as pool:
-                results = pool.map(_render_single_view_task, tasks, chunksize=chunksize)
-        except Exception:
-            use_threads = True
+            pool = mp.get_context("fork").Pool(workers)
+        except (ValueError, OSError) as err:
+            # Perf-only fallback with identical output: no fork start method (ValueError), or the OS
+            # refused the processes / semaphores (OSError). Errors inside the workers are not caught.
+            logger.warning(
+                "Process pool unavailable (%s: %s); rendering %d views on %d threads instead",
+                type(err).__name__, err, len(tasks), workers
+            )
 
-        if use_threads:
+        if pool is not None:
+            chunksize = max(1, len(tasks) // (workers * 2))
+            with pool:
+                results = pool.map(_render_single_view_task, tasks, chunksize=chunksize)
+        else:
             with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as tpool:
                 results = list(tpool.map(_render_single_view_task, tasks))
     else:

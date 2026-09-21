@@ -2,21 +2,19 @@
 uvatlas.py
 
 Microsoft UVAtlas Iso-chart Parameterization & Unwrapping Integration.
-Integrates Microsoft UVAtlas via Open3D C++ tensor pipeline and optional native CLI tool.
+Integrates Microsoft UVAtlas via Open3D's C++ tensor pipeline, the only backend: without it,
+requesting UVAtlas raises PipelineAbort.
 Enforces Zero-Decimation Policy by automatically repairing non-manifold vertices & edges
 without removing any geometric triangles.
 """
 
-import os
-import sys
 import time
-import shutil
-import tempfile
-import subprocess
 from typing import Tuple, Optional, Dict, Any, List
 from collections import defaultdict
 import numpy as np
 import trimesh
+
+from optimizer.core.errors import PipelineAbort
 
 # Try importing Open3D
 _OPEN3D_AVAILABLE = False
@@ -30,38 +28,28 @@ except ImportError:
     o3d = None
 
 
+# UVAtlas output may exceed [0, 1] by float noise only; anything further out is an error
+UV_RANGE_EPS = 1e-6
+
+UVATLAS_UNAVAILABLE = (
+    "UV mode 'uvatlas' needs Open3D with Microsoft UVAtlas (open3d.t.geometry.TriangleMesh.compute_uvatlas), "
+    "which is not installed in this Python environment: pip install open3d"
+)
+
+
 def is_open3d_uvatlas_available() -> bool:
     """Checks if Open3D with Microsoft UVAtlas C++ support is available."""
     return _OPEN3D_UVATLAS_AVAILABLE
 
 
-def get_uvatlas_cli_path() -> Optional[str]:
-    """
-    Checks if a native UVAtlas CLI binary (uvatlas, uvatlastool, UVAtlasTool)
-    is available in PATH or specified via UVATLAS_BIN / UVATLAS_CLI environment variables.
-    """
-    env_path = os.environ.get("UVATLAS_BIN") or os.environ.get("UVATLAS_CLI")
-    if env_path and shutil.which(env_path):
-        return env_path
-    for name in ("uvatlas", "uvatlastool", "UVAtlas", "UVAtlasTool"):
-        p = shutil.which(name)
-        if p:
-            return p
-    return None
-
-
 def is_uvatlas_available() -> Tuple[bool, str]:
     """
-    Checks if Microsoft UVAtlas unwrap can be performed.
+    Checks if Microsoft UVAtlas unwrap can be performed. Open3D is the only backend.
     Returns:
-        (is_available, backend_name)
-        backend_name is one of 'open3d', 'cli:<path>', or 'none'.
+        (is_available, backend_name) with backend_name 'open3d' or 'none'.
     """
     if is_open3d_uvatlas_available():
         return True, "open3d"
-    cli = get_uvatlas_cli_path()
-    if cli:
-        return True, f"cli:{cli}"
     return False, "none"
 
 
@@ -86,7 +74,7 @@ def ensure_manifold_zero_decimation(
     vmapping = np.arange(len(verts), dtype=np.int64)
 
     if not _OPEN3D_AVAILABLE:
-        return verts, faces, vmapping
+        raise PipelineAbort("The UVAtlas manifold repair needs Open3D, which is not installed: pip install open3d")
 
     leg = o3d.geometry.TriangleMesh(
         o3d.utility.Vector3dVector(verts),
@@ -175,7 +163,8 @@ def unwrap_mesh_uvatlas_open3d(
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, Dict[str, Any]]:
     """
     Executes Microsoft UVAtlas unwrap using Open3D's C++ tensor pipeline.
-    Preserves 100% faces and ensures all UV coordinates are strictly inside [0, 1].
+    Preserves 100% faces. UVs outside [0, 1] (beyond UV_RANGE_EPS float noise) or non-finite UVs
+    raise PipelineAbort, as does a failed unwrap (no retry with other settings).
     Enforces gutter >= 4.0 to guarantee adequate chart margin and prevent seam cracks.
 
     Returns:
@@ -186,9 +175,7 @@ def unwrap_mesh_uvatlas_open3d(
         stats: dict containing stretch, chart_count, and execution metadata
     """
     if not _OPEN3D_UVATLAS_AVAILABLE:
-        raise RuntimeError(
-            "Open3D UVAtlas is not available. Please install Open3D: pip install open3d"
-        )
+        raise PipelineAbort(UVATLAS_UNAVAILABLE)
 
     t_start = time.perf_counter()
     n_faces = len(mesh.faces)
@@ -228,19 +215,10 @@ def unwrap_mesh_uvatlas_open3d(
             parallel_partitions=int(parallel_partitions)
         )
     except Exception as e:
-        # Fallback: if compute_uvatlas failed due to residual non-manifoldness,
-        # retry with parallel_partitions=1 and slightly relaxed max_stretch
-        try:
-            res = tmesh.compute_uvatlas(
-                size=int(target_res),
-                gutter=float(eff_gutter),
-                max_stretch=0.33,
-                parallel_partitions=1
-            )
-        except Exception as retry_err:
-            raise RuntimeError(
-                f"Microsoft UVAtlas unwrapping failed: {retry_err} (initial error: {e})"
-            ) from retry_err
+        raise PipelineAbort(
+            f"Microsoft UVAtlas unwrap failed on {n_faces:,} faces (size {int(target_res)}, "
+            f"max_stretch {float(max_stretch)}, parallel_partitions {int(parallel_partitions)}): {e}"
+        ) from e
 
     t_uv = time.perf_counter() - t_uv_start
     actual_stretch, chart_count, partition_count = res
@@ -248,10 +226,16 @@ def unwrap_mesh_uvatlas_open3d(
     # 4. Extract per-face UV coordinates: (F, 3, 2)
     tri_uvs = tmesh.triangle["texture_uvs"].numpy()
     F = len(faces_man)
+    finite = np.isfinite(tri_uvs)
+    if not finite.all():
+        raise PipelineAbort(f"Microsoft UVAtlas returned {int((~finite).sum())} non-finite UV coordinates")
+    uv_lo, uv_hi = float(tri_uvs.min()), float(tri_uvs.max())
+    if uv_lo < -UV_RANGE_EPS or uv_hi > 1.0 + UV_RANGE_EPS:
+        raise PipelineAbort(f"Microsoft UVAtlas returned UVs outside [0, 1] (range [{uv_lo:.6g}, {uv_hi:.6g}])")
 
     # 5. Fast vertex welding along seams
     flat_v_man = faces_man.flatten()
-    flat_uvs = np.clip(tri_uvs.reshape(-1, 2), 0.0, 1.0)
+    flat_uvs = np.clip(tri_uvs.reshape(-1, 2), 0.0, 1.0)  # removes float noise within UV_RANGE_EPS only
     flat_pos = verts_man[flat_v_man]
     flat_orig = vmap_orig[flat_v_man]
 
@@ -286,61 +270,6 @@ def unwrap_mesh_uvatlas_open3d(
     return vertices_unwrapped, faces_unwrapped, uv_unwrapped, vmapping, stats
 
 
-def unwrap_mesh_uvatlas_cli(
-    mesh: trimesh.Trimesh,
-    cli_path: str,
-    target_res: int = 1024,
-    gutter: float = 4.0,
-    max_stretch: float = 0.1667
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, Dict[str, Any]]:
-    """
-    Executes Microsoft UVAtlas unwrap using native CLI binary (uvatlas / uvatlastool).
-    Enforces gutter >= 4.0 to guarantee adequate chart margin.
-    """
-    t_start = time.perf_counter()
-    eff_gutter = max(4.0, float(gutter))
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        tmp_in = os.path.join(tmp_dir, "input.obj")
-        tmp_out = os.path.join(tmp_dir, "output.obj")
-
-        # Export clean OBJ
-        mesh.export(tmp_in, file_type="obj")
-
-        cmd = [
-            cli_path,
-            "-o", tmp_out,
-            "-w", str(int(target_res)),
-            "-h", str(int(target_res)),
-            "-g", str(float(eff_gutter)),
-            "-st", str(float(max_stretch)),
-            "-y",
-            tmp_in
-        ]
-
-        p = subprocess.run(cmd, capture_output=True, text=True, check=False)
-        if p.returncode != 0 or not os.path.exists(tmp_out):
-            raise RuntimeError(
-                f"UVAtlas CLI failed with exit code {p.returncode}: {p.stderr or p.stdout}"
-            )
-
-        out_mesh = trimesh.load(tmp_out, file_type="obj", force="mesh", process=False)
-        uvs = getattr(out_mesh.visual, "uv", None)
-        if uvs is None:
-            raise RuntimeError("UVAtlas CLI produced an OBJ without UV coordinates.")
-
-        vmapping = np.arange(len(out_mesh.vertices), dtype=np.int64)
-        t_total = time.perf_counter() - t_start
-
-        stats = {
-            "uvatlas_backend": f"cli:{cli_path}",
-            "uvatlas_gutter": float(eff_gutter),
-            "uvatlas_total_sec": round(t_total, 3),
-            "zero_decimation_faces_preserved": len(out_mesh.faces) == len(mesh.faces)
-        }
-
-        return np.asarray(out_mesh.vertices), np.asarray(out_mesh.faces), np.asarray(uvs), vmapping, stats
-
-
 def unwrap_mesh_uvatlas(
     mesh: trimesh.Trimesh,
     target_res: int = 1024,
@@ -349,35 +278,17 @@ def unwrap_mesh_uvatlas(
     parallel_partitions: Optional[int] = None
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, Dict[str, Any]]:
     """
-    Unified entry point for Microsoft UVAtlas unwrapping.
-    Automatically prioritizes Open3D tensor pipeline, falling back to CLI tool.
+    Entry point for Microsoft UVAtlas unwrapping (Open3D tensor pipeline, the only backend).
+    Raises PipelineAbort when Open3D UVAtlas is not installed.
     Guarantees gutter >= 4.0 margin between UV charts.
     """
-    avail, backend = is_uvatlas_available()
-    if not avail:
-        raise RuntimeError(
-            "Microsoft UVAtlas is not available. Please install Open3D in your Python environment "
-            "(pip install open3d) or place the uvatlas / uvatlastool binary in PATH."
-        )
+    if not is_open3d_uvatlas_available():
+        raise PipelineAbort(UVATLAS_UNAVAILABLE)
 
-    eff_gutter = max(4.0, float(gutter))
-
-    if backend == "open3d":
-        return unwrap_mesh_uvatlas_open3d(
-            mesh=mesh,
-            target_res=target_res,
-            gutter=eff_gutter,
-            max_stretch=max_stretch,
-            parallel_partitions=parallel_partitions
-        )
-    elif backend.startswith("cli:"):
-        cli_path = backend.split(":", 1)[1]
-        return unwrap_mesh_uvatlas_cli(
-            mesh=mesh,
-            cli_path=cli_path,
-            target_res=target_res,
-            gutter=eff_gutter,
-            max_stretch=max_stretch
-        )
-    else:
-        raise RuntimeError(f"Unknown UVAtlas backend: {backend}")
+    return unwrap_mesh_uvatlas_open3d(
+        mesh=mesh,
+        target_res=target_res,
+        gutter=max(4.0, float(gutter)),
+        max_stretch=max_stretch,
+        parallel_partitions=parallel_partitions
+    )

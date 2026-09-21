@@ -11,6 +11,8 @@ import numpy as np
 from PIL import Image
 from scipy.cluster.vq import kmeans2
 
+from optimizer.core.errors import PipelineAbort
+
 
 def extract_palette(
     image: Optional[Image.Image] = None,
@@ -20,21 +22,22 @@ def extract_palette(
 ) -> Dict[str, Any]:
     """
     Extracts dominant color palette using K-Means clustering.
-    Uses sample_pixels directly when available to avoid empty atlas backgrounds.
+    Uses sample_pixels directly when given (to avoid empty atlas backgrounds), else the image.
+    Raises PipelineAbort for wrongly shaped sample_pixels, no usable pixels or a K-Means failure.
     """
     n_colors = max(4, min(16, int(n_colors)))
     pixels = None
 
     if sample_pixels is not None:
         p = np.asarray(sample_pixels)
-        if p.ndim == 2 and p.shape[1] in (3, 4):
-            if p.shape[1] == 4:
-                mask = p[:, 3] >= min_alpha
-                pixels = p[mask, :3].astype(np.float32)
-            else:
-                pixels = p[:, :3].astype(np.float32)
-
-    if pixels is None and image is not None:
+        if p.ndim != 2 or p.shape[1] not in (3, 4):
+            raise PipelineAbort(f"Palette sample pixels must be an (N, 3) or (N, 4) array, got shape {p.shape}")
+        if p.shape[1] == 4:
+            mask = p[:, 3] >= min_alpha
+            pixels = p[mask, :3].astype(np.float32)
+        else:
+            pixels = p[:, :3].astype(np.float32)
+    elif image is not None:
         pil_img = image.copy()
         if pil_img.width > 256 or pil_img.height > 256:
             pil_img.thumbnail((256, 256), Image.Resampling.LANCZOS)
@@ -42,11 +45,10 @@ def extract_palette(
         pixels = arr.reshape(-1, 3).astype(np.float32)
 
     if pixels is None or len(pixels) == 0:
-        return {
-            "palette": ["#808080"],
-            "primaryColor": "#808080",
-            "paletteDetails": [{"hex": "#808080", "rgb": [128, 128, 128], "weight": 1.0}]
-        }
+        raise PipelineAbort(
+            "No usable pixels for the colour palette (no image or sample pixels given, "
+            f"or every sample pixel has alpha < {min_alpha})"
+        )
 
     # Filter out near-pure-black margins
     non_black = ~np.all(pixels <= 5, axis=1)
@@ -61,55 +63,56 @@ def extract_palette(
     else:
         kmeans_pixels = pixels
 
-    # K-Means clustering
+    # K-Means clustering; a small model (one sample pixel per vertex) can have fewer pixels than
+    # colours, and "points" init draws k distinct pixels: k is at most the pixel count
+    k = min(n_colors, len(kmeans_pixels))
     try:
-        centroids, labels = kmeans2(kmeans_pixels, n_colors, minit="points", iter=15)
-        counts = np.bincount(labels, minlength=len(centroids))
-        order = np.argsort(counts)[::-1]
+        centroids, labels = kmeans2(kmeans_pixels, k, minit="points", iter=15)
+    except Exception as err:
+        raise PipelineAbort(f"K-Means colour palette clustering failed on {len(kmeans_pixels)} pixels: {err}") from err
+    counts = np.bincount(labels, minlength=len(centroids))
+    order = np.argsort(counts)[::-1]
 
-        palette = []
-        details = []
-        total_p = len(kmeans_pixels)
+    palette = []
+    details = []
+    total_p = len(kmeans_pixels)
 
-        for idx in order:
-            c = np.clip(np.round(centroids[idx]), 0, 255).astype(int)
-            hex_val = f"#{c[0]:02x}{c[1]:02x}{c[2]:02x}"
-            if hex_val not in palette:
-                palette.append(hex_val)
-                details.append({
-                    "hex": hex_val,
-                    "rgb": [int(c[0]), int(c[1]), int(c[2])],
-                    "weight": round(float(counts[idx]) / max(total_p, 1), 4)
-                })
+    for idx in order:
+        c = np.clip(np.round(centroids[idx]), 0, 255).astype(int)
+        hex_val = f"#{c[0]:02x}{c[1]:02x}{c[2]:02x}"
+        if hex_val not in palette:
+            palette.append(hex_val)
+            details.append({
+                "hex": hex_val,
+                "rgb": [int(c[0]), int(c[1]), int(c[2])],
+                "weight": round(float(counts[idx]) / max(total_p, 1), 4)
+            })
 
-        return {
-            "palette": palette,
-            "primaryColor": palette[0] if palette else "#808080",
-            "paletteDetails": details
-        }
-    except Exception:
-        # Fallback
-        return {
-            "palette": ["#808080"],
-            "primaryColor": "#808080",
-            "paletteDetails": [{"hex": "#808080", "rgb": [128, 128, 128], "weight": 1.0}]
-        }
+    return {
+        "palette": palette,
+        "primaryColor": palette[0],
+        "paletteDetails": details
+    }
 
 
 def embed_gltf_extras(glb_bytes: bytes, extras: Dict[str, Any]) -> bytes:
-    """Embeds dictionary payload into glTF root extras in a binary GLB file."""
+    """Embeds dictionary payload into glTF root extras in a binary GLB file.
+    Raises PipelineAbort if the bytes are not a GLB whose first chunk is JSON."""
     if len(glb_bytes) < 20:
-        return glb_bytes
+        raise PipelineAbort(f"Cannot embed glTF extras: {len(glb_bytes)} bytes is too short for a GLB")
 
     magic, version, _ = struct.unpack("<III", glb_bytes[:12])
     if magic != 0x46546C67:
-        return glb_bytes
+        raise PipelineAbort("Cannot embed glTF extras: the data is not a GLB (bad magic)")
 
     json_len, json_type = struct.unpack("<II", glb_bytes[12:20])
     if json_type != 0x4E4F534A:
-        return glb_bytes
+        raise PipelineAbort("Cannot embed glTF extras: the GLB's first chunk is not JSON")
 
-    gltf = json.loads(glb_bytes[20:20 + json_len].decode("utf-8"))
+    try:
+        gltf = json.loads(glb_bytes[20:20 + json_len].decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as err:
+        raise PipelineAbort(f"Cannot embed glTF extras: the GLB's JSON chunk is invalid ({err})") from err
     
     if "extras" not in gltf:
         gltf["extras"] = {}

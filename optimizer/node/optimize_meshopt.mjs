@@ -26,78 +26,89 @@ import { computeStandardSmoothNormals } from './smooth_normals.mjs';
 
 const execFileAsync = promisify(execFile);
 
-let _cachedSharp = undefined;
-async function getSharpModule() {
-  if (_cachedSharp !== undefined) return _cachedSharp;
+export const KTX2_MODES = ['uastc', 'etc1s'];
+
+/** sharp decodes, measures, converts and resizes every texture; there is no other image backend. */
+async function requireSharp() {
   try {
     const mod = await import('sharp');
-    _cachedSharp = mod.default || mod;
-  } catch {
-    _cachedSharp = null;
+    return mod.default || mod;
+  } catch (err) {
+    throw new Error(`sharp is required for texture compression but could not be loaded: ${err.message}`);
   }
-  return _cachedSharp;
 }
 
-function getImageDimensions(buffer) {
-  if (!buffer || buffer.length < 24) return null;
-  // PNG: IHDR chunk width/height at byte 16 and 20
-  if (buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47) {
-    return { width: buffer.readUInt32BE(16), height: buffer.readUInt32BE(20) };
+/** Encoded bytes of texture i; an image without data is an error, never skipped. */
+function textureBytes(tex, i) {
+  const image = tex.getImage();
+  if (!image || image.byteLength === 0) {
+    throw new Error(`texture ${i} (${tex.getName() || 'unnamed'}) has an empty image`);
   }
-  // JPEG: scan for SOF marker
-  if (buffer[0] === 0xff && buffer[1] === 0xd8) {
-    let offset = 2;
-    while (offset < buffer.length - 8) {
-      if (buffer[offset] !== 0xff) { offset++; continue; }
-      const marker = buffer[offset + 1];
-      if (marker === 0xd9 || marker === 0xda) break;
-      const len = buffer.readUInt16BE(offset + 2);
-      if ((marker >= 0xc0 && marker <= 0xc3) || (marker >= 0xc5 && marker <= 0xc7) || (marker >= 0xc9 && marker <= 0xcb) || (marker >= 0xcd && marker <= 0xcf)) {
-        return { height: buffer.readUInt16BE(offset + 5), width: buffer.readUInt16BE(offset + 7) };
-      }
-      offset += 2 + len;
-    }
+  return Buffer.from(image);
+}
+
+/** Real format and pixel size of an encoded PNG / JPEG / WebP texture. */
+async function readImageInfo(sharp, buffer, i) {
+  let meta;
+  try {
+    meta = await sharp(buffer).metadata();
+  } catch (err) {
+    throw new Error(`texture ${i}: cannot decode the image (${err.message})`);
   }
-  return null;
+  if (!['png', 'jpeg', 'webp'].includes(meta.format)) {
+    throw new Error(`texture ${i}: unsupported image format '${meta.format}' (expected PNG, JPEG or WebP)`);
+  }
+  if (!(meta.width > 0 && meta.height > 0)) {
+    throw new Error(`texture ${i}: cannot read the image size`);
+  }
+  return { format: meta.format, width: meta.width, height: meta.height };
+}
+
+function checkMaxDim(maxDim) {
+  if (maxDim !== null && !(Number.isInteger(maxDim) && maxDim > 0)) {
+    throw new Error(`maxDim must be a positive integer or null, got ${maxDim}`);
+  }
+  return maxDim;
+}
+
+/** Size with the longer side reduced to maxDim, aspect ratio kept; null when the image already fits (never upscales). */
+function fitWithin(width, height, maxDim) {
+  const longer = Math.max(width, height);
+  if (maxDim === null || longer <= maxDim) return null;
+  const scale = maxDim / longer;
+  return { width: Math.max(1, Math.round(width * scale)), height: Math.max(1, Math.round(height * scale)) };
+}
+
+/** First non-empty stderr line of a failed child process (the full error stays on the stack). */
+function firstErrorLine(err) {
+  const lines = `${err.stderr || ''}\n${err.message || ''}`.split('\n').map(l => l.trim()).filter(Boolean);
+  return lines.find(l => /error/i.test(l)) || lines[0] || String(err);
 }
 
 export async function compressTexturesKtx2(doc, options = {}) {
-  const mode = options.mode || 'uastc';
+  const mode = options.mode ?? 'uastc';
+  if (!KTX2_MODES.includes(mode)) {
+    throw new Error(`Unsupported KTX2 mode '${mode}' (expected ${KTX2_MODES.join(' or ')})`);
+  }
   const uastcLevel = options.uastcLevel ?? 2;
   const uastcRdo = options.uastcRdo ?? 1.0;
   const uastcRdoD = options.uastcRdoD ?? 2048;
   const etc1sQuality = options.etc1sQuality ?? 128;
   const compLevel = options.compLevel ?? 1;
-  const maxDim = options.maxDim ?? null;
+  const maxDim = checkMaxDim(options.maxDim ?? null);
   const generateMipmaps = options.mipmaps !== false;
   const totalCores = options.threads ?? (os.cpus()?.length || 4);
 
   const textures = doc.getRoot().listTextures();
-  if (textures.length === 0) {
-    return { count: 0, beforeBytes: 0, afterBytes: 0 };
-  }
-
-  // Verify basisu availability
-  try {
-    await execFileAsync('basisu', ['-version']);
-  } catch {
-    console.warn('   ⚠️ Warning: `basisu` CLI not found in system PATH. Skipping KTX2 compression.');
-    return { count: 0, beforeBytes: 0, afterBytes: 0, skipped: true };
-  }
-
-  const sharpMod = await getSharpModule();
-  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'poc-ktx2-'));
-
   const pendingTextures = [];
   let totalBefore = 0;
 
   for (let i = 0; i < textures.length; i++) {
     const tex = textures[i];
-    const mime = tex.getMimeType();
-    if (mime === 'image/ktx2') continue;
+    // Already KTX2: skipped, so re-running the compression is a no-op
+    if (tex.getMimeType() === 'image/ktx2') continue;
 
-    const imgBuffer = Buffer.from(tex.getImage());
-    if (!imgBuffer || imgBuffer.byteLength === 0) continue;
+    const imgBuffer = textureBytes(tex, i);
 
     // glTF: only colour slots (baseColor, emissive, ...) are sRGB; normal/metallicRoughness/occlusion are linear data.
     // Textures with no material slot keep the previous (sRGB) behaviour.
@@ -113,12 +124,23 @@ export async function compressTexturesKtx2(doc, options = {}) {
     }
 
     totalBefore += imgBuffer.byteLength;
-    pendingTextures.push({ tex, i, imgBuffer, mime, colorSpace });
+    pendingTextures.push({ tex, i, imgBuffer, colorSpace });
   }
 
   if (pendingTextures.length === 0) {
-    await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     return { count: 0, beforeBytes: 0, afterBytes: 0 };
+  }
+
+  try {
+    await execFileAsync('basisu', ['-version']);
+  } catch (err) {
+    const why = err.code === 'ENOENT' ? 'not found on PATH' : firstErrorLine(err);
+    throw new Error(`basisu CLI is required for KTX2 compression but cannot be run (${why})`);
+  }
+
+  const sharp = await requireSharp();
+  for (const item of pendingTextures) {
+    item.info = await readImageInfo(sharp, item.imgBuffer, item.i);
   }
 
   // Determine concurrency and thread allocation per texture
@@ -127,31 +149,17 @@ export async function compressTexturesKtx2(doc, options = {}) {
 
   let totalAfter = 0;
   let processedCount = 0;
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'poc-ktx2-'));
 
   try {
-    async function processTextureItem({ tex, i, imgBuffer, mime, colorSpace }) {
-      const isJpeg = mime === 'image/jpeg' || mime === 'image/jpg';
-      const isWebp = mime === 'image/webp' || (imgBuffer.length >= 12 && imgBuffer.subarray(0, 4).toString() === 'RIFF' && imgBuffer.subarray(8, 12).toString() === 'WEBP');
-
+    async function processTextureItem({ tex, i, imgBuffer, colorSpace, info }) {
       let inPath;
-      if (isWebp) {
-        const pngPath = path.join(tmpDir, `tex_${i}.png`);
-        if (sharpMod) {
-          const pngBuf = await sharpMod(imgBuffer).png().toBuffer();
-          await fs.writeFile(pngPath, pngBuf);
-        } else {
-          const webpPath = path.join(tmpDir, `tex_${i}.webp`);
-          await fs.writeFile(webpPath, imgBuffer);
-          try {
-            await execFileAsync('sips', ['-s', 'format', 'png', webpPath, '--out', pngPath]);
-          } catch {
-            await execFileAsync('python3', ['-c', `from PIL import Image; Image.open('${webpPath}').save('${pngPath}')`]);
-          }
-        }
-        inPath = pngPath;
+      if (info.format === 'webp') {
+        // basisu reads PNG / JPEG only
+        inPath = path.join(tmpDir, `tex_${i}.png`);
+        await fs.writeFile(inPath, await sharp(imgBuffer).png().toBuffer());
       } else {
-        const ext = isJpeg ? '.jpg' : '.png';
-        inPath = path.join(tmpDir, `tex_${i}${ext}`);
+        inPath = path.join(tmpDir, `tex_${i}${info.format === 'jpeg' ? '.jpg' : '.png'}`);
         await fs.writeFile(inPath, imgBuffer);
       }
 
@@ -185,17 +193,20 @@ export async function compressTexturesKtx2(doc, options = {}) {
         basisuArgs.push('-mipmap', '-mip_fast');
       }
 
-      // Check if image actually exceeds maxDim before adding -resample
-      const dims = getImageDimensions(imgBuffer);
-      const needsResample = maxDim && maxDim > 0 && (!dims || dims.width > maxDim || dims.height > maxDim);
-      if (needsResample) {
-        basisuArgs.push('-resample', String(maxDim), String(maxDim));
+      // Only a texture larger than maxDim is resampled: longer side to maxDim, aspect ratio kept
+      const resized = fitWithin(info.width, info.height, maxDim);
+      if (resized) {
+        basisuArgs.push('-resample', String(resized.width), String(resized.height));
       }
 
       basisuArgs.push('-output_path', tmpDir);
       basisuArgs.push(inPath);
 
-      await execFileAsync('basisu', basisuArgs);
+      try {
+        await execFileAsync('basisu', basisuArgs);
+      } catch (err) {
+        throw new Error(`texture ${i}: basisu KTX2 encoding failed: ${firstErrorLine(err)}`, { cause: err });
+      }
 
       const ktx2Data = await fs.readFile(outPath);
       tex.setImage(new Uint8Array(ktx2Data));
@@ -234,68 +245,44 @@ export async function compressTexturesKtx2(doc, options = {}) {
 
 export async function compressTexturesWebp(doc, options = {}) {
   const quality = options.quality ?? 85;
-  const maxDim = options.maxDim ?? null;
+  const maxDim = checkMaxDim(options.maxDim ?? null);
 
   const textures = doc.getRoot().listTextures();
   if (textures.length === 0) {
     return { count: 0, beforeBytes: 0, afterBytes: 0 };
   }
 
-  const sharpMod = await getSharpModule();
-  const tmpDir = sharpMod ? null : await fs.mkdtemp(path.join(os.tmpdir(), 'poc-webp-'));
+  const sharp = await requireSharp();
   let totalBefore = 0;
   let totalAfter = 0;
   let processedCount = 0;
 
-  try {
-    for (let i = 0; i < textures.length; i++) {
-      const tex = textures[i];
-      const mime = tex.getMimeType();
-      const imgBuffer = Buffer.from(tex.getImage());
-      if (!imgBuffer || imgBuffer.byteLength === 0) continue;
+  for (let i = 0; i < textures.length; i++) {
+    const tex = textures[i];
+    const imgBuffer = textureBytes(tex, i);
+    totalBefore += imgBuffer.byteLength;
 
-      totalBefore += imgBuffer.byteLength;
-      let webpData;
-
-      if (sharpMod) {
-        let pipeline = sharpMod(imgBuffer);
-        if (maxDim && maxDim > 0) {
-          pipeline = pipeline.resize(maxDim, maxDim, { fit: 'inside', withoutEnlargement: true });
-        }
-        webpData = await pipeline.webp({ quality }).toBuffer();
-      } else {
-        const isWebp = mime === 'image/webp' || (imgBuffer.length >= 12 && imgBuffer.subarray(0, 4).toString() === 'RIFF' && imgBuffer.subarray(8, 12).toString() === 'WEBP');
-        const isJpeg = mime === 'image/jpeg' || mime === 'image/jpg';
-        const ext = isJpeg ? '.jpg' : (isWebp ? '.webp' : '.png');
-        const inPath = path.join(tmpDir, `tex_${i}${ext}`);
-        const outPath = path.join(tmpDir, `tex_${i}_out.webp`);
-        await fs.writeFile(inPath, imgBuffer);
-
-        const pyScript = `
-from PIL import Image
-im = Image.open('${inPath}')
-if ${maxDim ? maxDim : 0} > 0 and (im.width > ${maxDim || 0} or im.height > ${maxDim || 0}):
-    im.thumbnail((${maxDim || 0}, ${maxDim || 0}), Image.Resampling.LANCZOS)
-im.save('${outPath}', 'WEBP', quality=${quality})
-`;
-        await execFileAsync('python3', ['-c', pyScript]);
-        webpData = await fs.readFile(outPath);
-      }
-
-      totalAfter += webpData.byteLength;
-      processedCount++;
-
-      tex.setImage(new Uint8Array(webpData));
-      tex.setMimeType('image/webp');
+    let pipeline = sharp(imgBuffer);
+    if (maxDim !== null) {
+      // Longer side to maxDim, aspect ratio kept, never upscaled
+      pipeline = pipeline.resize(maxDim, maxDim, { fit: 'inside', withoutEnlargement: true });
+    }
+    let webpData;
+    try {
+      webpData = await pipeline.webp({ quality }).toBuffer();
+    } catch (err) {
+      throw new Error(`texture ${i}: WebP encoding failed (${err.message})`, { cause: err });
     }
 
-    if (processedCount > 0) {
-      doc.createExtension(EXTTextureWebP).setRequired(true);
-    }
-  } finally {
-    if (tmpDir) {
-      await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
-    }
+    totalAfter += webpData.byteLength;
+    processedCount++;
+
+    tex.setImage(new Uint8Array(webpData));
+    tex.setMimeType('image/webp');
+  }
+
+  if (processedCount > 0) {
+    doc.createExtension(EXTTextureWebP).setRequired(true);
   }
 
   return {
@@ -321,29 +308,54 @@ function getStats(doc) {
   return { triangles: Math.round(triangles), vertices: Math.round(vertices) };
 }
 
+/** Integer CLI value in [min, max]; anything else throws. */
+function intArg(flag, raw, min, max) {
+  if (!/^[+-]?\d+$/.test(raw)) throw new Error(`${flag} expects an integer, got '${raw}'`);
+  return inRange(flag, Number(raw), min, max);
+}
+
+/** Finite numeric CLI value in [min, max]; anything else throws. */
+function numberArg(flag, raw, min, max) {
+  const n = raw.trim() === '' ? NaN : Number(raw);
+  if (!Number.isFinite(n)) throw new Error(`${flag} expects a number, got '${raw}'`);
+  return inRange(flag, n, min, max);
+}
+
+function inRange(flag, n, min, max) {
+  if (n < min || n > max) {
+    throw new Error(`${flag} must be ${max === Infinity ? `>= ${min}` : `between ${min} and ${max}`}, got ${n}`);
+  }
+  return n;
+}
+
 async function runCli() {
   const args = process.argv.slice(2);
   if (args.length === 0 || args.includes('--help') || args.includes('-h')) {
     console.log(`Usage: node optimize_meshopt.mjs <input.glb> <output.glb> [options]
 Options:
+  --textures-only          Only compress textures (no normals / weld / quantize / reorder)
   --smooth-normals         Compute angle-weighted smooth normals across seams (default: ON)
   --no-smooth-normals      Disable smooth normals
   --keep-uv-float32        Keep UV as Float32 (default: OFF, UV quantized to 16-bit; UVs outside [0,1] stay Float32)
-  --pos-bits <bits>        Quantize position bits (default: 14)
-  --weld <tol>             Weld tolerance (default: 0.0001)
+  --pos-bits <1-16>        Quantize position bits (default: 14)
+  --weld <tol>             Weld tolerance >= 0 (default: 0.0001)
   --reorder                Reorder for GPU cache (default: ON)
   --meshopt                Enable EXT_meshopt_compression (default: ON)
+  --no-meshopt             Disable EXT_meshopt_compression
   --ktx2                   Enable KTX2 UASTC texture compression (default: ON)
   --no-ktx2                Disable KTX2
   --ktx2-mode <mode>       uastc (default) or etc1s
-  --ktx2-level <level>     UASTC level 0-4 (default: 2)
-  --ktx2-rdo <float>       UASTC RDO lambda (default: 1.0)
-  --texture-max-dim <px>   Texture max dimension (e.g. 1024, 2048)
+  --ktx2-level <0-4>       UASTC level (default: 2)
+  --ktx2-rdo <float>       UASTC RDO lambda >= 0, 0 disables RDO (default: 1.0)
+  --ktx2-rdo-d <bytes>     UASTC RDO dictionary size 1-65536 (default: 2048)
+  --ktx2-threads <n>       basisu threads in total (default: CPU count)
+  --texture-max-dim <px>   Downscale textures whose longer side exceeds px (aspect kept, never upscales)
   --webp                   Use WebP instead of KTX2
   --webp-quality <1-100>   WebP quality (default: 85)
   --single-sided           Force single-sided material
   --keep-double-sided      Keep double-sided material
   --json                   Output machine-readable JSON
+  --ratio, --target-faces  Accepted and ignored: zero-decimation, every triangle is kept
 `);
     process.exit(0);
   }
@@ -370,35 +382,49 @@ Options:
   let enableJson = false;
   let texturesOnly = false;
 
+  // Every argument is either a known option (with its value) or one of the two paths; anything else throws.
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
+    const value = () => {
+      const v = args[i + 1];
+      if (v === undefined || v.startsWith('--')) throw new Error(`${a} requires a value`);
+      i++;
+      return v;
+    };
     if (a === '--textures-only') texturesOnly = true;
     else if (a === '--smooth-normals') enableSmoothNormals = true;
     else if (a === '--no-smooth-normals') enableSmoothNormals = false;
     else if (a === '--keep-uv-float32') keepUvFloat32 = true;
-    else if (a === '--pos-bits' && args[i + 1]) posBits = parseInt(args[++i], 10);
-    else if (a === '--weld' && args[i + 1]) weldTol = parseFloat(args[++i]);
+    else if (a === '--pos-bits') posBits = intArg(a, value(), 1, 16);
+    else if (a === '--weld') weldTol = numberArg(a, value(), 0, Infinity);
     else if (a === '--reorder') enableReorder = true;
     else if (a === '--meshopt') enableMeshopt = true;
     else if (a === '--no-meshopt') enableMeshopt = false;
     else if (a === '--ktx2') { enableKtx2 = true; enableWebp = false; }
     else if (a === '--no-ktx2') enableKtx2 = false;
-    else if (a === '--ktx2-mode' && args[i + 1]) ktx2Mode = args[++i];
-    else if (a === '--ktx2-level' && args[i + 1]) ktx2Level = parseInt(args[++i], 10);
-    else if (a === '--ktx2-rdo' && args[i + 1]) ktx2Rdo = parseFloat(args[++i]);
-    else if (a === '--ktx2-rdo-d' && args[i + 1]) ktx2RdoD = parseInt(args[++i], 10);
-    else if (a === '--ktx2-threads' && args[i + 1]) ktx2Threads = parseInt(args[++i], 10);
-    else if ((a === '--texture-max-dim' || a === '--ktx2-max-dim') && args[i + 1]) textureMaxDim = parseInt(args[++i], 10);
+    else if (a === '--ktx2-mode') {
+      ktx2Mode = value();
+      if (!KTX2_MODES.includes(ktx2Mode)) throw new Error(`${a} must be ${KTX2_MODES.join(' or ')}, got '${ktx2Mode}'`);
+    }
+    else if (a === '--ktx2-level') ktx2Level = intArg(a, value(), 0, 4);
+    else if (a === '--ktx2-rdo') ktx2Rdo = numberArg(a, value(), 0, Infinity);
+    else if (a === '--ktx2-rdo-d') ktx2RdoD = intArg(a, value(), 1, 65536);
+    else if (a === '--ktx2-threads') ktx2Threads = intArg(a, value(), 1, Infinity);
+    else if (a === '--texture-max-dim' || a === '--ktx2-max-dim') textureMaxDim = intArg(a, value(), 1, Infinity);
     else if (a === '--webp') { enableWebp = true; enableKtx2 = false; }
-    else if (a === '--webp-quality' && args[i + 1]) webpQuality = parseInt(args[++i], 10);
+    else if (a === '--webp-quality') webpQuality = intArg(a, value(), 1, 100);
     else if (a === '--single-sided') forceSingleSided = true;
     else if (a === '--keep-double-sided' || a === '--double-sided') keepDoubleSided = true;
     else if (a === '--json') enableJson = true;
-    else if (a.startsWith('--ratio') || a.startsWith('--target-faces')) {
+    else if (a === '--ratio' || a === '--target-faces' || a.startsWith('--ratio=') || a.startsWith('--target-faces=')) {
+      if (!a.includes('=')) value();
       // RULE 11 GUARD: Ignore decimation requests
       if (!enableJson) console.warn('   ⚠️ [RULE 11 GUARD] Mesh decimation request bypassed. 100% triangles preserved.');
-    } else if (!inputFile) inputFile = a;
+    }
+    else if (a.startsWith('-')) throw new Error(`Unknown option '${a}' (see --help)`);
+    else if (!inputFile) inputFile = a;
     else if (!outputFile) outputFile = a;
+    else throw new Error(`Unexpected argument '${a}': only <input.glb> <output.glb> are positional`);
   }
 
   // When --keep-double-sided is active, forceSingleSided must NEVER override it
@@ -407,8 +433,7 @@ Options:
   }
 
   if (!inputFile || !outputFile) {
-    console.error('Error: Both input.glb and output.glb paths are required.');
-    process.exit(1);
+    throw new Error('Both input.glb and output.glb paths are required.');
   }
 
   const startTime = Date.now();
@@ -547,7 +572,9 @@ const isDirectRun = process.argv[1] && (
 
 if (isDirectRun) {
   runCli().catch(err => {
-    console.error('Fatal optimization error:', err);
+    // First stderr line: the one-line reason (step_pipeline reports it); then the full error
+    console.error(`Fatal optimization error: ${String(err?.message ?? err).split('\n')[0]}`);
+    console.error(err);
     process.exit(1);
   });
 }

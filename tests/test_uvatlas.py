@@ -2,7 +2,7 @@
 test_uvatlas.py
 
 Unit tests for Microsoft UVAtlas integration:
-- Availability checks (Open3D and CLI fallback)
+- Availability check (Open3D is the only backend)
 - Zero-decimation 2-manifold repair
 - Iso-chart UV unwrapping
 - High-density texture baking with UVAtlas
@@ -47,7 +47,7 @@ class TestUVAtlas(unittest.TestCase):
     def test_uvatlas_availability(self):
         avail, backend = is_uvatlas_available()
         self.assertTrue(avail, "Microsoft UVAtlas must be available in environment")
-        self.assertIn(backend, ["open3d", "cli"], f"Backend should be open3d or cli, got {backend}")
+        self.assertEqual(backend, "open3d", f"Open3D is the only UVAtlas backend, got {backend}")
 
     def test_ensure_manifold_zero_decimation_on_box(self):
         verts, faces, vmap = ensure_manifold_zero_decimation(self.mesh.vertices, self.mesh.faces)
