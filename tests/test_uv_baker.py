@@ -23,6 +23,7 @@ from optimizer.core.uv_baker import (
     rechart_and_bake_high_density,
     compute_uv_metrics,
     can_downscale_texture as uv_baker_can_downscale,
+    determine_safe_downscale_resolution,
     maximize_uv_bounds,
     get_adaptive_chart_options
 )
@@ -59,15 +60,26 @@ class TestUvBaker(unittest.TestCase):
             self.mesh,
             source_image=img,
             target_res=256,
-            dilation_padding=8
+            dilation_padding=8,
+            double_sided=False
         )
 
         out_mat = out_mesh.visual.material
-        self.assertTrue(out_mat.doubleSided, "doubleSided must be True")
+        self.assertFalse(out_mat.doubleSided, "doubleSided must be False for FrontSide")
         self.assertAlmostEqual(out_mat.metallicFactor, 0.35, places=2)
         self.assertAlmostEqual(out_mat.roughnessFactor, 0.65, places=2)
         self.assertEqual(out_mat.alphaMode, "BLEND")
         self.assertEqual(clean_pil.size, (256, 256))
+
+        # Also verify double_sided=True when explicitly requested
+        out_mesh_ds, _ = direct_resample_texture(
+            self.mesh,
+            source_image=img,
+            target_res=256,
+            dilation_padding=8,
+            double_sided=True
+        )
+        self.assertTrue(out_mesh_ds.visual.material.doubleSided, "doubleSided must be True when requested")
 
     def test_direct_resample_preserves_alpha_channel(self):
         mat = trimesh.visual.material.PBRMaterial(alphaMode="BLEND")
@@ -453,6 +465,58 @@ class TestUvBaker(unittest.TestCase):
         self.assertIn("uvCoverageRatio", stats)
         self.assertIn("texelDensityDelta", stats)
         self.assertGreater(stats["uvCoverageRatio"], 0.0)
+
+    def test_determine_safe_downscale_resolution(self):
+        """Verify smallest safe resolution logic: 4K -> 1024 or 2048, 1.5K/2K -> 1024."""
+        # 1. Box mesh has area ~6.0. Effective UV coverage ~0.5.
+        # At 1024px: TD = 1024 * sqrt(0.5) / sqrt(6.0) ~= 295.6 px/unit >= 120 -> picks 1024
+        res_4k, details_4k = determine_safe_downscale_resolution(
+            self.mesh,
+            orig_size=(4096, 4096),
+            uv=self.uv,
+            min_texel_density=120.0,
+            requested_res="auto"
+        )
+        self.assertEqual(res_4k, 1024, "Small mesh with 4K texture should safely downscale to 1024")
+        self.assertTrue(details_4k["downscaled"])
+        self.assertEqual(details_4k["originalResolution"], "4096x4096")
+        self.assertEqual(details_4k["finalResolution"], "1024x1024")
+
+        # 2. 1536 (1.5K like Dinoki) -> 1024 (1K)
+        res_1536, details_1536 = determine_safe_downscale_resolution(
+            self.mesh,
+            orig_size=(1536, 1536),
+            uv=self.uv,
+            min_texel_density=120.0,
+            requested_res="auto"
+        )
+        self.assertEqual(res_1536, 1024, "1536 (1.5K) texture should automatically downscale to 1024")
+        self.assertTrue(details_1536["downscaled"])
+
+        # 3. 2048 (2K) -> 1024 (1K)
+        res_2k, details_2k = determine_safe_downscale_resolution(
+            self.mesh,
+            orig_size=(2048, 2048),
+            uv=self.uv,
+            min_texel_density=120.0,
+            requested_res="auto"
+        )
+        self.assertEqual(res_2k, 1024, "2048 (2K) texture should automatically downscale to 1024")
+        self.assertTrue(details_2k["downscaled"])
+
+        # 4. Large mesh where TD at 1024 < 120 px/unit -> picks 2048
+        # Create a large scaled mesh with area > 100
+        large_mesh = self.mesh.copy()
+        large_mesh.apply_scale(5.0)  # Area becomes ~6 * 25 = 150
+        res_large, details_large = determine_safe_downscale_resolution(
+            large_mesh,
+            orig_size=(4096, 4096),
+            uv=self.uv,
+            min_texel_density=120.0,
+            requested_res="auto"
+        )
+        self.assertEqual(res_large, 2048, "Large mesh (like Gravilux) should downscale to 2048 for visual safety")
+        self.assertTrue(details_large["downscaled"])
 
 
 if __name__ == "__main__":

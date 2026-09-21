@@ -3,16 +3,17 @@
  *
  * Computes Angle-Weighted Smooth Vertex Normals (Thürmer & Wüthrich / Bærentzen & Aanaes).
  * Smooths normals across adjacent faces with weight proportional to the face vertex incident angle.
- * Uses spatial vertex position hashing so that vertices split by UV seams share continuous,
- * seamless smooth normals without seam creases, dimples, or inverted normals.
+ * Uses exact-position remapping (meshoptimizer's generatePositionRemap) so that vertices split by
+ * UV seams share continuous, seamless smooth normals without seam creases, dimples, or inverted normals.
  */
 
 import { Primitive } from '@gltf-transform/core';
+import { MeshoptSimplifier } from 'meshoptimizer';
+
+await MeshoptSimplifier.ready;
 
 export function computeStandardSmoothNormals(doc, options = {}) {
   const smoothAcrossUvSeams = options.smoothAcrossUvSeams !== false;
-  const spatialTol = options.spatialTolerance || 1e-5;
-  const invTol = 1.0 / spatialTol;
 
   for (const mesh of doc.getRoot().listMeshes()) {
     for (const prim of mesh.listPrimitives()) {
@@ -30,26 +31,16 @@ export function computeStandardSmoothNormals(doc, options = {}) {
       const triCount = indArr ? Math.floor(indArr.length / 3) : Math.floor(vCount / 3);
       if (triCount === 0) continue;
 
-      // Map each vertex to a spatial bucket if smoothing across UV seams
-      const vertToSpatial = new Int32Array(vCount);
-      let spatialCount = 0;
+      // Map each vertex to a spatial group if smoothing across UV seams: remap[i] is the index of
+      // the first vertex with a bit-identical position, so groups are keyed by vertex index (buffers
+      // sized vCount; slots of non-representative vertices stay unused and are never read back).
+      let vertToSpatial;
+      const spatialCount = vCount;
       if (smoothAcrossUvSeams) {
-        const spatialMap = new Map();
-        const MASK26 = 0x3FFFFFFn;
-        for (let i = 0; i < vCount; i++) {
-          const kx = BigInt(Math.round(posArr[i * 3] * invTol));
-          const ky = BigInt(Math.round(posArr[i * 3 + 1] * invTol));
-          const kz = BigInt(Math.round(posArr[i * 3 + 2] * invTol));
-          const key = (kx << 52n) | ((ky & MASK26) << 26n) | (kz & MASK26);
-          let sId = spatialMap.get(key);
-          if (sId === undefined) {
-            sId = spatialCount++;
-            spatialMap.set(key, sId);
-          }
-          vertToSpatial[i] = sId;
-        }
+        const posF32 = posArr instanceof Float32Array ? posArr : Float32Array.from(posArr);
+        vertToSpatial = MeshoptSimplifier.generatePositionRemap(posF32, 3);
       } else {
-        spatialCount = vCount;
+        vertToSpatial = new Int32Array(vCount);
         for (let i = 0; i < vCount; i++) vertToSpatial[i] = i;
       }
 

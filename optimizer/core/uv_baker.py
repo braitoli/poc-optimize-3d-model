@@ -6,12 +6,14 @@ Maximizes texture canvas utilization, Texel Density, and surface sharpness.
 Ensures zero black edge bleeding during GPU texture mipmapping.
 """
 
-from typing import Tuple, Optional, Dict, Any
+import math
+from typing import Tuple, Optional, Dict, Any, Union
 import numpy as np
 from PIL import Image
 from scipy import ndimage
 import trimesh
 import xatlas
+from optimizer.core.uvatlas import unwrap_mesh_uvatlas, is_uvatlas_available
 from optimizer.core.texture_utils import (
     clamp_target_resolution,
     optimize_mesh_texture_for_export,
@@ -406,6 +408,90 @@ def can_downscale_texture(
     return can_downscale, target_res, details
 
 
+def determine_safe_downscale_resolution(
+    mesh: trimesh.Trimesh,
+    orig_size: Tuple[int, int],
+    uv: Optional[np.ndarray] = None,
+    min_texel_density: float = 120.0,
+    requested_res: Union[int, str] = "auto",
+    sample_dim: int = 256
+) -> Tuple[int, Dict[str, Any]]:
+    """
+    Direct Pure Downscale Strategy:
+    Analyzes original texture resolution and determines the smallest safe power-of-two resolution:
+    - 4096 (4K like Flamibo, Gravilux, Koidrax):
+      Evaluates linear Texel Density at 1024:
+        TD = (1024 * sqrt(effective_uv_area)) / sqrt(mesh_surface_area)
+      If TD >= min_texel_density (default 120 px/unit), safely downscales to 1024 (e.g. Flamibo, Koidrax).
+      Else downscales to 2048 (e.g. Gravilux with large surface area ~120 units) where TD >= 120 px/unit.
+    - 1536 (1.5K like Dinoki) or 2048 (2K):
+      Automatically downscales to 1024 (1K).
+    - <= 1024:
+      Clamps to power-of-two <= orig_max (no upscaling).
+
+    Guarantees 100% original UV coordinates are preserved (no chart tearing, rotation, or distortion).
+    """
+    w, h = orig_size
+    orig_max = max(w, h)
+    mesh_area = float(max(mesh.area, 1e-6))
+
+    if uv is None:
+        uv = getattr(mesh.visual, "uv", None)
+
+    # Compute effective UV coverage on original UV coordinates
+    if uv is not None and len(uv) > 0 and len(mesh.faces) > 0:
+        uv_norm = uv % 1.0 if (np.any(uv < 0.0) or np.any(uv > 1.0)) else uv
+        sel, _, _ = _rasterize_uv_atlas(mesh.faces, uv_norm, dim=sample_dim)
+        effective_uv_area = max(float(len(sel)) / float(sample_dim * sample_dim), 0.1)
+    else:
+        effective_uv_area = 0.55
+
+    # Linear Texel Densities at candidate targets (px / 3D unit)
+    td_1024 = (1024.0 * np.sqrt(effective_uv_area)) / np.sqrt(mesh_area)
+    td_2048 = (2048.0 * np.sqrt(effective_uv_area)) / np.sqrt(mesh_area)
+
+    is_auto = isinstance(requested_res, str) and requested_res.lower() == "auto"
+
+    if is_auto:
+        if orig_max >= 4096:
+            # Check if 1024 satisfies human visual perception threshold (default 120 px/unit)
+            if td_1024 >= min_texel_density:
+                target_res = 1024
+            else:
+                target_res = 2048
+        elif orig_max > 1024:
+            # 1536 (1.5K like Dinoki) or 2048 (2K): automatically drop to 1024 (1K)
+            target_res = 1024
+        else:
+            # <= 1024: largest POT <= orig_max
+            target_res = 1 << int(math.floor(math.log2(orig_max)))
+            target_res = max(256, target_res)
+    else:
+        target_res = clamp_target_resolution(requested_res, orig_size)
+
+    td_final = (float(target_res) * np.sqrt(effective_uv_area)) / np.sqrt(mesh_area)
+    td_orig = (float(orig_max) * np.sqrt(effective_uv_area)) / np.sqrt(mesh_area)
+
+    details = {
+        "downscaled": target_res < orig_max,
+        "originalResolution": f"{orig_max}x{orig_max}",
+        "finalResolution": f"{target_res}x{target_res}",
+        "original_resolution": orig_max,
+        "final_resolution": target_res,
+        "mesh_surface_area": round(mesh_area, 4),
+        "uvCoverageRatio": round(effective_uv_area, 4),
+        "texelDensityOrig": round(td_orig, 2),
+        "texelDensityFinal": round(td_final, 2),
+        "texelDensity1024": round(td_1024, 2),
+        "texelDensity2048": round(td_2048, 2),
+        "texelDensityDelta": round(td_final - td_orig, 2),
+        "min_texel_density_threshold": min_texel_density,
+        "uvPreserved100Percent": True,
+        "decision": f"{orig_max} -> {target_res} (TD={td_final:.1f} px/u)"
+    }
+    return target_res, details
+
+
 def maximize_uv_bounds(
     uv: np.ndarray,
     target_res: int,
@@ -450,11 +536,12 @@ def rechart_and_bake_high_density(
     stats: Optional[Dict[str, Any]] = None,
     return_stats: bool = False,
     min_downscale_res: int = 1024,
-    td_threshold_ratio: float = 0.85
+    td_threshold_ratio: float = 0.85,
+    unwrap_method: str = "xatlas"
 ) -> Tuple[trimesh.Trimesh, Image.Image] | Tuple[trimesh.Trimesh, Image.Image, Dict[str, Any]]:
     """
     4-Stage Adaptive UV & Resolution Optimization Pipeline:
-    - Bước A: Tổ chức lại UV gom vào hình vuông [0, 1] x [0, 1] qua xatlas với adaptive ChartOptions.
+    - Bước A: Tổ chức lại UV gom vào hình vuông [0, 1] x [0, 1] qua xatlas hoặc Microsoft UVAtlas.
     - Bước B: can_downscale_texture kiểm tra Texel Density hạ bậc độ phân giải (4096->2048, 2048->1024).
     - Bước C: maximize_uv_bounds hiệu chỉnh tọa độ UV nở rộng tối đa không gian canvas an toàn.
     - Bước D: Barycentric sampling bake texture, 16px EDT dilation & FrontSide rendering (doubleSided=False).
@@ -500,31 +587,58 @@ def rechart_and_bake_high_density(
     # =========================================================================
     # BƯỚC A: Tổ chức lại UV gom vào hình vuông [0, 1] x [0, 1]
     # =========================================================================
-    n_faces = len(mesh.faces)
-    c_opts = get_adaptive_chart_options(n_faces)
-    if chart_options:
-        for k, v in chart_options.items():
-            if hasattr(c_opts, k):
-                setattr(c_opts, k, v)
+    unwrap_meta: Dict[str, Any] = {}
+    use_xatlas = (unwrap_method != "uvatlas")
+    if unwrap_method == "uvatlas":
+        try:
+            vertices_recharted, faces_recharted, uv_recharted, vmapping, unwrap_meta = unwrap_mesh_uvatlas(
+                mesh=mesh,
+                target_res=initial_res,
+                gutter=2.0
+            )
+        except Exception as uvatlas_err:
+            import logging
+            logging.getLogger("uv_baker").warning(
+                f"[uv_baker] UVAtlas unwrapping failed ({uvatlas_err}). "
+                f"Falling back to robust xatlas backend..."
+            )
+            use_xatlas = True
+            unwrap_meta = {
+                "uvatlas_fallback": True,
+                "uvatlas_fallback_reason": str(uvatlas_err)
+            }
 
-    p_opts = get_adaptive_pack_options(n_faces, target_res=initial_res, padding=2)
-    if pack_options:
-        for k, v in pack_options.items():
-            if hasattr(p_opts, k):
-                setattr(p_opts, k, v)
+    if use_xatlas:
+        n_faces = len(mesh.faces)
+        c_opts = get_adaptive_chart_options(n_faces)
+        if chart_options:
+            for k, v in chart_options.items():
+                if hasattr(c_opts, k):
+                    setattr(c_opts, k, v)
 
-    atlas = xatlas.Atlas()
-    # Use 3D mesh unwrap to eliminate giant sliver triangles and unassigned (0, 0) UV artifacts from add_uv_mesh
-    atlas.add_mesh(
-        np.ascontiguousarray(mesh.vertices, dtype=np.float32),
-        np.ascontiguousarray(mesh.faces, dtype=np.uint32)
-    )
-    atlas.generate(chart_options=c_opts, pack_options=p_opts)
+        p_opts = get_adaptive_pack_options(n_faces, target_res=initial_res, padding=2)
+        if pack_options:
+            for k, v in pack_options.items():
+                if hasattr(p_opts, k):
+                    setattr(p_opts, k, v)
 
-    vmapping, indices, new_uv = atlas[0]
-    vertices_recharted = np.asarray(mesh.vertices, dtype=np.float64)[np.asarray(vmapping, dtype=np.int64)]
-    faces_recharted = np.asarray(indices, dtype=np.int64)
-    uv_recharted = np.asarray(new_uv, dtype=np.float64)
+        atlas = xatlas.Atlas()
+        # Use 3D mesh unwrap to eliminate giant sliver triangles and unassigned (0, 0) UV artifacts from add_uv_mesh
+        atlas.add_mesh(
+            np.ascontiguousarray(mesh.vertices, dtype=np.float32),
+            np.ascontiguousarray(mesh.faces, dtype=np.uint32)
+        )
+        atlas.generate(chart_options=c_opts, pack_options=p_opts)
+
+        vmapping, indices, new_uv = atlas[0]
+        vertices_recharted = np.asarray(mesh.vertices, dtype=np.float64)[np.asarray(vmapping, dtype=np.int64)]
+        faces_recharted = np.asarray(indices, dtype=np.int64)
+        uv_recharted = np.asarray(new_uv, dtype=np.float64)
+        unwrap_meta.update({
+            "xatlas_chart_count": int(atlas.chart_count),
+            "xatlas_atlas_count": int(atlas.atlas_count),
+            "xatlas_utilization_percent": round(float(atlas.utilization * 100.0), 2),
+        })
 
     # =========================================================================
     # BƯỚC B: Kiểm tra xem có thể downscale không (can_downscale_texture)
@@ -648,12 +762,10 @@ def rechart_and_bake_high_density(
         "texel_density_linear": texel_density_linear,
         "texel_density_area": texel_density_area,
         "mesh_surface_area": round(mesh_area, 4),
-        "xatlas_chart_count": int(atlas.chart_count),
-        "xatlas_atlas_count": int(atlas.atlas_count),
-        "xatlas_utilization_percent": round(float(atlas.utilization * 100.0), 2),
         "dilation_padding": dilation_padding,
         "double_sided": double_sided
     }
+    result_stats.update(unwrap_meta)
 
     if stats is not None:
         stats.update(result_stats)
@@ -663,6 +775,35 @@ def rechart_and_bake_high_density(
     if return_stats:
         return recharted_mesh, dilated_pil, result_stats
     return recharted_mesh, dilated_pil
+
+
+def rebake_texture_uvatlas(
+    mesh: trimesh.Trimesh,
+    source_image: Image.Image,
+    source_uv: np.ndarray,
+    target_res: int = 1024,
+    dilation_padding: int = 16,
+    double_sided: Optional[bool] = None
+) -> Tuple[trimesh.Trimesh, Image.Image]:
+    """
+    Repacks UV charts with Microsoft UVAtlas and bakes new high-coverage texture.
+    Preserves 100% triangles (Zero-Decimation).
+    """
+    if double_sided is None:
+        double_sided = True
+
+    target_res = clamp_target_resolution(target_res, source_image.size)
+    res = rechart_and_bake_high_density(
+        mesh=mesh,
+        target_res=target_res,
+        source_image=source_image,
+        source_uv=source_uv,
+        dilation_padding=dilation_padding,
+        double_sided=double_sided,
+        return_stats=False,
+        unwrap_method="uvatlas"
+    )
+    return res[0], res[1]
 
 
 def rebake_texture_xatlas(
@@ -707,15 +848,18 @@ def direct_resample_texture(
     source_image: Image.Image,
     target_res: int = 1024,
     dilation_padding: int = 16,
+    double_sided: bool = False,
     copy_mesh: bool = False
 ) -> Tuple[trimesh.Trimesh, Image.Image]:
     """
-    Direct mode: Keeps 100% original UVs, resamples texture with Lanczos and applies 16px dilation.
+    Direct mode: Keeps 100% original UVs, resamples texture with orthogonal Lanczos and applies 16px dilation.
     Preserves vertex normals, alpha channel, and material properties.
+    Configures FrontSide rendering (doubleSided=double_sided, default False).
     """
     # Defense-in-depth: Never upscale texture
     target_res = clamp_target_resolution(target_res, source_image.size)
 
+    # Check for active transparency in source image
     has_alpha = source_image.mode in ("RGBA", "LA") or (
         source_image.mode == "P" and "transparency" in source_image.info
     )
@@ -751,13 +895,13 @@ def direct_resample_texture(
         if len(sel_dir) > 0:
             is_covered.flat[sel_dir] = True
 
-    if has_alpha:
+    if has_transparency:
         alpha = arr[:, :, 3]
         if np.any(alpha == 0):
             is_covered = is_covered | (alpha > 0)
 
     # Dilate outward into true background only if geometric islands were detected
-    if np.any(is_covered) and not np.all(is_covered):
+    if np.any(is_covered) and not np.all(is_covered) and dilation_padding > 0:
         arr = dilate_texture(arr, is_covered, padding=dilation_padding)
 
     clean_pil = Image.fromarray(arr, mode=out_mode)
@@ -766,13 +910,13 @@ def direct_resample_texture(
     if isinstance(orig_mat, trimesh.visual.material.PBRMaterial):
         mat = orig_mat.copy()
         mat.baseColorTexture = clean_pil
-        mat.doubleSided = True
+        mat.doubleSided = double_sided
     else:
         mat = trimesh.visual.material.PBRMaterial(
             baseColorTexture=clean_pil,
             metallicFactor=getattr(orig_mat, "metallicFactor", 0.0) if orig_mat else 0.0,
             roughnessFactor=getattr(orig_mat, "roughnessFactor", 0.8) if orig_mat else 0.8,
-            doubleSided=True
+            doubleSided=double_sided
         )
         if orig_mat and hasattr(orig_mat, "baseColorFactor") and orig_mat.baseColorFactor is not None:
             mat.baseColorFactor = orig_mat.baseColorFactor
@@ -790,13 +934,15 @@ def direct_resample_texture(
 
     if hasattr(out_mesh, "visual") and isinstance(out_mesh.visual, trimesh.visual.TextureVisuals):
         out_mesh.visual.material = mat
+        if orig_uv is not None:
+            out_mesh.visual.uv = orig_uv
     else:
         out_mesh.visual = trimesh.visual.TextureVisuals(
-            uv=getattr(mesh.visual, "uv", None),
+            uv=orig_uv,
             material=mat
         )
 
-    opt_img = optimize_mesh_texture_for_export(out_mesh)
+    opt_img = optimize_mesh_texture_for_export(out_mesh, jpeg_quality=92)
     if opt_img is not None:
         clean_pil = opt_img
 

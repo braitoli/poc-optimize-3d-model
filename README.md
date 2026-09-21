@@ -25,7 +25,7 @@ flowchart TD
     F --> G
     G --> H["Phase 4: Palette & Metadata<br/>(K-Means 10 dominant colors in glTF extras)"]
     H --> I["Phase 5: Angle-Weighted Smooth Normals<br/>(Spatial vertex hashing across UV seams)"]
-    I --> J["Phase 6: Zero-Decimation Meshopt<br/>(14b pos, 12b norm, Float32 UV, GPU cache reorder)"]
+    I --> J["Phase 6: Zero-Decimation Meshopt<br/>(14b pos, 16b UV, octahedral norm, GPU cache reorder)"]
     J --> K["Phase 7: GPU Texture Compression<br/>(basisu KTX2 UASTC Level 2 Mipmaps)"]
     K --> L["Output .glb File<br/>(85-90% smaller, GPU VRAM &lt; 3MB, 100% faces preserved)"]
 ```
@@ -43,7 +43,7 @@ flowchart TD
    - Thürmer & Wüthrich / Bærentzen & Aanaes algorithm with spatial vertex position hashing.
    - Vertices split across UV seams share continuous smooth normals, eliminating ugly light creases and seam cracks.
 5. **EXT_meshopt_compression**:
-   - Quantization: 14-bit position, 12-bit normal, **preserving Float32 UV** (`--keep-uv-float32`) to protect painted details.
+   - Quantization: 14-bit position, 16-bit UV (`--keep-uv-float32` to opt out), octahedral-filtered normals.
    - GPU vertex cache reordering for maximum Metal/Vulkan throughput.
 6. **Hardware GPU Texture Compression (Basis Universal KTX2 UASTC)**:
    - Encodes texture into KTX2 UASTC Level 2 RDO 1.0 with mipmaps using `basisu`.

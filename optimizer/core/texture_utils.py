@@ -398,23 +398,27 @@ def optimize_mesh_texture_for_export(
     if img is None or not isinstance(img, Image.Image):
         return None
 
-    # Check if texture has an alpha channel
-    has_alpha = img.mode in ("RGBA", "LA") or (
-        img.mode == "P" and "transparency" in img.info
-    )
+    # Check if texture has an active alpha channel with true transparency
+    has_alpha = False
+    if img.mode in ("RGBA", "LA"):
+        alpha_channel = np.asarray(img)[..., -1]
+        if np.any(alpha_channel < 255):
+            has_alpha = True
+    elif img.mode == "P" and "transparency" in img.info:
+        has_alpha = True
 
     # Check original format
     orig_format = (orig_tex_info or {}).get("default_format", "JPEG").upper()
 
     # Determine target format:
     # 1. If preferred_format is specified, respect it.
-    # 2. If texture has an alpha channel (RGBA/LA), it MUST be PNG to preserve transparency.
-    # 3. If texture has NO alpha channel (RGB) or original format is JPEG, save as JPEG.
+    # 2. If texture has an active alpha channel (RGBA/LA with transparency), it MUST be PNG.
+    # 3. If texture has NO active alpha channel (RGB or opaque RGBA), save as high-quality JPEG (quality=92, optimize=True).
     if preferred_format:
         target_fmt = preferred_format.upper()
     elif has_alpha:
         target_fmt = "PNG"
-    elif orig_format in ("JPEG", "JPG") or img.mode == "RGB":
+    elif orig_format in ("JPEG", "JPG") or img.mode == "RGB" or not has_alpha:
         target_fmt = "JPEG"
     else:
         target_fmt = "PNG"

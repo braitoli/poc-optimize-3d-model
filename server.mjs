@@ -83,7 +83,7 @@ function scanModels() {
 // Allowed Optimization Parameters
 const ALLOWED_RESOLUTIONS = ['auto', 256, 512, 1024, 2048, 4096];
 const ALLOWED_FORMATS = ['ktx2', 'webp', 'png', 'jpeg', 'jpg'];
-const ALLOWED_UV_MODES = ['direct', 'rechart', 'xatlas'];
+const ALLOWED_UV_MODES = ['direct', 'rechart', 'xatlas', 'uvatlas'];
 
 function sanitizeOptimizationOptions({ resolution, format, uvMode } = {}) {
   let res;
@@ -266,8 +266,23 @@ function startPipelineJob({ jobId, rawGlbPath, workspaceDir, resolution = 'auto'
       '--resolution', String(finalResolution),
       '--format', finalFormat
     ];
-    if (finalUvMode === 'rechart' || finalUvMode === 'xatlas') {
-      args.push('--rechart-uv');
+
+    const stepPipelinePath = path.join(__dirname, 'optimizer', 'step_pipeline.py');
+    const stepPipelineSrc = fs.existsSync(stepPipelinePath) ? fs.readFileSync(stepPipelinePath, 'utf-8') : '';
+    const supportsUvModeFlag = stepPipelineSrc.includes('--uv-mode');
+
+    if (finalUvMode === 'uvatlas') {
+      args.push('--uv-mode', 'uvatlas');
+    } else if (finalUvMode === 'rechart' || finalUvMode === 'xatlas') {
+      if (supportsUvModeFlag) {
+        args.push('--uv-mode', 'xatlas');
+      } else {
+        args.push('--rechart-uv');
+      }
+    } else if (finalUvMode === 'direct') {
+      if (supportsUvModeFlag) {
+        args.push('--uv-mode', 'direct');
+      }
     }
   } else {
     args = [
@@ -279,7 +294,9 @@ function startPipelineJob({ jobId, rawGlbPath, workspaceDir, resolution = 'auto'
       '--export-steps', workspaceDir,
       '--step-events'
     ];
-    if (finalUvMode === 'rechart' || finalUvMode === 'xatlas') {
+    if (finalUvMode === 'uvatlas') {
+      args.push('--uv-mode', 'uvatlas');
+    } else if (finalUvMode === 'rechart' || finalUvMode === 'xatlas') {
       args.push('--rechart');
     }
   }

@@ -10,7 +10,7 @@ const CANONICAL_STEPS = [
   { step: 2, key: 'step2', name: 'Shell Orienting', desc: 'Z-buffer visibility CCW winding', file: 'step2_shell_orient.glb' },
   { step: 3, key: 'step3', name: 'UV & Texture Bake', desc: '16px dilation, master UV resample', file: 'step3_uv_bake.glb' },
   { step: 4, key: 'step4', name: 'Palette Extraction', desc: '10 dominant surface swatches', file: 'step4_palette.glb' },
-  { step: 5, key: 'step5', name: 'Meshopt Compression', desc: '14b pos, 12b norm, cache reorder', file: 'step5_meshopt.glb' },
+  { step: 5, key: 'step5', name: 'Meshopt Compression', desc: '14b pos, 16b UV, oct norm, cache reorder', file: 'step5_meshopt.glb' },
   { step: 6, key: 'step6', name: 'KTX2 GPU Compression', desc: 'Basis UASTC L2 GPU mipmaps', file: 'step6_final.glb' }
 ];
 
@@ -35,6 +35,7 @@ class AppState {
     this.totalDurationSeconds = null;
     this.totalDurationFormatted = null;
     this.logs = [];
+    this.uvMode = 'rechart';
   }
 }
 
@@ -879,6 +880,7 @@ function connectJobStream(jobId) {
 async function startOptimization() {
   const uvMode = (dom.uvModeSelect && dom.uvModeSelect.value) ? dom.uvModeSelect.value : 'rechart';
   const format = (dom.formatSelect && dom.formatSelect.value) ? dom.formatSelect.value : 'ktx2';
+  state.uvMode = uvMode;
 
   const formData = new FormData();
   formData.append('resolution', 'auto');
@@ -1033,7 +1035,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   setupDragAndDrop();
 
   dom.startBtn.onclick = startOptimization;
-  if (dom.uvModeSelect) {
+  if (dom.uvModeSelect && !dom.uvModeSelect.value) {
     dom.uvModeSelect.value = 'rechart';
   }
 

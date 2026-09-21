@@ -304,9 +304,8 @@ async function runCli() {
 Options:
   --smooth-normals         Compute angle-weighted smooth normals across seams (default: ON)
   --no-smooth-normals      Disable smooth normals
-  --keep-uv-float32        Keep UV as Float32 (default: ON)
+  --keep-uv-float32        Keep UV as Float32 (default: OFF, UV quantized to 16-bit)
   --pos-bits <bits>        Quantize position bits (default: 14)
-  --normal-bits <bits>     Quantize normal bits (default: 12)
   --weld <tol>             Weld tolerance (default: 0.0001)
   --reorder                Reorder for GPU cache (default: ON)
   --meshopt                Enable EXT_meshopt_compression (default: ON)
@@ -328,9 +327,8 @@ Options:
   let inputFile = null;
   let outputFile = null;
   let enableSmoothNormals = true;
-  let keepUvFloat32 = true;
+  let keepUvFloat32 = false;
   let posBits = 14;
-  let normalBits = 12;
   let weldTol = 0.0001;
   let enableReorder = true;
   let enableMeshopt = true;
@@ -356,7 +354,6 @@ Options:
     else if (a === '--keep-uv-float32') keepUvFloat32 = true;
     else if (a === '--export-intermediate-meshopt' && args[i + 1]) exportIntermediateMeshopt = args[++i];
     else if (a === '--pos-bits' && args[i + 1]) posBits = parseInt(args[++i], 10);
-    else if (a === '--normal-bits' && args[i + 1]) normalBits = parseInt(args[++i], 10);
     else if (a === '--weld' && args[i + 1]) weldTol = parseFloat(args[++i]);
     else if (a === '--reorder') enableReorder = true;
     else if (a === '--meshopt') enableMeshopt = true;
@@ -408,7 +405,7 @@ Options:
   // 1. Compute angle-weighted smooth normals across seams
   if (!texturesOnly && enableSmoothNormals) {
     if (!enableJson) console.log('   * Computing Angle-Weighted Smooth Normals (spatial seam welding)...');
-    computeStandardSmoothNormals(doc, { smoothAcrossUvSeams: true, spatialTolerance: 1e-5 });
+    computeStandardSmoothNormals(doc, { smoothAcrossUvSeams: true });
   }
 
   // 2. Material double-sided adjustments
@@ -430,17 +427,17 @@ Options:
       transforms.push(reorder({ encoder: MeshoptEncoder }));
     }
 
-    // Quantize: exclude TEXCOORD from pattern to keep Float32 UV
+    // Quantize: 16-bit UV (TEXCOORD excluded with --keep-uv-float32). NORMAL is left
+    // Float32 here; the EXT_meshopt_compression OCTAHEDRAL filter encodes it below.
     const quantizePattern = keepUvFloat32
-      ? /^(POSITION|NORMAL|COLOR.*|JOINTS.*|WEIGHTS.*)$/
-      : /.*/;
+      ? /^(POSITION|COLOR.*|JOINTS.*|WEIGHTS.*)$/
+      : /^(POSITION|TEXCOORD.*|COLOR.*|JOINTS.*|WEIGHTS.*)$/;
 
     transforms.push(
       quantize({
         pattern: quantizePattern,
         quantizePosition: posBits,
-        quantizeNormal: normalBits,
-        quantizeTexcoord: 12
+        quantizeTexcoord: 16
       })
     );
 
@@ -449,7 +446,9 @@ Options:
 
   // 4. EXT_meshopt_compression
   if (enableMeshopt) {
-    doc.createExtension(EXTMeshoptCompression).setRequired(true);
+    doc.createExtension(EXTMeshoptCompression)
+      .setRequired(true)
+      .setEncoderOptions({ method: EXTMeshoptCompression.EncoderMethod.FILTER });
   }
 
   // Intermediate Step 5 Export (Geometry + Meshopt compressed, before texture transcode)

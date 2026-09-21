@@ -7,7 +7,7 @@ Strictly adheres to Rule 11 (Zero-Decimation Policy):
 - Visibility z-buffer shell orienting (FrontSide CCW).
 - UV Atlas Re-charting / Direct Lanczos + 16px boundary dilation.
 - Angle-weighted smooth vertex normals across UV seams (spatial hashing).
-- EXT_meshopt_compression: 14-bit position, 12-bit normal, Float32 UV, GPU cache reorder.
+- EXT_meshopt_compression: 14-bit position, 16-bit UV, octahedral normals, GPU cache reorder.
 - Basis Universal KTX2 UASTC Level 2 Mipmaps (or WebP).
 """
 
@@ -535,7 +535,6 @@ class ModelOptimizer:
                 str(intermediate_glb),
                 str(intermediate_opt_glb),
                 "--pos-bits", "14",
-                "--normal-bits", "12",
                 "--weld", "0.0001",
                 "--reorder",
                 "--meshopt",
@@ -584,7 +583,7 @@ class ModelOptimizer:
                     "step": 5,
                     "name": "Meshopt Compression",
                     "status": "completed",
-                    "description": "EXT_meshopt_compression: 14-bit position, 12-bit normal, vertex cache reorder",
+                    "description": "EXT_meshopt_compression: 14-bit position, 16-bit UV, octahedral normals, vertex cache reorder",
                     "fileSize": s5_size,
                     "fileSizeFormatted": format_file_size(s5_size),
                     "faces": node_summary.get("trianglesAfter", len(baked_mesh.faces)),

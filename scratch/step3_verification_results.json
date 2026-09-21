@@ -2,7 +2,7 @@
   "dinoki": {
     "model": "Dinoki",
     "passed": true,
-    "bake_time_sec": 3.34,
+    "bake_time_sec": 4.75,
     "texture_res": "1024x1024",
     "overlap_metrics": {
       "dim": 1024,
@@ -33,17 +33,17 @@
       "texel_density_linear": 211.43,
       "texel_density_area": 44701.15,
       "mesh_surface_area": 13.0464,
+      "dilation_padding": 16,
+      "double_sided": false,
       "xatlas_chart_count": 889,
       "xatlas_atlas_count": 1,
-      "xatlas_utilization_percent": 79.06,
-      "dilation_padding": 16,
-      "double_sided": false
+      "xatlas_utilization_percent": 79.06
     }
   },
   "flamibo": {
     "model": "Flamibo",
     "passed": true,
-    "bake_time_sec": 34.25,
+    "bake_time_sec": 50.46,
     "texture_res": "2048x2048",
     "overlap_metrics": {
       "dim": 1024,
@@ -87,11 +87,11 @@
       "texel_density_linear": 334.72,
       "texel_density_area": 112038.91,
       "mesh_surface_area": 16.2535,
+      "dilation_padding": 16,
+      "double_sided": false,
       "xatlas_chart_count": 5343,
       "xatlas_atlas_count": 1,
-      "xatlas_utilization_percent": 70.98,
-      "dilation_padding": 16,
-      "double_sided": false
+      "xatlas_utilization_percent": 70.98
     }
   }
 }

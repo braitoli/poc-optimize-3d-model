@@ -34,12 +34,15 @@ from optimizer.core.cleaner import clean_and_repair_mesh, auto_ground_and_center
 from optimizer.core.shell_orient import orient_faces_by_visibility, DEFAULT_VIEWS, DEFAULT_RESOLUTION
 from optimizer.core.uv_baker import (
     rebake_texture_xatlas,
+    rebake_texture_uvatlas,
     direct_resample_texture,
     rechart_and_bake_high_density,
     compute_uv_metrics,
     can_downscale_texture,
+    determine_safe_downscale_resolution,
     maximize_uv_bounds
 )
+from optimizer.core.uvatlas import is_uvatlas_available
 from optimizer.core.palette import extract_palette, embed_gltf_extras
 from optimizer.core.texture_utils import (
     extract_original_texture_info,
@@ -107,6 +110,7 @@ class StepPipeline:
         resolution: Union[int, str] = "auto",
         texture_format: str = "ktx2",
         rechart_uv: bool = False,
+        uv_mode: Optional[str] = None,
         smooth_normals: bool = True,
         double_sided: bool = False,
         preserve_textures: bool = True,
@@ -115,7 +119,15 @@ class StepPipeline:
     ):
         self.resolution = resolution
         self.texture_format = texture_format.lower()
-        self.rechart_uv = rechart_uv
+        if uv_mode is not None:
+            self.uv_mode = uv_mode.lower()
+            self.rechart_uv = (self.uv_mode != "direct")
+        elif rechart_uv:
+            self.uv_mode = "xatlas"
+            self.rechart_uv = True
+        else:
+            self.uv_mode = "direct"
+            self.rechart_uv = False
         self.smooth_normals = smooth_normals
         self.double_sided = double_sided
         self.preserve_textures = preserve_textures
@@ -247,7 +259,7 @@ class StepPipeline:
         self.log(f"🚀 STEP-BY-STEP 3D OPTIMIZATION PIPELINE: {input_path.name}")
         self.log(f"   Target Directory: {output_dir}")
         res_display = f"{self.resolution}x{self.resolution}" if isinstance(self.resolution, int) else f"{self.resolution.upper()} (Adaptive)"
-        self.log(f"   Target Resolution: {res_display} | Format: {self.texture_format.upper()}")
+        self.log(f"   Target Resolution: {res_display} | Format: {self.texture_format.upper()} | UV Mode: {self.uv_mode.upper()}")
         self.log("=" * 68)
 
         # =====================================================================
@@ -323,13 +335,32 @@ class StepPipeline:
             raw_tex_img = Image.new("RGB", (default_dim, default_dim), (200, 200, 200))
 
         # Enforce NO-UPSCALE policy: clamp requested resolution
-        initial_res = clamp_target_resolution(self.resolution, raw_tex_img.size, logger_fn=self.log)
-        self.resolution = initial_res
+        requested_res = self.resolution
+        initial_res = clamp_target_resolution(requested_res, raw_tex_img.size, logger_fn=self.log)
 
         self.log(f"▶️ [Step 3/6] Baking Texture ({initial_res}x{initial_res}) + Adaptive Downscale & UV Maximizer...")
 
         uv_stats: Dict[str, Any] = {}
-        if self.rechart_uv:
+        if self.uv_mode == "uvatlas":
+            self.log(f"   Re-charting UV islands with Microsoft UVAtlas ({initial_res}x{initial_res})...")
+            try:
+                baked_mesh, dilated_pil, uv_stats = rechart_and_bake_high_density(
+                    grounded_mesh,
+                    target_res=initial_res,
+                    source_image=raw_tex_img,
+                    source_uv=raw_uv,
+                    dilation_padding=16,
+                    double_sided=self.double_sided,
+                    stats=uv_stats,
+                    return_stats=True,
+                    unwrap_method="uvatlas"
+                )
+            except Exception as uv_err:
+                self.log(f"   ⚠️ Microsoft UVAtlas unwrap encountered an error: {uv_err}")
+                raise
+            final_res = uv_stats.get("final_resolution", dilated_pil.size[0])
+            self.resolution = final_res
+        elif self.uv_mode == "xatlas" or self.rechart_uv:
             self.log(f"   Re-charting UV islands with xatlas (Square UV Packing, {initial_res}x{initial_res})...")
             baked_mesh, dilated_pil, uv_stats = rechart_and_bake_high_density(
                 grounded_mesh,
@@ -339,27 +370,42 @@ class StepPipeline:
                 dilation_padding=16,
                 double_sided=self.double_sided,
                 stats=uv_stats,
-                return_stats=True
+                return_stats=True,
+                unwrap_method="xatlas"
             )
             final_res = uv_stats.get("final_resolution", dilated_pil.size[0])
             self.resolution = final_res
         else:
-            self.log(f"   Direct Master UV mode: Lanczos resample ({initial_res}x{initial_res}) + 16px dilation...")
+            # DIRECT MASTER UV DOWN-SCALE (DEFAULT)
+            # Evaluates the smallest safe resolution via Texel Density without modifying UVs
+            target_res, downscale_info = determine_safe_downscale_resolution(
+                grounded_mesh,
+                orig_size=raw_tex_img.size,
+                uv=raw_uv,
+                min_texel_density=120.0,
+                requested_res=requested_res
+            )
+            self.resolution = target_res
+            self.log(
+                f"   Direct Pure Downscale (Smallest Safe Res): {raw_tex_img.size[0]}x{raw_tex_img.size[1]} -> "
+                f"{target_res}x{target_res} (TD={downscale_info['texelDensityFinal']:.1f} px/u, 100% Original UVs Preserved)..."
+            )
             baked_mesh, dilated_pil = direct_resample_texture(
                 grounded_mesh,
                 source_image=raw_tex_img,
-                target_res=initial_res,
-                dilation_padding=16
+                target_res=target_res,
+                dilation_padding=16,
+                double_sided=self.double_sided
             )
             final_res = dilated_pil.size[0]
-            self.resolution = final_res
+            uv_stats = downscale_info
 
         # FrontSide rendering (doubleSided=False by default)
         if hasattr(baked_mesh, "visual") and hasattr(baked_mesh.visual, "material") and baked_mesh.visual.material is not None:
             baked_mesh.visual.material.doubleSided = self.double_sided
 
         # Optimize texture before export (defense-in-depth: format JPEG if opaque, or optimized PNG)
-        opt_pil = optimize_mesh_texture_for_export(baked_mesh, orig_tex_info=orig_tex_info)
+        opt_pil = optimize_mesh_texture_for_export(baked_mesh, orig_tex_info=orig_tex_info, jpeg_quality=92)
         if opt_pil is not None:
             dilated_pil = opt_pil
 
@@ -367,11 +413,14 @@ class StepPipeline:
         step3_bytes = trimesh.exchange.gltf.export_glb(step3_scene, include_normals=True)
         if self.double_sided:
             step3_bytes = set_doublesided_material(step3_bytes)
+        else:
+            step3_bytes = set_frontside_material(step3_bytes)
         step3_file = output_dir / "step_03_texture_baked.glb"
         step3_file.write_bytes(step3_bytes)
         tex_fmt = getattr(dilated_pil, "format", "JPEG")
 
         step3_extra = {
+            "uvMode": self.uv_mode,
             "textureResolution": f"{dilated_pil.size[0]}x{dilated_pil.size[1]}",
             "textureFormat": tex_fmt,
             "dilationPadding": 16,
@@ -379,12 +428,16 @@ class StepPipeline:
             "originalResolution": uv_stats.get("originalResolution", f"{initial_res}x{initial_res}"),
             "finalResolution": uv_stats.get("finalResolution", f"{final_res}x{final_res}"),
             "uvCoverageRatio": uv_stats.get("uvCoverageRatio", uv_stats.get("uv_coverage_ratio_percent", 0.0) / 100.0 if "uv_coverage_ratio_percent" in uv_stats else 0.0),
+            "texelDensityOrig": uv_stats.get("texelDensityOrig", 0.0),
+            "texelDensityFinal": uv_stats.get("texelDensityFinal", 0.0),
             "texelDensityDelta": uv_stats.get("texelDensityDelta", 0.0),
+            "uvPreserved100Percent": (self.uv_mode == "direct"),
+            "doubleSided": self.double_sided,
             "uvMetrics": uv_stats
         }
         m3 = save_and_record_metrics(3, step3_file, step3_extra, t_step_start=t_s3)
         self.log(
-            f"   ✓ Step 3 complete ({m3['durationFormatted']}): Baked texture {dilated_pil.size[0]}x{dilated_pil.size[1]} ({tex_fmt}) | "
+            f"   ✓ Step 3 complete ({m3['durationFormatted']}): [{self.uv_mode}] Baked texture {dilated_pil.size[0]}x{dilated_pil.size[1]} ({tex_fmt}) | "
             f"Downscaled: {step3_extra['downscaled']} ({step3_extra['originalResolution']} -> {step3_extra['finalResolution']}) | "
             f"UV Coverage: {step3_extra['uvCoverageRatio']:.2%} | TD Delta: {step3_extra['texelDensityDelta']:+.1f}"
         )
@@ -426,7 +479,6 @@ class StepPipeline:
             str(step5_file),
             "--no-ktx2",
             "--pos-bits", "14",
-            "--normal-bits", "12",
             "--weld", "0.0001",
             "--reorder",
             "--meshopt",
@@ -602,7 +654,13 @@ def main():
     parser.add_argument("--output-dir", "-o", required=True, help="Destination directory for 7 GLB step files and metrics.json")
     parser.add_argument("--resolution", "-r", default="auto", type=parse_resolution_arg, help="Target texture dimension ('auto', 512, 1024, 2048; strictly capped at original texture size, never upscaled)")
     parser.add_argument("--format", "-f", choices=["ktx2", "webp"], default="ktx2", help="GPU texture compression format")
-    parser.add_argument("--rechart-uv", action="store_true", help="Re-chart UVs using xatlas (default: direct master UV)")
+    parser.add_argument(
+        "--uv-mode",
+        choices=["direct", "xatlas", "uvatlas"],
+        default=None,
+        help="UV unwrapping and layout mode: 'direct' (preserve master UV), 'xatlas' (re-chart with xatlas), 'uvatlas' (Microsoft UVAtlas isochart unwrap)"
+    )
+    parser.add_argument("--rechart-uv", action="store_true", help="Re-chart UVs using xatlas (backward compatibility alias for --uv-mode xatlas; default: direct master UV)")
     parser.add_argument("--no-smooth-normals", action="store_true", help="Disable angle-weighted normal smoothing across seams")
     parser.add_argument("--double-sided", action="store_true", help="Keep double-sided materials instead of forcing single-sided FrontSide")
     parser.add_argument("--no-preserve-textures", action="store_true", help="Disable texture preservation in Steps 1 & 2")
@@ -610,10 +668,15 @@ def main():
 
     args = parser.parse_args()
 
+    uv_mode = args.uv_mode
+    if uv_mode is None:
+        uv_mode = "xatlas" if args.rechart_uv else "direct"
+
     pipeline = StepPipeline(
         resolution=args.resolution,
         texture_format=args.format,
         rechart_uv=args.rechart_uv,
+        uv_mode=uv_mode,
         smooth_normals=not args.no_smooth_normals,
         double_sided=args.double_sided,
         preserve_textures=not args.no_preserve_textures,

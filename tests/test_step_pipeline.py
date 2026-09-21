@@ -171,6 +171,9 @@ class TestStepPipeline(unittest.TestCase):
             step3 = metrics_data["steps"][3]
             self.assertIn("1024x1024", step3["metrics"]["textureResolution"])
             self.assertEqual(step3["metrics"]["faces"], 45000)
+            self.assertTrue(step3["metrics"]["downscaled"])
+            self.assertTrue(step3["metrics"].get("uvPreserved100Percent", False))
+            self.assertFalse(step3["metrics"]["materials"][0]["doubleSided"])
 
             # Final step must preserve 100% faces
             final_step = metrics_data["steps"][6]
