@@ -35,14 +35,12 @@ export function computeStandardSmoothNormals(doc, options = {}) {
       let spatialCount = 0;
       if (smoothAcrossUvSeams) {
         const spatialMap = new Map();
+        const MASK26 = 0x3FFFFFFn;
         for (let i = 0; i < vCount; i++) {
-          const x = posArr[i * 3];
-          const y = posArr[i * 3 + 1];
-          const z = posArr[i * 3 + 2];
-          const kx = Math.round(x * invTol);
-          const ky = Math.round(y * invTol);
-          const kz = Math.round(z * invTol);
-          const key = `${kx},${ky},${kz}`;
+          const kx = BigInt(Math.round(posArr[i * 3] * invTol));
+          const ky = BigInt(Math.round(posArr[i * 3 + 1] * invTol));
+          const kz = BigInt(Math.round(posArr[i * 3 + 2] * invTol));
+          const key = (kx << 52n) | ((ky & MASK26) << 26n) | (kz & MASK26);
           let sId = spatialMap.get(key);
           if (sId === undefined) {
             sId = spatialCount++;

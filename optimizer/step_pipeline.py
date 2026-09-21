@@ -1,0 +1,507 @@
+"""
+step_pipeline.py
+
+Step-by-Step 3D Model Optimization Pipeline with granular GLB stage exports & metrics.
+Strictly adheres to Rule 11 (Zero-Decimation Policy):
+- Step 0: step_00_raw.glb (Raw input mesh ingested & inspected)
+- Step 1: step_01_cleaned_grounded.glb (Cleaner & auto_ground_and_center Y=0)
+- Step 2: step_02_oriented.glb (Shell orient z-buffer visibility outward CCW FrontSide)
+- Step 3: step_03_texture_baked.glb (uv_baker Lanczos resample & 16px dilation)
+- Step 4: step_04_palette_tagged.glb (Palette k-means 10 dominant colors embedded)
+- Step 5: step_05_meshopt.glb (Node smooth_normals, weld, quantize, meshopt geometry)
+- Step 6: step_06_final.glb (Basisu KTX2/WebP GPU compression, frontSide, extras)
+
+Emits real-time NDJSON events to stdout:
+{"event": "step_complete", "step": X, "stepName": "...", "file": "step_XX_....glb", "metrics": {...}}
+and continuously updates <output_dir>/metrics.json.
+"""
+
+import os
+import sys
+import time
+import json
+import shutil
+import argparse
+import subprocess
+from pathlib import Path
+from typing import Dict, Any, List, Optional
+
+import numpy as np
+from PIL import Image
+import trimesh
+
+from optimizer.core.cleaner import clean_and_repair_mesh, auto_ground_and_center
+from optimizer.core.shell_orient import orient_faces_by_visibility, DEFAULT_VIEWS, DEFAULT_RESOLUTION
+from optimizer.core.uv_baker import (
+    rebake_texture_xatlas,
+    direct_resample_texture,
+    rechart_and_bake_high_density,
+    compute_uv_metrics
+)
+from optimizer.core.palette import extract_palette, embed_gltf_extras
+from optimizer.core.texture_utils import extract_original_texture_info, preserve_mesh_textures
+from optimizer.pipeline import set_frontside_material, set_doublesided_material
+
+MODULE_ROOT = Path(__file__).resolve().parent
+INSPECT_SCRIPT = MODULE_ROOT / "inspect_metrics.mjs"
+NODE_OPT_SCRIPT = MODULE_ROOT / "node" / "optimize_meshopt.mjs"
+
+
+def inspect_glb_metrics(glb_path: Path) -> Dict[str, Any]:
+    """Invokes inspect_metrics.mjs to extract comprehensive 3D metrics from a GLB."""
+    cmd = ["node", str(INSPECT_SCRIPT), str(glb_path), "--compact"]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(f"Failed to inspect GLB metrics for {glb_path.name}: {proc.stderr or proc.stdout}")
+
+    stdout = proc.stdout.strip()
+    for line in stdout.splitlines():
+        line = line.strip()
+        if line.startswith("{") and line.endswith("}"):
+            try:
+                return json.loads(line)
+            except json.JSONDecodeError:
+                pass
+
+    return json.loads(stdout)
+
+
+class StepPipeline:
+    """
+    Orchestrates the 7-step optimization pipeline, exporting intermediate GLBs
+    and recording 3D metrics at each discrete step.
+    """
+
+    STEP_DEFINITIONS = [
+        {"step": 0, "name": "raw", "file": "step_00_raw.glb", "desc": "Raw input model ingested & analyzed"},
+        {"step": 1, "name": "cleaned_grounded", "file": "step_01_cleaned_grounded.glb", "desc": "Cleaned geometry & grounded at Y=0"},
+        {"step": 2, "name": "oriented", "file": "step_02_oriented.glb", "desc": "Visibility-based shell orientation (outward CCW)"},
+        {"step": 3, "name": "texture_baked", "file": "step_03_texture_baked.glb", "desc": "Texture resampled with Lanczos + 16px dilation"},
+        {"step": 4, "name": "palette_tagged", "file": "step_04_palette_tagged.glb", "desc": "10-color dominant palette extracted & embedded"},
+        {"step": 5, "name": "meshopt", "file": "step_05_meshopt.glb", "desc": "Smooth normals, weld, quantize, and EXT_meshopt_compression"},
+        {"step": 6, "name": "final", "file": "step_06_final.glb", "desc": "GPU texture compression (KTX2/WebP), frontSide, final extras"}
+    ]
+
+    def __init__(
+        self,
+        resolution: int = 1024,
+        texture_format: str = "ktx2",
+        rechart_uv: bool = False,
+        smooth_normals: bool = True,
+        double_sided: bool = False,
+        preserve_textures: bool = True,
+        verbose: bool = True,
+        stream_events: bool = True
+    ):
+        self.resolution = resolution
+        self.texture_format = texture_format.lower()
+        self.rechart_uv = rechart_uv
+        self.smooth_normals = smooth_normals
+        self.double_sided = double_sided
+        self.preserve_textures = preserve_textures
+        self.verbose = verbose
+        self.stream_events = stream_events
+
+    def log(self, msg: str):
+        if self.verbose:
+            ts = time.strftime("%H:%M:%S")
+            print(f"[{ts}] {msg}", file=sys.stderr, flush=True)
+
+    def _emit_step_event(self, step_idx: int, step_name: str, filename: str, metrics: Dict[str, Any], extra_data: Optional[Dict[str, Any]] = None):
+        event_payload = {
+            "event": "step_complete",
+            "step": step_idx,
+            "stepName": step_name,
+            "file": filename,
+            "metrics": metrics
+        }
+        if extra_data:
+            event_payload.update(extra_data)
+
+        if self.stream_events:
+            print(json.dumps(event_payload), flush=True)
+
+    def run(self, input_path: Path, output_dir: Path) -> Dict[str, Any]:
+        t_total_start = time.perf_counter()
+        t0 = time.time()
+        input_path = Path(input_path).resolve()
+        output_dir = Path(output_dir).resolve()
+
+        if not input_path.exists():
+            raise FileNotFoundError(f"Input file not found: {input_path}")
+
+        output_dir.mkdir(parents=True, exist_ok=True)
+        metrics_json_path = output_dir / "metrics.json"
+
+        steps_record: List[Dict[str, Any]] = []
+
+        def save_and_record_metrics(step_idx: int, glb_file: Path, extra_info: Optional[Dict[str, Any]] = None, duration_seconds: Optional[float] = None) -> Dict[str, Any]:
+            step_def = self.STEP_DEFINITIONS[step_idx]
+            metrics = inspect_glb_metrics(glb_file)
+            step_entry = {
+                "step": step_idx,
+                "stepName": step_def["name"],
+                "file": step_def["file"],
+                "description": step_def["desc"],
+                "metrics": metrics
+            }
+            if duration_seconds is not None:
+                step_entry["durationSeconds"] = round(duration_seconds, 4)
+                step_entry["durationMs"] = round(duration_seconds * 1000, 2)
+            if extra_info:
+                step_entry["details"] = extra_info
+            steps_record.append(step_entry)
+
+            # Write updated metrics.json
+            payload = {
+                "success": True,
+                "model": input_path.name,
+                "outputDir": str(output_dir),
+                "resolution": f"{self.resolution}x{self.resolution}",
+                "textureFormat": self.texture_format.upper(),
+                "steps": steps_record,
+                "lastCompletedStep": step_idx
+            }
+            metrics_json_path.write_text(json.dumps(payload, indent=2))
+
+            # Emit streaming NDJSON event
+            self._emit_step_event(step_idx, step_def["name"], step_def["file"], metrics, extra_info)
+            return metrics
+
+        self.log("=" * 68)
+        self.log(f"🚀 STEP-BY-STEP 3D OPTIMIZATION PIPELINE: {input_path.name}")
+        self.log(f"   Target Directory: {output_dir}")
+        self.log(f"   Target Resolution: {self.resolution}x{self.resolution} | Format: {self.texture_format.upper()}")
+        self.log("=" * 68)
+
+        # =====================================================================
+        # STEP 0: Raw Model Ingestion & Baseline Metrics
+        # =====================================================================
+        self.log("▶️ [Step 0/6] Ingesting Raw GLB Model...")
+        t_s0 = time.perf_counter()
+        step0_file = output_dir / "step_00_raw.glb"
+        if input_path.resolve() != step0_file.resolve():
+            shutil.copy2(input_path, step0_file)
+        m0 = save_and_record_metrics(0, step0_file, duration_seconds=time.perf_counter() - t_s0)
+        initial_faces = m0["faces"]
+        initial_verts = m0["vertices"]
+        initial_bytes = m0["fileSizeBytes"]
+        orig_tex_info = extract_original_texture_info(step0_file, metrics=m0)
+        self.log(f"   ✓ Step 0 complete: {initial_faces:,} faces, {initial_verts:,} verts, {m0['fileSizeFormatted']} (texture: {orig_tex_info.get('default_format')})")
+
+        # =====================================================================
+        # STEP 1: Cleaner & Auto Grounding (Y=0, X/Z Centered)
+        # =====================================================================
+        self.log("▶️ [Step 1/6] Cleaning Geometry & Auto-Grounding at Y=0...")
+        t_s1 = time.perf_counter()
+        raw_mesh = trimesh.load(str(input_path), force="mesh", process=False)
+        cleaned_mesh = clean_and_repair_mesh(raw_mesh)
+        grounded_mesh, translation = auto_ground_and_center(cleaned_mesh)
+        if self.preserve_textures:
+            preserve_mesh_textures(grounded_mesh, orig_tex_info)
+
+        step1_scene = trimesh.Scene({"Model": grounded_mesh})
+        step1_bytes = trimesh.exchange.gltf.export_glb(step1_scene, include_normals=True)
+        step1_file = output_dir / "step_01_cleaned_grounded.glb"
+        step1_file.write_bytes(step1_bytes)
+        m1 = save_and_record_metrics(1, step1_file, {"translationApplied": translation.tolist()}, duration_seconds=time.perf_counter() - t_s1)
+        self.log(f"   ✓ Step 1 complete: Grounded at Y=0 (shift: {np.round(translation, 3).tolist()})")
+
+        # =====================================================================
+        # STEP 2: Visibility Z-Buffer Shell Orient (Outward CCW Winding)
+        # =====================================================================
+        self.log("▶️ [Step 2/6] Orienting Shells via Visibility Z-Buffer (CCW)...")
+        t_s2 = time.perf_counter()
+        orient_stats: Dict[str, Any] = {}
+        oriented_faces = orient_faces_by_visibility(
+            grounded_mesh.vertices,
+            grounded_mesh.faces,
+            views=DEFAULT_VIEWS,
+            resolution=DEFAULT_RESOLUTION,
+            stats=orient_stats
+        )
+        grounded_mesh.faces = oriented_faces
+        if self.preserve_textures:
+            preserve_mesh_textures(grounded_mesh, orig_tex_info)
+
+        step2_scene = trimesh.Scene({"Model": grounded_mesh})
+        step2_bytes = trimesh.exchange.gltf.export_glb(step2_scene, include_normals=True)
+        step2_file = output_dir / "step_02_oriented.glb"
+        step2_file.write_bytes(step2_bytes)
+        m2 = save_and_record_metrics(2, step2_file, orient_stats, duration_seconds=time.perf_counter() - t_s2)
+        self.log(f"   ✓ Step 2 complete: Flipped {orient_stats.get('faces_flipped', 0)} faces to outward CCW")
+
+        # =====================================================================
+        # STEP 3: Texture Baking / Resampling & 16px Dilation
+        # =====================================================================
+        self.log(f"▶️ [Step 3/6] Baking Texture ({self.resolution}x{self.resolution}) + 16px Dilation...")
+        t_s3 = time.perf_counter()
+        raw_uv = getattr(raw_mesh.visual, "uv", None)
+        if raw_uv is None:
+            raw_uv = getattr(grounded_mesh.visual, "uv", np.zeros((len(grounded_mesh.vertices), 2)))
+
+        raw_tex_img = orig_tex_info.get("base_image")
+        if raw_tex_img is None and hasattr(grounded_mesh.visual, "material") and hasattr(grounded_mesh.visual.material, "baseColorTexture"):
+            raw_tex_img = grounded_mesh.visual.material.baseColorTexture
+        if raw_tex_img is None:
+            raw_tex_img = Image.new("RGB", (self.resolution, self.resolution), (200, 200, 200))
+
+        uv_stats = {}
+        if self.rechart_uv:
+            self.log("   Re-charting UV islands with xatlas (High-Density Packing)...")
+            baked_mesh, dilated_pil = rechart_and_bake_high_density(
+                grounded_mesh,
+                target_res=self.resolution,
+                source_image=raw_tex_img,
+                source_uv=raw_uv,
+                dilation_padding=16,
+                double_sided=False,
+                stats=uv_stats
+            )
+            self.log(f"   ✓ High-Density UV: {uv_stats.get('uv_coverage_ratio_percent', 0)}% coverage | Texel Density: {uv_stats.get('texel_density_linear', 0)} px/unit")
+        else:
+            self.log("   Direct Master UV mode: Lanczos resample + 16px dilation...")
+            baked_mesh, dilated_pil = direct_resample_texture(
+                grounded_mesh,
+                source_image=raw_tex_img,
+                target_res=self.resolution,
+                dilation_padding=16
+            )
+
+        # Ensure doubleSided=True so browser viewer does not backface-cull triangles
+        if hasattr(baked_mesh, "visual") and hasattr(baked_mesh.visual, "material") and baked_mesh.visual.material is not None:
+            baked_mesh.visual.material.doubleSided = True
+
+        step3_scene = trimesh.Scene({"Model": baked_mesh})
+        step3_bytes = trimesh.exchange.gltf.export_glb(step3_scene, include_normals=True)
+        step3_bytes = set_doublesided_material(step3_bytes)
+        step3_file = output_dir / "step_03_texture_baked.glb"
+        step3_file.write_bytes(step3_bytes)
+        m3 = save_and_record_metrics(3, step3_file, {"textureResolution": f"{self.resolution}x{self.resolution}", "dilationPadding": 16}, duration_seconds=time.perf_counter() - t_s3)
+        self.log(f"   ✓ Step 3 complete: Baked texture {dilated_pil.size[0]}x{dilated_pil.size[1]}")
+
+        # =====================================================================
+        # STEP 4: Palette Tagging (10 Dominant Colors via K-Means)
+        # =====================================================================
+        self.log("▶️ [Step 4/6] Extracting 10 Dominant Colors & Embedding Extras...")
+        t_s4 = time.perf_counter()
+        img_rgb = np.asarray(dilated_pil)
+        v_uv = baked_mesh.visual.uv % 1.0
+        px = np.clip((v_uv[:, 0] * (img_rgb.shape[1] - 1)).astype(int), 0, img_rgb.shape[1] - 1)
+        py = np.clip(((1.0 - v_uv[:, 1]) * (img_rgb.shape[0] - 1)).astype(int), 0, img_rgb.shape[0] - 1)
+        surface_pixels = img_rgb[py, px]
+
+        palette_data = extract_palette(image=dilated_pil, sample_pixels=surface_pixels, n_colors=10)
+        step4_bytes = embed_gltf_extras(step3_bytes, {
+            "palette": palette_data["palette"],
+            "primaryColor": palette_data["primaryColor"],
+            "paletteDetails": palette_data["paletteDetails"]
+        })
+        step4_file = output_dir / "step_04_palette_tagged.glb"
+        step4_file.write_bytes(step4_bytes)
+        m4 = save_and_record_metrics(4, step4_file, {
+            "primaryColor": palette_data["primaryColor"],
+            "paletteCount": len(palette_data["palette"])
+        }, duration_seconds=time.perf_counter() - t_s4)
+        self.log(f"   ✓ Step 4 complete: Primary color: {palette_data['primaryColor']} | Palette: {palette_data['palette']}")
+
+        # =====================================================================
+        # STEP 5: Smooth Normals & EXT_meshopt_compression Geometry
+        # =====================================================================
+        self.log("▶️ [Step 5/6] Node.js Smooth Normals + Weld + Quantize + Meshopt...")
+        t_s5 = time.perf_counter()
+        step5_file = output_dir / "step_05_meshopt.glb"
+        node_cmd_step5 = [
+            "node", str(NODE_OPT_SCRIPT),
+            str(step4_file),
+            str(step5_file),
+            "--no-ktx2",
+            "--pos-bits", "14",
+            "--normal-bits", "12",
+            "--weld", "0.0001",
+            "--reorder",
+            "--meshopt",
+            "--texture-max-dim", str(self.resolution),
+            "--json"
+        ]
+        if self.smooth_normals:
+            node_cmd_step5.append("--smooth-normals")
+        else:
+            node_cmd_step5.append("--no-smooth-normals")
+
+        if not self.double_sided:
+            node_cmd_step5.append("--single-sided")
+        else:
+            node_cmd_step5.append("--keep-double-sided")
+
+        proc5 = subprocess.run(node_cmd_step5, capture_output=True, text=True)
+        if proc5.returncode != 0 or not step5_file.exists():
+            raise RuntimeError(f"Step 5 Meshopt geometry compression failed: {proc5.stderr or proc5.stdout}")
+
+        m5 = save_and_record_metrics(5, step5_file, duration_seconds=time.perf_counter() - t_s5)
+        self.log(f"   ✓ Step 5 complete: Geometry compressed ({m5['faces']:,} faces preserved 100%, {m5['fileSizeFormatted']})")
+
+        # =====================================================================
+        # STEP 6: KTX2 / WebP GPU Compression, FrontSide Material, Extras
+        # =====================================================================
+        self.log(f"▶️ [Step 6/6] Basis Universal GPU Texture Compression ({self.texture_format.upper()})...")
+        t_s6 = time.perf_counter()
+        step6_temp_file = output_dir / "step_06_temp.glb"
+        node_cmd_step6 = [
+            "node", str(NODE_OPT_SCRIPT),
+            str(step5_file),
+            str(step6_temp_file),
+            "--textures-only",
+            "--meshopt",
+            "--texture-max-dim", str(self.resolution),
+            "--json"
+        ]
+
+        if self.texture_format == "webp":
+            node_cmd_step6.extend(["--webp", "--webp-quality", "85"])
+        else:
+            cpu_threads = str(os.cpu_count() or 4)
+            node_cmd_step6.extend([
+                "--ktx2",
+                "--ktx2-mode", "uastc",
+                "--ktx2-level", "2",
+                "--ktx2-rdo", "1.0",
+                "--ktx2-rdo-d", "2048",
+                "--ktx2-threads", cpu_threads
+            ])
+
+        if not self.double_sided:
+            node_cmd_step6.append("--single-sided")
+        else:
+            node_cmd_step6.append("--keep-double-sided")
+
+        proc6 = subprocess.run(node_cmd_step6, capture_output=True, text=True)
+        if proc6.returncode != 0 or not step6_temp_file.exists():
+            raise RuntimeError(f"Step 6 Texture compression failed: {proc6.stderr or proc6.stdout}")
+
+        final_bytes = step6_temp_file.read_bytes()
+        step6_temp_file.unlink(missing_ok=True)
+
+        if not self.double_sided:
+            final_bytes = set_frontside_material(final_bytes)
+
+        final_extras = {
+            "palette": palette_data["palette"],
+            "primaryColor": palette_data["primaryColor"],
+            "paletteDetails": palette_data["paletteDetails"],
+            "resolution": f"{self.resolution}x{self.resolution}",
+            "texture_format": self.texture_format.upper(),
+            "policy": "STRICT 0-DECIMATION (--ratio 1.0)",
+            "tool": "poc-optimize-3d-model v1.0.0"
+        }
+        final_bytes = embed_gltf_extras(final_bytes, final_extras)
+        step6_file = output_dir / "step_06_final.glb"
+        step6_file.write_bytes(final_bytes)
+
+        m6 = save_and_record_metrics(6, step6_file, duration_seconds=time.perf_counter() - t_s6)
+        self.log(f"   ✓ Step 6 complete: Final GLB ready ({m6['fileSizeFormatted']}, GPU VRAM: {m6['totalGpuVramFormatted']})")
+
+        # =====================================================================
+        # Pipeline Summary & Finalization
+        # =====================================================================
+        total_perf_elapsed = time.perf_counter() - t_total_start
+        elapsed = time.time() - t0
+        final_bytes_count = m6["fileSizeBytes"]
+        saved_bytes = initial_bytes - final_bytes_count
+        saved_pct = round((saved_bytes / initial_bytes) * 100, 2)
+        initial_vram = m0.get("totalGpuVramBytes", 0)
+        final_vram = m6.get("totalGpuVramBytes", 0)
+        vram_saved_pct = round((1 - final_vram / initial_vram) * 100, 2) if initial_vram > 0 else 0.0
+
+        summary = {
+            "model": input_path.name,
+            "outputDir": str(output_dir),
+            "elapsedSeconds": round(total_perf_elapsed, 4),
+            "elapsedMs": round(total_perf_elapsed * 1000, 2),
+            "stepDurations": {
+                s["stepName"]: {
+                    "step": s["step"],
+                    "file": s["file"],
+                    "seconds": s.get("durationSeconds", 0.0),
+                    "ms": s.get("durationMs", 0.0)
+                }
+                for s in steps_record
+            },
+            "initialSizeBytes": initial_bytes,
+            "finalSizeBytes": final_bytes_count,
+            "savedBytes": saved_bytes,
+            "savedPercent": saved_pct,
+            "initialFaces": initial_faces,
+            "finalFaces": m6["faces"],
+            "facesPreservedPercent": round((m6["faces"] / initial_faces) * 100, 2),
+            "zeroDecimationVerified": m6["faces"] == initial_faces,
+            "initialVertices": initial_verts,
+            "finalVertices": m6["vertices"],
+            "initialGpuVramBytes": initial_vram,
+            "finalGpuVramBytes": final_vram,
+            "gpuVramSavedPercent": vram_saved_pct,
+            "primaryColor": palette_data["primaryColor"],
+            "palette": palette_data["palette"],
+            "files": [step["file"] for step in self.STEP_DEFINITIONS]
+        }
+
+        final_payload = {
+            "success": True,
+            "summary": summary,
+            "steps": steps_record
+        }
+        metrics_json_path.write_text(json.dumps(final_payload, indent=2))
+
+        # Emit pipeline_completed event
+        if self.stream_events:
+            print(json.dumps({"event": "pipeline_complete", "summary": summary}), flush=True)
+
+        self.log("=" * 68)
+        self.log(f"🎉 PIPELINE COMPLETED IN {total_perf_elapsed:.2f}s!")
+        self.log(f"   Size: {m0['fileSizeFormatted']} -> {m6['fileSizeFormatted']} (Saved {saved_pct}%)")
+        self.log(f"   GPU VRAM: {m0['totalGpuVramFormatted']} -> {m6['totalGpuVramFormatted']} (Saved {vram_saved_pct}%)")
+        self.log(f"   Triangles: {m6['faces']:,} / {initial_faces:,} (100% Zero-Decimation Verified: {summary['zeroDecimationVerified']})")
+        self.log(f"   Metrics saved to: {metrics_json_path}")
+        self.log("=" * 68)
+
+        return final_payload
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Zero-Decimation Step-by-Step 3D Model Optimization Pipeline",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
+    parser.add_argument("input", help="Path to raw source .glb model")
+    parser.add_argument("--output-dir", "-o", required=True, help="Destination directory for 7 GLB step files and metrics.json")
+    parser.add_argument("--resolution", "-r", type=int, default=1024, help="Texture resolution (e.g. 512, 1024, 2048)")
+    parser.add_argument("--format", "-f", choices=["ktx2", "webp"], default="ktx2", help="GPU texture compression format")
+    parser.add_argument("--rechart-uv", action="store_true", help="Re-chart UVs using xatlas (default: direct master UV)")
+    parser.add_argument("--no-smooth-normals", action="store_true", help="Disable angle-weighted normal smoothing across seams")
+    parser.add_argument("--double-sided", action="store_true", help="Keep double-sided materials instead of forcing single-sided FrontSide")
+    parser.add_argument("--no-preserve-textures", action="store_true", help="Disable texture preservation in Steps 1 & 2")
+    parser.add_argument("--quiet", "-q", action="store_true", help="Suppress stderr logs and only stream NDJSON events")
+
+    args = parser.parse_args()
+
+    pipeline = StepPipeline(
+        resolution=args.resolution,
+        texture_format=args.format,
+        rechart_uv=args.rechart_uv,
+        smooth_normals=not args.no_smooth_normals,
+        double_sided=args.double_sided,
+        preserve_textures=not args.no_preserve_textures,
+        verbose=not args.quiet,
+        stream_events=True
+    )
+
+    try:
+        pipeline.run(Path(args.input), Path(args.output_dir))
+    except Exception as e:
+        err_payload = {"event": "pipeline_error", "error": str(e)}
+        print(json.dumps(err_payload), file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

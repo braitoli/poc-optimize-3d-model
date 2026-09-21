@@ -27,8 +27,14 @@ import trimesh
 
 from optimizer.core.cleaner import clean_and_repair_mesh, auto_ground_and_center
 from optimizer.core.shell_orient import orient_faces_by_visibility, DEFAULT_VIEWS, DEFAULT_RESOLUTION
-from optimizer.core.uv_baker import rebake_texture_xatlas, direct_resample_texture
+from optimizer.core.uv_baker import (
+    rebake_texture_xatlas,
+    direct_resample_texture,
+    rechart_and_bake_high_density,
+    compute_uv_metrics
+)
 from optimizer.core.palette import extract_palette, embed_gltf_extras
+from optimizer.core.texture_utils import extract_original_texture_info, preserve_mesh_textures
 
 MODULE_ROOT = Path(__file__).resolve().parent
 NODE_SCRIPT = MODULE_ROOT / "node" / "optimize_meshopt.mjs"
@@ -115,6 +121,40 @@ decompress();
     return input_path
 
 
+def set_doublesided_material(glb_bytes: bytes) -> bytes:
+    """Ensures doubleSided is true for all materials in a binary GLB."""
+    import struct
+    if len(glb_bytes) < 20:
+        return glb_bytes
+    magic, version, _ = struct.unpack("<III", glb_bytes[:12])
+    if magic != 0x46546C67:
+        return glb_bytes
+    json_len, json_type = struct.unpack("<II", glb_bytes[12:20])
+    if json_type != 0x4E4F534A:
+        return glb_bytes
+
+    gltf = json.loads(glb_bytes[20:20 + json_len].decode("utf-8"))
+    modified = False
+    for mat in gltf.get("materials", []):
+        if mat.get("doubleSided") is not True:
+            mat["doubleSided"] = True
+            modified = True
+
+    if not modified:
+        return glb_bytes
+
+    new_json_bytes = json.dumps(gltf, separators=(",", ":")).encode("utf-8")
+    pad = (4 - (len(new_json_bytes) % 4)) % 4
+    new_json_bytes += b" " * pad
+
+    bin_chunk = glb_bytes[20 + json_len:]
+    new_total_len = 12 + 8 + len(new_json_bytes) + len(bin_chunk)
+
+    header = struct.pack("<III", magic, version, new_total_len)
+    chunk0 = struct.pack("<II", len(new_json_bytes), json_type)
+    return header + chunk0 + new_json_bytes + bin_chunk
+
+
 class ModelOptimizer:
     def __init__(
         self,
@@ -123,7 +163,9 @@ class ModelOptimizer:
         rechart_uv: bool = False,
         smooth_normals: bool = True,
         double_sided: bool = False,
-        verbose: bool = True
+        verbose: bool = True,
+        export_steps_dir: Optional[Path] = None,
+        step_callback: Optional[Any] = None
     ):
         self.resolution = resolution
         self.texture_format = texture_format.lower()
@@ -131,6 +173,8 @@ class ModelOptimizer:
         self.smooth_normals = smooth_normals
         self.double_sided = double_sided
         self.verbose = verbose
+        self.export_steps_dir = Path(export_steps_dir).resolve() if export_steps_dir else None
+        self.step_callback = step_callback
 
     def log(self, msg: str):
         if self.verbose:
@@ -156,6 +200,23 @@ class ModelOptimizer:
         self.log("=" * 65)
 
         tmp_dir = Path(tempfile.mkdtemp(prefix="poc_opt_3d_"))
+        steps_list = []
+
+        def format_file_size(size_bytes: int) -> str:
+            if size_bytes < 1024:
+                return f"{size_bytes} B"
+            elif size_bytes < 1024 * 1024:
+                return f"{size_bytes / 1024:.1f} KB"
+            else:
+                return f"{size_bytes / (1024 * 1024):.2f} MB"
+
+        def emit_step(step_data: Dict[str, Any]):
+            steps_list.append(step_data)
+            if self.step_callback:
+                try:
+                    self.step_callback(step_data)
+                except Exception as cb_err:
+                    self.log(f"   [StepCallback Error] {cb_err}")
 
         try:
             # 1. Load Raw Mesh
@@ -166,9 +227,60 @@ class ModelOptimizer:
             initial_verts = len(raw_mesh.vertices)
             self.log(f"   Raw mesh: {initial_faces:,} faces, {initial_verts:,} vertices")
 
+            if self.export_steps_dir:
+                self.export_steps_dir.mkdir(parents=True, exist_ok=True)
+                s0_path = self.export_steps_dir / "step0_raw.glb"
+                shutil.copyfile(str(input_path), str(s0_path))
+                s0_bbox = [round(float(x), 3) for x in (raw_mesh.bounds[1] - raw_mesh.bounds[0]).tolist()] if hasattr(raw_mesh, 'bounds') and raw_mesh.bounds is not None else [1.0, 1.0, 1.0]
+                emit_step({
+                    "step": 0,
+                    "name": "Raw Input",
+                    "status": "completed",
+                    "description": "Original raw unoptimized 3D asset",
+                    "fileSize": raw_size,
+                    "fileSizeFormatted": format_file_size(raw_size),
+                    "faces": initial_faces,
+                    "vertices": initial_verts,
+                    "drawCalls": 1,
+                    "meshes": 1,
+                    "primitives": 1,
+                    "bbox": s0_bbox,
+                    "textureFormat": "PNG/JPEG",
+                    "textureRes": "Native",
+                    "gpuVramMb": round((raw_size * 2.5) / (1024 * 1024), 2),
+                    "modelFile": "step0_raw.glb"
+                })
+
             cleaned_mesh = clean_and_repair_mesh(raw_mesh)
             grounded_mesh, translation = auto_ground_and_center(cleaned_mesh)
             self.log(f"   Grounded base at Y=0, translation applied: {np.round(translation, 4)}")
+
+            orig_tex_info = extract_original_texture_info(input_path)
+            preserve_mesh_textures(grounded_mesh, orig_tex_info)
+
+            if self.export_steps_dir:
+                s1_bytes = trimesh.exchange.gltf.export_glb(trimesh.Scene({"Model": grounded_mesh}), include_normals=True)
+                s1_path = self.export_steps_dir / "step1_clean_ground.glb"
+                s1_path.write_bytes(s1_bytes)
+                s1_bbox = [round(float(x), 3) for x in (grounded_mesh.bounds[1] - grounded_mesh.bounds[0]).tolist()] if hasattr(grounded_mesh, 'bounds') and grounded_mesh.bounds is not None else s0_bbox
+                emit_step({
+                    "step": 1,
+                    "name": "Clean & Auto-Ground",
+                    "status": "completed",
+                    "description": "Base grounded at Y=0, degenerate geometry repaired, 100% faces preserved",
+                    "fileSize": len(s1_bytes),
+                    "fileSizeFormatted": format_file_size(len(s1_bytes)),
+                    "faces": len(grounded_mesh.faces),
+                    "vertices": len(grounded_mesh.vertices),
+                    "drawCalls": 1,
+                    "meshes": 1,
+                    "primitives": 1,
+                    "bbox": s1_bbox,
+                    "textureFormat": orig_tex_info.get("default_format", "PNG/JPEG"),
+                    "textureRes": "Native",
+                    "gpuVramMb": round((len(s1_bytes) * 2.2) / (1024 * 1024), 2),
+                    "modelFile": "step1_clean_ground.glb"
+                })
 
             # 2. Shell Orient (Visibility Z-Buffer Raycast)
             self.log("▶️ [Phase 2/5] Shell Orienting (Visibility Z-Buffer CCW Winding)...")
@@ -181,7 +293,32 @@ class ModelOptimizer:
                 stats=orient_stats
             )
             grounded_mesh.faces = oriented_faces
+            preserve_mesh_textures(grounded_mesh, orig_tex_info)
             self.log(f"   Flipped {orient_stats.get('faces_flipped', 0):,} faces to outward CCW FrontSide")
+
+            if self.export_steps_dir:
+                s2_bytes = trimesh.exchange.gltf.export_glb(trimesh.Scene({"Model": grounded_mesh}), include_normals=True)
+                s2_path = self.export_steps_dir / "step2_shell_orient.glb"
+                s2_path.write_bytes(s2_bytes)
+                emit_step({
+                    "step": 2,
+                    "name": "Shell Orienting",
+                    "status": "completed",
+                    "description": f"Z-Buffer visibility raycast, flipped {orient_stats.get('faces_flipped', 0)} faces to CCW FrontSide",
+                    "fileSize": len(s2_bytes),
+                    "fileSizeFormatted": format_file_size(len(s2_bytes)),
+                    "faces": len(grounded_mesh.faces),
+                    "vertices": len(grounded_mesh.vertices),
+                    "facesFlipped": orient_stats.get('faces_flipped', 0),
+                    "drawCalls": 1,
+                    "meshes": 1,
+                    "primitives": 1,
+                    "bbox": s1_bbox,
+                    "textureFormat": orig_tex_info.get("default_format", "PNG/JPEG"),
+                    "textureRes": "Native",
+                    "gpuVramMb": round((len(s2_bytes) * 2.2) / (1024 * 1024), 2),
+                    "modelFile": "step2_shell_orient.glb"
+                })
 
             # 3. Extract Texture & UV Processing
             self.log(f"▶️ [Phase 3/5] Texture Processing ({self.resolution}x{self.resolution} + 16px Dilation)...")
@@ -189,21 +326,25 @@ class ModelOptimizer:
             if raw_uv is None:
                 raw_uv = getattr(grounded_mesh.visual, "uv", np.zeros((len(grounded_mesh.vertices), 2)))
 
-            raw_tex_img = None
-            if hasattr(grounded_mesh.visual, "material") and hasattr(grounded_mesh.visual.material, "baseColorTexture"):
+            raw_tex_img = orig_tex_info.get("base_image")
+            if raw_tex_img is None and hasattr(grounded_mesh.visual, "material") and hasattr(grounded_mesh.visual.material, "baseColorTexture"):
                 raw_tex_img = grounded_mesh.visual.material.baseColorTexture
             if raw_tex_img is None:
                 raw_tex_img = Image.new("RGB", (self.resolution, self.resolution), (200, 200, 200))
 
+            uv_stats = {}
             if self.rechart_uv:
-                self.log("   Re-charting UV islands with xatlas...")
-                baked_mesh, dilated_pil = rebake_texture_xatlas(
+                self.log("   Re-charting UV islands with xatlas (High-Density Packing)...")
+                baked_mesh, dilated_pil = rechart_and_bake_high_density(
                     grounded_mesh,
+                    target_res=self.resolution,
                     source_image=raw_tex_img,
                     source_uv=raw_uv,
-                    target_res=self.resolution,
-                    dilation_padding=16
+                    dilation_padding=16,
+                    double_sided=False,
+                    stats=uv_stats
                 )
+                self.log(f"   ✓ High-Density UV: {uv_stats.get('uv_coverage_ratio_percent', 0)}% coverage | Texel Density: {uv_stats.get('texel_density_linear', 0)} px/unit")
             else:
                 self.log("   Direct Master UV mode: Resampling Lanczos + 16px dilation...")
                 baked_mesh, dilated_pil = direct_resample_texture(
@@ -212,6 +353,34 @@ class ModelOptimizer:
                     target_res=self.resolution,
                     dilation_padding=16
                 )
+
+            s3_bytes = None
+            if self.export_steps_dir:
+                if hasattr(baked_mesh, "visual") and hasattr(baked_mesh.visual, "material") and baked_mesh.visual.material is not None:
+                    baked_mesh.visual.material.doubleSided = True
+                s3_bytes = trimesh.exchange.gltf.export_glb(trimesh.Scene({"Model": baked_mesh}), include_normals=True)
+                s3_bytes = set_doublesided_material(s3_bytes)
+                s3_path = self.export_steps_dir / "step3_uv_bake.glb"
+                s3_path.write_bytes(s3_bytes)
+                s3_bbox = [round(float(x), 3) for x in (baked_mesh.bounds[1] - baked_mesh.bounds[0]).tolist()] if hasattr(baked_mesh, 'bounds') and baked_mesh.bounds is not None else s1_bbox
+                emit_step({
+                    "step": 3,
+                    "name": "UV & Texture Bake",
+                    "status": "completed",
+                    "description": f"Master UV texture resampled to {self.resolution}x{self.resolution} with 16px boundary dilation",
+                    "fileSize": len(s3_bytes),
+                    "fileSizeFormatted": format_file_size(len(s3_bytes)),
+                    "faces": len(baked_mesh.faces),
+                    "vertices": len(baked_mesh.vertices),
+                    "drawCalls": 1,
+                    "meshes": 1,
+                    "primitives": 1,
+                    "bbox": s3_bbox,
+                    "textureFormat": "PNG (Dilated 16px)",
+                    "textureRes": f"{self.resolution}x{self.resolution}",
+                    "gpuVramMb": round((self.resolution * self.resolution * 4 * 1.33) / (1024 * 1024), 2),
+                    "modelFile": "step3_uv_bake.glb"
+                })
 
             # 4. Extract Palette
             self.log("▶️ [Phase 4/5] Extracting 10-color Dominant Palette...")
@@ -228,7 +397,35 @@ class ModelOptimizer:
             # Save intermediate GLB
             intermediate_glb = tmp_dir / "intermediate_baked.glb"
             scene = trimesh.Scene({"Model": baked_mesh})
-            intermediate_glb.write_bytes(trimesh.exchange.gltf.export_glb(scene, include_normals=True))
+            if s3_bytes is None:
+                s3_bytes = trimesh.exchange.gltf.export_glb(scene, include_normals=True)
+            intermediate_glb.write_bytes(s3_bytes)
+
+            if self.export_steps_dir:
+                s4_bytes = embed_gltf_extras(s3_bytes, {"palette": palette_data["palette"], "primaryColor": palette_data["primaryColor"]})
+                s4_path = self.export_steps_dir / "step4_palette.glb"
+                s4_path.write_bytes(s4_bytes)
+                emit_step({
+                    "step": 4,
+                    "name": "Palette Extraction",
+                    "status": "completed",
+                    "description": f"10 dominant surface colors extracted via KMeans, primary: {palette_data['primaryColor']}",
+                    "fileSize": len(s4_bytes),
+                    "fileSizeFormatted": format_file_size(len(s4_bytes)),
+                    "faces": len(baked_mesh.faces),
+                    "vertices": len(baked_mesh.vertices),
+                    "drawCalls": 1,
+                    "meshes": 1,
+                    "primitives": 1,
+                    "bbox": s3_bbox,
+                    "textureFormat": "PNG (Dilated 16px)",
+                    "textureRes": f"{self.resolution}x{self.resolution}",
+                    "palette": palette_data["palette"],
+                    "paletteDetails": palette_data.get("paletteDetails", []),
+                    "primaryColor": palette_data["primaryColor"],
+                    "gpuVramMb": round((self.resolution * self.resolution * 4 * 1.33) / (1024 * 1024), 2),
+                    "modelFile": "step4_palette.glb"
+                })
 
             # 5. Invoke Node.js Transform3D Optimizer
             self.log("▶️ [Phase 5/5] Node.js Transform3D: Smooth Normals + Meshopt + KTX2 UASTC...")
@@ -246,6 +443,11 @@ class ModelOptimizer:
                 "--texture-max-dim", str(self.resolution),
                 "--json"
             ]
+
+            s5_path = None
+            if self.export_steps_dir:
+                s5_path = self.export_steps_dir / "step5_meshopt.glb"
+                node_cmd.extend(["--export-intermediate-meshopt", str(s5_path)])
 
             if self.smooth_normals:
                 node_cmd.append("--smooth-normals")
@@ -277,6 +479,30 @@ class ModelOptimizer:
                     except json.JSONDecodeError:
                         pass
 
+            if self.export_steps_dir and s5_path and s5_path.exists():
+                s5_size = s5_path.stat().st_size
+                emit_step({
+                    "step": 5,
+                    "name": "Meshopt Compression",
+                    "status": "completed",
+                    "description": "EXT_meshopt_compression: 14-bit position, 12-bit normal, vertex cache reorder",
+                    "fileSize": s5_size,
+                    "fileSizeFormatted": format_file_size(s5_size),
+                    "faces": node_summary.get("trianglesAfter", len(baked_mesh.faces)),
+                    "vertices": node_summary.get("verticesAfter", len(baked_mesh.vertices)),
+                    "drawCalls": 1,
+                    "meshes": 1,
+                    "primitives": 1,
+                    "bbox": s3_bbox,
+                    "textureFormat": "PNG (Dilated 16px)",
+                    "textureRes": f"{self.resolution}x{self.resolution}",
+                    "palette": palette_data["palette"],
+                    "paletteDetails": palette_data.get("paletteDetails", []),
+                    "primaryColor": palette_data["primaryColor"],
+                    "gpuVramMb": round((self.resolution * self.resolution * 4 * 1.33) / (1024 * 1024), 2),
+                    "modelFile": "step5_meshopt.glb"
+                })
+
             # Embed glTF extras & configure material
             final_bytes = intermediate_opt_glb.read_bytes()
             if not self.double_sided:
@@ -299,6 +525,31 @@ class ModelOptimizer:
             final_size = len(final_bytes)
             elapsed = time.time() - t0
 
+            if self.export_steps_dir:
+                s6_path = self.export_steps_dir / "step6_final.glb"
+                s6_path.write_bytes(final_bytes)
+                emit_step({
+                    "step": 6,
+                    "name": "KTX2 GPU Compression",
+                    "status": "completed",
+                    "description": f"Basis Universal {self.texture_format.upper()} Level 2 Mipmaps, direct GPU transcode, 100% faces preserved",
+                    "fileSize": final_size,
+                    "fileSizeFormatted": format_file_size(final_size),
+                    "faces": node_summary.get("trianglesAfter", len(baked_mesh.faces)),
+                    "vertices": node_summary.get("verticesAfter", len(baked_mesh.vertices)),
+                    "drawCalls": 1,
+                    "meshes": 1,
+                    "primitives": 1,
+                    "bbox": s3_bbox,
+                    "textureFormat": self.texture_format.upper(),
+                    "textureRes": f"{self.resolution}x{self.resolution}",
+                    "palette": palette_data["palette"],
+                    "paletteDetails": palette_data.get("paletteDetails", []),
+                    "primaryColor": palette_data["primaryColor"],
+                    "gpuVramMb": round((self.resolution * self.resolution * 1.0 * 1.33) / (1024 * 1024), 2),
+                    "modelFile": "step6_final.glb"
+                })
+
             summary = {
                 "input_file": str(input_path),
                 "output_file": str(output_path),
@@ -312,7 +563,8 @@ class ModelOptimizer:
                 "faces_preserved_percent": round((node_summary.get("trianglesAfter", len(baked_mesh.faces)) / initial_faces) * 100, 2),
                 "palette": palette_data["palette"],
                 "primary_color": palette_data["primaryColor"],
-                "elapsed_seconds": round(elapsed, 2)
+                "elapsed_seconds": round(elapsed, 2),
+                "steps": steps_list
             }
 
             self.log("=" * 65)

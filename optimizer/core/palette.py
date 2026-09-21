@@ -53,15 +53,23 @@ def extract_palette(
     if np.any(non_black):
         pixels = pixels[non_black]
 
+    # Subsample if pixel count is large for fast, robust K-Means clustering
+    max_samples = 8000
+    if len(pixels) > max_samples:
+        step = max(1, len(pixels) // max_samples)
+        kmeans_pixels = pixels[::step]
+    else:
+        kmeans_pixels = pixels
+
     # K-Means clustering
     try:
-        centroids, labels = kmeans2(pixels, n_colors, minit="points", iter=15)
+        centroids, labels = kmeans2(kmeans_pixels, n_colors, minit="points", iter=15)
         counts = np.bincount(labels, minlength=len(centroids))
         order = np.argsort(counts)[::-1]
 
         palette = []
         details = []
-        total_p = len(pixels)
+        total_p = len(kmeans_pixels)
 
         for idx in order:
             c = np.clip(np.round(centroids[idx]), 0, 255).astype(int)

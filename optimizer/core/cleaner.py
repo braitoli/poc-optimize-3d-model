@@ -13,6 +13,32 @@ import numpy as np
 import trimesh
 
 
+def _preserve_texture_attributes(src: trimesh.Trimesh, dst: trimesh.Trimesh) -> None:
+    """Preserves image formats and fast-save hooks across trimesh mesh copying."""
+    if not hasattr(src, "visual") or not hasattr(dst, "visual"):
+        return
+    src_mat = getattr(src.visual, "material", None)
+    dst_mat = getattr(dst.visual, "material", None)
+    if not src_mat or not dst_mat:
+        return
+    for attr in [
+        "baseColorTexture",
+        "image",
+        "metallicRoughnessTexture",
+        "normalTexture",
+        "emissiveTexture",
+        "occlusionTexture"
+    ]:
+        src_img = getattr(src_mat, attr, None)
+        dst_img = getattr(dst_mat, attr, None)
+        if src_img is not None and dst_img is not None:
+            if hasattr(src_img, "format") and src_img.format:
+                dst_img.format = src_img.format
+            if hasattr(src_img, "_fast_save_data"):
+                dst_img._fast_save_data = src_img._fast_save_data
+                dst_img.save = src_img.save
+
+
 def clean_and_repair_mesh(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
     """
     Cleans mesh geometry while strictly preserving 100% valid triangles.
@@ -21,6 +47,8 @@ def clean_and_repair_mesh(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
     m = mesh.copy()
     if isinstance(m, trimesh.Scene):
         m = m.dump(concatenate=True)
+
+    _preserve_texture_attributes(mesh, m)
 
     if hasattr(m, "remove_infinite_values"):
         m.remove_infinite_values()
@@ -52,6 +80,7 @@ def auto_ground_and_center(mesh: trimesh.Trimesh) -> Tuple[trimesh.Trimesh, np.n
     Returns (grounded_mesh, translation_vector).
     """
     m = mesh.copy()
+    _preserve_texture_attributes(mesh, m)
     bounds = m.bounds  # [[min_x, min_y, min_z], [max_x, max_y, max_z]]
     
     min_x, min_y, min_z = bounds[0]
@@ -65,3 +94,4 @@ def auto_ground_and_center(mesh: trimesh.Trimesh) -> Tuple[trimesh.Trimesh, np.n
     m.apply_translation(translation)
 
     return m, translation
+

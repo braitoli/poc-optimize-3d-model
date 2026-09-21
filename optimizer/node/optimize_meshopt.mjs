@@ -3,6 +3,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { NodeIO, Primitive } from '@gltf-transform/core';
@@ -23,14 +24,51 @@ import { computeStandardSmoothNormals } from './smooth_normals.mjs';
 
 const execFileAsync = promisify(execFile);
 
+let _cachedSharp = undefined;
+async function getSharpModule() {
+  if (_cachedSharp !== undefined) return _cachedSharp;
+  try {
+    const mod = await import('sharp');
+    _cachedSharp = mod.default || mod;
+  } catch {
+    _cachedSharp = null;
+  }
+  return _cachedSharp;
+}
+
+function getImageDimensions(buffer) {
+  if (!buffer || buffer.length < 24) return null;
+  // PNG: IHDR chunk width/height at byte 16 and 20
+  if (buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47) {
+    return { width: buffer.readUInt32BE(16), height: buffer.readUInt32BE(20) };
+  }
+  // JPEG: scan for SOF marker
+  if (buffer[0] === 0xff && buffer[1] === 0xd8) {
+    let offset = 2;
+    while (offset < buffer.length - 8) {
+      if (buffer[offset] !== 0xff) { offset++; continue; }
+      const marker = buffer[offset + 1];
+      if (marker === 0xd9 || marker === 0xda) break;
+      const len = buffer.readUInt16BE(offset + 2);
+      if ((marker >= 0xc0 && marker <= 0xc3) || (marker >= 0xc5 && marker <= 0xc7) || (marker >= 0xc9 && marker <= 0xcb) || (marker >= 0xcd && marker <= 0xcf)) {
+        return { height: buffer.readUInt16BE(offset + 5), width: buffer.readUInt16BE(offset + 7) };
+      }
+      offset += 2 + len;
+    }
+  }
+  return null;
+}
+
 export async function compressTexturesKtx2(doc, options = {}) {
   const mode = options.mode || 'uastc';
   const uastcLevel = options.uastcLevel ?? 2;
   const uastcRdo = options.uastcRdo ?? 1.0;
+  const uastcRdoD = options.uastcRdoD ?? 2048;
   const etc1sQuality = options.etc1sQuality ?? 128;
   const compLevel = options.compLevel ?? 1;
   const maxDim = options.maxDim ?? null;
   const generateMipmaps = options.mipmaps !== false;
+  const totalCores = options.threads ?? (os.cpus()?.length || 4);
 
   const textures = doc.getRoot().listTextures();
   if (textures.length === 0) {
@@ -45,33 +83,55 @@ export async function compressTexturesKtx2(doc, options = {}) {
     return { count: 0, beforeBytes: 0, afterBytes: 0, skipped: true };
   }
 
+  const sharpMod = await getSharpModule();
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'poc-ktx2-'));
+
+  const pendingTextures = [];
   let totalBefore = 0;
+
+  for (let i = 0; i < textures.length; i++) {
+    const tex = textures[i];
+    const mime = tex.getMimeType();
+    if (mime === 'image/ktx2') continue;
+
+    const imgBuffer = Buffer.from(tex.getImage());
+    if (!imgBuffer || imgBuffer.byteLength === 0) continue;
+
+    totalBefore += imgBuffer.byteLength;
+    pendingTextures.push({ tex, i, imgBuffer, mime });
+  }
+
+  if (pendingTextures.length === 0) {
+    await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    return { count: 0, beforeBytes: 0, afterBytes: 0 };
+  }
+
+  // Determine concurrency and thread allocation per texture
+  const concurrency = Math.min(pendingTextures.length, Math.max(1, Math.floor(totalCores / 2)));
+  const threadsPerTex = Math.max(1, Math.floor(totalCores / concurrency));
+
   let totalAfter = 0;
   let processedCount = 0;
 
   try {
-    for (let i = 0; i < textures.length; i++) {
-      const tex = textures[i];
-      const mime = tex.getMimeType();
-      if (mime === 'image/ktx2') continue;
-
-      const imgBuffer = Buffer.from(tex.getImage());
-      if (!imgBuffer || imgBuffer.byteLength === 0) continue;
-
-      totalBefore += imgBuffer.byteLength;
+    async function processTextureItem({ tex, i, imgBuffer, mime }) {
       const isJpeg = mime === 'image/jpeg' || mime === 'image/jpg';
       const isWebp = mime === 'image/webp' || (imgBuffer.length >= 12 && imgBuffer.subarray(0, 4).toString() === 'RIFF' && imgBuffer.subarray(8, 12).toString() === 'WEBP');
-      
+
       let inPath;
       if (isWebp) {
-        const webpPath = path.join(tmpDir, `tex_${i}.webp`);
-        await fs.writeFile(webpPath, imgBuffer);
         const pngPath = path.join(tmpDir, `tex_${i}.png`);
-        try {
-          await execFileAsync('sips', ['-s', 'format', 'png', webpPath, '--out', pngPath]);
-        } catch {
-          await execFileAsync('python3', ['-c', `from PIL import Image; Image.open('${webpPath}').save('${pngPath}')`]);
+        if (sharpMod) {
+          const pngBuf = await sharpMod(imgBuffer).png().toBuffer();
+          await fs.writeFile(pngPath, pngBuf);
+        } else {
+          const webpPath = path.join(tmpDir, `tex_${i}.webp`);
+          await fs.writeFile(webpPath, imgBuffer);
+          try {
+            await execFileAsync('sips', ['-s', 'format', 'png', webpPath, '--out', pngPath]);
+          } catch {
+            await execFileAsync('python3', ['-c', `from PIL import Image; Image.open('${webpPath}').save('${pngPath}')`]);
+          }
         }
         inPath = pngPath;
       } else {
@@ -79,14 +139,18 @@ export async function compressTexturesKtx2(doc, options = {}) {
         inPath = path.join(tmpDir, `tex_${i}${ext}`);
         await fs.writeFile(inPath, imgBuffer);
       }
-      const outPath = path.join(tmpDir, `tex_${i}.ktx2`);
 
-      const basisuArgs = ['-ktx2'];
+      const outPath = path.join(tmpDir, `tex_${i}.ktx2`);
+      const basisuArgs = ['-ktx2', '-max_threads', String(threadsPerTex)];
+
       if (mode === 'uastc') {
         basisuArgs.push('-uastc');
         basisuArgs.push('-uastc_level', String(uastcLevel));
         if (uastcRdo > 0) {
           basisuArgs.push('-uastc_rdo_l', String(uastcRdo));
+          if (uastcRdoD && uastcRdoD > 0) {
+            basisuArgs.push('-uastc_rdo_d', String(uastcRdoD));
+          }
         }
       } else {
         basisuArgs.push('-q', String(etc1sQuality));
@@ -94,10 +158,13 @@ export async function compressTexturesKtx2(doc, options = {}) {
       }
 
       if (generateMipmaps) {
-        basisuArgs.push('-mipmap');
+        basisuArgs.push('-mipmap', '-mip_fast');
       }
 
-      if (maxDim && maxDim > 0) {
+      // Check if image actually exceeds maxDim before adding -resample
+      const dims = getImageDimensions(imgBuffer);
+      const needsResample = maxDim && maxDim > 0 && (!dims || dims.width > maxDim || dims.height > maxDim);
+      if (needsResample) {
         basisuArgs.push('-resample', String(maxDim), String(maxDim));
       }
 
@@ -107,11 +174,19 @@ export async function compressTexturesKtx2(doc, options = {}) {
       await execFileAsync('basisu', basisuArgs);
 
       const ktx2Data = await fs.readFile(outPath);
-      totalAfter += ktx2Data.byteLength;
-      processedCount++;
-
       tex.setImage(new Uint8Array(ktx2Data));
       tex.setMimeType('image/ktx2');
+
+      return ktx2Data.byteLength;
+    }
+
+    for (let idx = 0; idx < pendingTextures.length; idx += concurrency) {
+      const batch = pendingTextures.slice(idx, idx + concurrency);
+      const results = await Promise.all(batch.map(item => processTextureItem(item)));
+      for (const bytes of results) {
+        totalAfter += bytes;
+        processedCount++;
+      }
     }
 
     if (processedCount > 0) {
@@ -142,7 +217,8 @@ export async function compressTexturesWebp(doc, options = {}) {
     return { count: 0, beforeBytes: 0, afterBytes: 0 };
   }
 
-  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'poc-webp-'));
+  const sharpMod = await getSharpModule();
+  const tmpDir = sharpMod ? null : await fs.mkdtemp(path.join(os.tmpdir(), 'poc-webp-'));
   let totalBefore = 0;
   let totalAfter = 0;
   let processedCount = 0;
@@ -155,23 +231,33 @@ export async function compressTexturesWebp(doc, options = {}) {
       if (!imgBuffer || imgBuffer.byteLength === 0) continue;
 
       totalBefore += imgBuffer.byteLength;
-      const isWebp = mime === 'image/webp' || (imgBuffer.length >= 12 && imgBuffer.subarray(0, 4).toString() === 'RIFF' && imgBuffer.subarray(8, 12).toString() === 'WEBP');
-      const isJpeg = mime === 'image/jpeg' || mime === 'image/jpg';
-      const ext = isJpeg ? '.jpg' : (isWebp ? '.webp' : '.png');
-      const inPath = path.join(tmpDir, `tex_${i}${ext}`);
-      const outPath = path.join(tmpDir, `tex_${i}_out.webp`);
-      await fs.writeFile(inPath, imgBuffer);
+      let webpData;
 
-      const pyScript = `
+      if (sharpMod) {
+        let pipeline = sharpMod(imgBuffer);
+        if (maxDim && maxDim > 0) {
+          pipeline = pipeline.resize(maxDim, maxDim, { fit: 'inside', withoutEnlargement: true });
+        }
+        webpData = await pipeline.webp({ quality }).toBuffer();
+      } else {
+        const isWebp = mime === 'image/webp' || (imgBuffer.length >= 12 && imgBuffer.subarray(0, 4).toString() === 'RIFF' && imgBuffer.subarray(8, 12).toString() === 'WEBP');
+        const isJpeg = mime === 'image/jpeg' || mime === 'image/jpg';
+        const ext = isJpeg ? '.jpg' : (isWebp ? '.webp' : '.png');
+        const inPath = path.join(tmpDir, `tex_${i}${ext}`);
+        const outPath = path.join(tmpDir, `tex_${i}_out.webp`);
+        await fs.writeFile(inPath, imgBuffer);
+
+        const pyScript = `
 from PIL import Image
 im = Image.open('${inPath}')
 if ${maxDim ? maxDim : 0} > 0 and (im.width > ${maxDim || 0} or im.height > ${maxDim || 0}):
     im.thumbnail((${maxDim || 0}, ${maxDim || 0}), Image.Resampling.LANCZOS)
 im.save('${outPath}', 'WEBP', quality=${quality})
 `;
-      await execFileAsync('python3', ['-c', pyScript]);
+        await execFileAsync('python3', ['-c', pyScript]);
+        webpData = await fs.readFile(outPath);
+      }
 
-      const webpData = await fs.readFile(outPath);
       totalAfter += webpData.byteLength;
       processedCount++;
 
@@ -183,7 +269,9 @@ im.save('${outPath}', 'WEBP', quality=${quality})
       doc.createExtension(EXTTextureWebP).setRequired(true);
     }
   } finally {
-    await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    if (tmpDir) {
+      await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
   }
 
   return {
@@ -252,15 +340,21 @@ Options:
   let ktx2Mode = 'uastc';
   let ktx2Level = 2;
   let ktx2Rdo = 1.0;
+  let ktx2RdoD = 2048;
+  let ktx2Threads = os.cpus()?.length || 4;
   let textureMaxDim = null;
   let forceSingleSided = false;
   let enableJson = false;
+  let exportIntermediateMeshopt = null;
+  let texturesOnly = false;
 
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
-    if (a === '--smooth-normals') enableSmoothNormals = true;
+    if (a === '--textures-only') texturesOnly = true;
+    else if (a === '--smooth-normals') enableSmoothNormals = true;
     else if (a === '--no-smooth-normals') enableSmoothNormals = false;
     else if (a === '--keep-uv-float32') keepUvFloat32 = true;
+    else if (a === '--export-intermediate-meshopt' && args[i + 1]) exportIntermediateMeshopt = args[++i];
     else if (a === '--pos-bits' && args[i + 1]) posBits = parseInt(args[++i], 10);
     else if (a === '--normal-bits' && args[i + 1]) normalBits = parseInt(args[++i], 10);
     else if (a === '--weld' && args[i + 1]) weldTol = parseFloat(args[++i]);
@@ -272,6 +366,8 @@ Options:
     else if (a === '--ktx2-mode' && args[i + 1]) ktx2Mode = args[++i];
     else if (a === '--ktx2-level' && args[i + 1]) ktx2Level = parseInt(args[++i], 10);
     else if (a === '--ktx2-rdo' && args[i + 1]) ktx2Rdo = parseFloat(args[++i]);
+    else if (a === '--ktx2-rdo-d' && args[i + 1]) ktx2RdoD = parseInt(args[++i], 10);
+    else if (a === '--ktx2-threads' && args[i + 1]) ktx2Threads = parseInt(args[++i], 10);
     else if ((a === '--texture-max-dim' || a === '--ktx2-max-dim') && args[i + 1]) textureMaxDim = parseInt(args[++i], 10);
     else if (a === '--webp') { enableWebp = true; enableKtx2 = false; }
     else if (a === '--webp-quality' && args[i + 1]) webpQuality = parseInt(args[++i], 10);
@@ -310,7 +406,7 @@ Options:
   }
 
   // 1. Compute angle-weighted smooth normals across seams
-  if (enableSmoothNormals) {
+  if (!texturesOnly && enableSmoothNormals) {
     if (!enableJson) console.log('   * Computing Angle-Weighted Smooth Normals (spatial seam welding)...');
     computeStandardSmoothNormals(doc, { smoothAcrossUvSeams: true, spatialTolerance: 1e-5 });
   }
@@ -323,33 +419,48 @@ Options:
   }
 
   // 3. glTF Transform pipeline
-  const transforms = [
-    dedup(),
-    prune(),
-    weld({ tolerance: weldTol })
-  ];
+  if (!texturesOnly) {
+    const transforms = [
+      dedup(),
+      prune(),
+      weld({ tolerance: weldTol })
+    ];
 
-  if (enableReorder) {
-    transforms.push(reorder({ encoder: MeshoptEncoder }));
+    if (enableReorder) {
+      transforms.push(reorder({ encoder: MeshoptEncoder }));
+    }
+
+    // Quantize: exclude TEXCOORD from pattern to keep Float32 UV
+    const quantizePattern = keepUvFloat32
+      ? /^(POSITION|NORMAL|COLOR.*|JOINTS.*|WEIGHTS.*)$/
+      : /.*/;
+
+    transforms.push(
+      quantize({
+        pattern: quantizePattern,
+        quantizePosition: posBits,
+        quantizeNormal: normalBits,
+        quantizeTexcoord: 12
+      })
+    );
+
+    await doc.transform(...transforms);
   }
 
-  // Quantize: exclude TEXCOORD from pattern to keep Float32 UV
-  const quantizePattern = keepUvFloat32
-    ? /^(POSITION|NORMAL|COLOR.*|JOINTS.*|WEIGHTS.*)$/
-    : /.*/;
+  // 4. EXT_meshopt_compression
+  if (enableMeshopt) {
+    doc.createExtension(EXTMeshoptCompression).setRequired(true);
+  }
 
-  transforms.push(
-    quantize({
-      pattern: quantizePattern,
-      quantizePosition: posBits,
-      quantizeNormal: normalBits,
-      quantizeTexcoord: 12
-    })
-  );
+  // Intermediate Step 5 Export (Geometry + Meshopt compressed, before texture transcode)
+  if (exportIntermediateMeshopt) {
+    const intermediateMeshoptGlb = await io.writeBinary(doc);
+    await fs.mkdir(path.dirname(exportIntermediateMeshopt), { recursive: true });
+    await fs.writeFile(exportIntermediateMeshopt, Buffer.from(intermediateMeshoptGlb));
+    if (!enableJson) console.log(`   * Exported Step 5 Meshopt intermediate: ${exportIntermediateMeshopt}`);
+  }
 
-  await doc.transform(...transforms);
-
-  // 4. Texture compression (KTX2 UASTC or WebP)
+  // 5. Texture compression (KTX2 UASTC or WebP)
   let ktx2Result = null;
   let webpResult = null;
 
@@ -362,14 +473,11 @@ Options:
       mode: ktx2Mode,
       uastcLevel: ktx2Level,
       uastcRdo: ktx2Rdo,
+      uastcRdoD: ktx2RdoD,
+      threads: ktx2Threads,
       maxDim: textureMaxDim,
       mipmaps: true
     });
-  }
-
-  // 5. EXT_meshopt_compression
-  if (enableMeshopt) {
-    doc.createExtension(EXTMeshoptCompression).setRequired(true);
   }
 
   // 6. Write output
@@ -408,7 +516,14 @@ Options:
   }
 }
 
-runCli().catch(err => {
-  console.error('Fatal optimization error:', err);
-  process.exit(1);
-});
+const isDirectRun = process.argv[1] && (
+  fileURLToPath(import.meta.url) === path.resolve(process.argv[1]) ||
+  process.argv[1].endsWith('optimize_meshopt.mjs')
+);
+
+if (isDirectRun) {
+  runCli().catch(err => {
+    console.error('Fatal optimization error:', err);
+    process.exit(1);
+  });
+}

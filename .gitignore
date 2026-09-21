@@ -15,6 +15,7 @@ scratch/
 examples/optimized/
 *.tmp.glb
 *.tmp.glbenc
+.pytest_cache/
 
 # Environment & IDE
 .DS_Store

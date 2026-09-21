@@ -4,6 +4,8 @@
   "description": "Zero-Decimation 3D Model (.glb) Optimization Pipeline",
   "type": "module",
   "scripts": {
+    "dev": "node server.mjs",
+    "start": "node server.mjs",
     "optimize": "node optimizer/node/optimize_meshopt.mjs",
     "test": "node --test"
   },

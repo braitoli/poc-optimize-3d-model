@@ -49,6 +49,17 @@ def parse_args():
         help="Keep doubleSided material (default: FrontSide single-sided)"
     )
     parser.add_argument(
+        "--export-steps",
+        type=str,
+        default=None,
+        help="Directory path to export intermediate step models (steps 0 to 6)"
+    )
+    parser.add_argument(
+        "--step-events",
+        action="store_true",
+        help="Print real-time JSON step events (__STEP_EVENT__:<json>) to stdout"
+    )
+    parser.add_argument(
         "--json",
         action="store_true",
         help="Print machine-readable JSON summary"
@@ -71,13 +82,18 @@ def main():
         print(f"Error: Input file not found: {input_path}", file=sys.stderr)
         sys.exit(1)
 
+    def on_step_event(step_data):
+        print(f"__STEP_EVENT__:{json.dumps(step_data)}", flush=True)
+
     optimizer = ModelOptimizer(
         resolution=args.resolution,
         texture_format=args.format,
         rechart_uv=args.rechart,
         smooth_normals=not args.no_smooth_normals,
         double_sided=args.double_sided,
-        verbose=not args.quiet and not args.json
+        verbose=not args.quiet and not args.json,
+        export_steps_dir=Path(args.export_steps) if args.export_steps else None,
+        step_callback=on_step_event if args.step_events else None
     )
 
     try:
