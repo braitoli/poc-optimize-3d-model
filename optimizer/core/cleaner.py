@@ -32,8 +32,15 @@ def clean_and_repair_mesh(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
     if hasattr(m, "remove_unreferenced_vertices"):
         m.remove_unreferenced_vertices()
 
-    trimesh.repair.fix_normals(m)
-    trimesh.repair.fix_winding(m)
+    try:
+        trimesh.repair.fix_normals(m)
+    except Exception:
+        pass
+
+    try:
+        trimesh.repair.fix_winding(m)
+    except Exception:
+        pass
 
     return m
 

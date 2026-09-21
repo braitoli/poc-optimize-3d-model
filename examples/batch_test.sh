@@ -2,11 +2,11 @@
 # ==============================================================================
 # examples/batch_test.sh
 #
-# Batch test runner for the 10 representative 3D statue models.
+# Batch test runner for the representative 3D statue models.
 # Usage:
 #   ./examples/batch_test.sh                 # Tests first 3 fast models
-#   ./examples/batch_test.sh --all           # Tests all 10 representative models
-#   ./examples/batch_test.sh <model_name>    # Tests a specific model (e.g. dinoki, vulparon)
+#   ./examples/batch_test.sh --all           # Tests all representative models
+#   ./examples/batch_test.sh <model_name>    # Tests a specific model (e.g. koidrax, zelvanox, dinoki)
 # ==============================================================================
 
 set -euo pipefail
@@ -26,6 +26,12 @@ MODELS=(
     "flamibo_raw.glb"
     "gravilux_raw.glb"
     "koidrax_raw.glb"
+    "koidrax_opt_2k.glb"
+    "koidrax_restored.glb"
+    "zelvanox_raw.glb"
+    "zelvanox_opt.glb"
+    "zelvaron_raw.glb"
+    "zelvaron_opt.glb"
     "lumiflora_raw.glb"
     "tigravolt_raw.glb"
     "vosiruto_raw.glb"
@@ -51,7 +57,7 @@ elif [[ -n "${1:-}" ]]; then
 else
     # Default: Run the first 3 models
     TARGET_MODELS=("${MODELS[0]}" "${MODELS[1]}" "${MODELS[2]}")
-    echo "ℹ️ Running test on first 3 models (use --all to run all 10 models)."
+    echo "ℹ️ Running test on first 3 models (use --all to run all ${#MODELS[@]} models)."
 fi
 
 echo "=================================================================="

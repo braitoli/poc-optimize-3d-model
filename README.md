@@ -128,20 +128,26 @@ python3 -m optimizer.cli input.glb output.glb
 
 ## 🧪 Representative Models & Batch Testing
 
-The repository includes **10 representative 3D models** under `examples/models/` spanning diverse geometries, polycounts, and characters from the 3D Painting catalog:
+The repository includes **16 representative 3D models** under `examples/models/` spanning diverse geometries, polycounts, and characters from the 3D Painting catalog (including raw AI generations, cleaned baselines, and production-optimized variants):
 
-| # | Model File | Character Name | Character Type | Raw Size |
-|---|---|---|---|---|
-| 1 | `dinoki_raw.glb` | **Dinoki** | Khủng Long T-Rex Chibi | 1.9 MB |
-| 2 | `vulparon_raw.glb` | **Vulparon** | Cáo Linh Thú | 10.0 MB |
-| 3 | `flamibo_raw.glb` | **Flamibo** | Chim Hồng Hạc | 11.0 MB |
-| 4 | `gravilux_raw.glb` | **Gravilux** | Quái Thú Đá | 11.0 MB |
-| 5 | `lumiflora_raw.glb` | **Lumiflora** | Linh Thú Hoa | 12.0 MB |
-| 6 | `tigravolt_raw.glb` | **Tigravolt** | Hổ Sấm Sét | 12.0 MB |
-| 7 | `vosiruto_raw.glb` | **Vosiruto** | Chiến Binh Sấm Sét | 34.0 MB |
-| 8 | `koidrax_raw.glb` | **Koidrax** | Rồng Cá Chép | 12.0 MB |
-| 9 | `coramini.glb` | **Coramini** | Rùa San Hô Biển | 6.7 MB |
-| 10 | `flamibo_baseline.glb`| **Flamibo (Clean)** | Bản Hình Học Sạch | 2.9 MB |
+| # | Model File | Character Name | Character Type / Variant | Size | Faces |
+|---|---|---|---|---|---|
+| 1 | `dinoki_raw.glb` | **Dinoki** | Khủng Long T-Rex Chibi (Raw) | 1.9 MB | 45.0K |
+| 2 | `vulparon_raw.glb` | **Vulparon** | Cáo Linh Thú (Raw AI) | 10.3 MB | 282.4K |
+| 3 | `flamibo_raw.glb` | **Flamibo** | Chim Hồng Hạc (Raw AI) | 11.4 MB | 295.1K |
+| 4 | `gravilux_raw.glb` | **Gravilux** | Quái Thú Đá (Raw AI) | 11.4 MB | 289.6K |
+| 5 | `lumiflora_raw.glb` | **Lumiflora** | Linh Thú Hoa (Raw AI) | 12.5 MB | 298.0K |
+| 6 | `tigravolt_raw.glb` | **Tigravolt** | Hổ Sấm Sét (Raw AI) | 11.6 MB | 280.7K |
+| 7 | `vosiruto_raw.glb` | **Vosiruto** | Chiến Binh Sấm Sét (Raw AI) | 34.4 MB | 1.21M |
+| 8 | `koidrax_raw.glb` | **Koidrax** | Rồng Cá Chép (Raw AI) | 11.8 MB | 289.6K |
+| 9 | `koidrax_opt_2k.glb` | **Koidrax 2K** | Rồng Cá Chép (2K Production) | 7.6 MB | 289.6K |
+| 10 | `koidrax_restored.glb` | **Koidrax Restored** | Rồng Cá Chép (Clean Restored) | 7.6 MB | 289.6K |
+| 11 | `zelvanox_raw.glb` | **Zelvanox** | Rùa Cơ Giới / Zarek (Raw AI) | 8.5 MB | 257.6K |
+| 12 | `zelvanox_opt.glb` | **Zelvanox Opt** | Rùa Cơ Giới (Production Shell) | 4.2 MB | 257.6K |
+| 13 | `zelvaron_raw.glb` | **Zelvaron** | Linh Thú / Nữ Hiệp Sĩ (Raw AI) | 11.4 MB | 294.8K |
+| 14 | `zelvaron_opt.glb` | **Zelvaron Opt** | Linh Thú (Production Shell) | 4.8 MB | 294.8K |
+| 15 | `coramini.glb` | **Coramini** | Rùa San Hô Biển (Production) | 6.8 MB | 140.0K |
+| 16 | `flamibo_baseline.glb`| **Flamibo Baseline** | Bản Hình Học Sạch (Clean Geometry) | 2.9 MB | 95.0K |
 
 ### Quick Single Test
 
@@ -160,10 +166,11 @@ Optimize any or all representative models with a single command:
 
 # 2. Run on a specific model by name:
 ./examples/batch_test.sh dinoki
-./examples/batch_test.sh vulparon
 ./examples/batch_test.sh koidrax
+./examples/batch_test.sh zelvanox
+./examples/batch_test.sh zelvaron
 
-# 3. Run full batch across all 10 models:
+# 3. Run on all models:
 ./examples/batch_test.sh --all
 ```
 

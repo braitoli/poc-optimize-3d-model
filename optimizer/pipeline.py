@@ -39,33 +39,80 @@ def set_frontside_material(glb_bytes: bytes) -> bytes:
     import struct
     if len(glb_bytes) < 20:
         return glb_bytes
-    magic, version, _ = struct.unpack("<III", glb_bytes[:12])
-    if magic != 0x46546C67:
-        return glb_bytes
-    json_len, json_type = struct.unpack("<II", glb_bytes[12:20])
-    if json_type != 0x4E4F534A:
+
+    magic, ver, length = struct.unpack("<4sII", glb_bytes[:12])
+    if magic != b"glTF":
         return glb_bytes
 
-    gltf = json.loads(glb_bytes[20:20 + json_len].decode("utf-8"))
-    modified = False
-    for mat in gltf.get("materials", []):
-        if mat.get("doubleSided") is not False:
+    chunk_len, chunk_type = struct.unpack("<I4s", glb_bytes[12:20])
+    if chunk_type != b"JSON":
+        return glb_bytes
+
+    json_bytes = glb_bytes[20:20 + chunk_len]
+    gltf = json.loads(json_bytes.decode("utf-8"))
+
+    if "materials" in gltf:
+        for mat in gltf["materials"]:
             mat["doubleSided"] = False
-            modified = True
-
-    if not modified:
-        return glb_bytes
 
     new_json_bytes = json.dumps(gltf, separators=(",", ":")).encode("utf-8")
     pad = (4 - (len(new_json_bytes) % 4)) % 4
     new_json_bytes += b" " * pad
 
-    bin_chunk = glb_bytes[20 + json_len:]
+    bin_chunk = glb_bytes[20 + chunk_len:]
     new_total_len = 12 + 8 + len(new_json_bytes) + len(bin_chunk)
 
-    header = struct.pack("<III", magic, version, new_total_len)
-    chunk0 = struct.pack("<II", len(new_json_bytes), json_type)
-    return header + chunk0 + new_json_bytes + bin_chunk
+    out = bytearray()
+    out.extend(struct.pack("<4sII", magic, ver, new_total_len))
+    out.extend(struct.pack("<I4s", len(new_json_bytes), b"JSON"))
+    out.extend(new_json_bytes)
+    out.extend(bin_chunk)
+    return bytes(out)
+
+
+def _decompress_meshopt_if_needed(input_path: Path, tmp_dir: Path) -> Path:
+    """If input GLB has EXT_meshopt_compression, decompress it using Node.js for trimesh compatibility."""
+    import struct
+    try:
+        with open(input_path, "rb") as f:
+            header = f.read(12)
+            if len(header) == 12:
+                magic, ver, length = struct.unpack("<4sII", header)
+                if magic == b"glTF":
+                    chunk_len, chunk_type = struct.unpack("<I4s", f.read(8))
+                    if chunk_type == b"JSON":
+                        gltf = json.loads(f.read(chunk_len))
+                        exts = gltf.get("extensionsUsed", []) + gltf.get("extensionsRequired", [])
+                        if "EXT_meshopt_compression" in exts:
+                            uncompressed_path = tmp_dir / f"unpacked_{input_path.name}"
+                            node_script = f"""
+import {{ NodeIO }} from '@gltf-transform/core';
+import {{ ALL_EXTENSIONS }} from '@gltf-transform/extensions';
+import {{ MeshoptDecoder }} from 'meshoptimizer';
+import fs from 'fs';
+
+async function decompress() {{
+    await MeshoptDecoder.ready;
+    const io = new NodeIO().registerExtensions(ALL_EXTENSIONS).registerDependencies({{ 'meshopt.decoder': MeshoptDecoder }});
+    const doc = await io.read({json.dumps(str(input_path.resolve()))});
+    const ext = doc.getRoot().listExtensionsUsed().find(e => e.extensionName === 'EXT_meshopt_compression');
+    if (ext) ext.dispose();
+    const glb = await io.writeBinary(doc);
+    fs.writeFileSync({json.dumps(str(uncompressed_path.resolve()))}, glb);
+}}
+decompress();
+"""
+                            subprocess.run(
+                                ["node", "-e", node_script],
+                                check=True,
+                                cwd=str(MODULE_ROOT.parent),
+                                capture_output=True
+                            )
+                            if uncompressed_path.exists():
+                                return uncompressed_path
+    except Exception:
+        pass
+    return input_path
 
 
 class ModelOptimizer:
@@ -113,7 +160,8 @@ class ModelOptimizer:
         try:
             # 1. Load Raw Mesh
             self.log("▶️ [Phase 1/5] Loading & Geometric Cleaning...")
-            raw_mesh = trimesh.load(str(input_path), force="mesh", process=False)
+            load_path = _decompress_meshopt_if_needed(input_path, tmp_dir)
+            raw_mesh = trimesh.load(str(load_path), force="mesh", process=False)
             initial_faces = len(raw_mesh.faces)
             initial_verts = len(raw_mesh.vertices)
             self.log(f"   Raw mesh: {initial_faces:,} faces, {initial_verts:,} vertices")
