@@ -5,7 +5,8 @@ Visibility-based winding orientation for 3D AI statues (e.g. Trellis / Tripo).
 Solves thin-shell inside-out backface visibility issues.
 Strictly adheres to Rule 11 (Zero-Decimation Policy):
 - Preserves 100% geometric triangles (prune_hidden=False).
-- Groups connected components across UV seams.
+- Votes per UV piece (components joined by shared vertex indices, no positional welding),
+  so oppositely-wound pieces meeting at a seam are oriented independently.
 - Flips inward-facing components to outward CCW FrontSide.
 
 High-Performance Parallel Architecture:
@@ -49,6 +50,7 @@ def _sphere_dirs(n: int) -> np.ndarray:
 def _zbuffer(sx: np.ndarray, sy: np.ndarray, depth: np.ndarray, res: int) -> np.ndarray:
     """
     Vectorized z-buffer rasterization: returns res x res image with closest face ID per pixel.
+    depth is per-vertex (F, 3); each pixel's depth is barycentrically interpolated (smallest wins).
     Optimized:
     - Pre-filters non-positive screen areas and degenerate triangles before pixel expansion.
     - Precomputes per-triangle barycentric edge coefficients, eliminating repeated divisions.
@@ -108,8 +110,12 @@ def _zbuffer(sx: np.ndarray, sy: np.ndarray, depth: np.ndarray, res: int) -> np.
         return np.full((res, res), -1, dtype=np.int32)
 
     fid = fid[inside]
+    w0 = w0[inside]
+    w1 = w1[inside]
+    d = depth[fid]
+    pix_depth = w0 * d[:, 0] + w1 * d[:, 1] + (1.0 - w0 - w1) * d[:, 2]
     lin = py[inside].astype(np.int64) * res + px[inside]
-    order = np.lexsort((depth[fid], lin))
+    order = np.lexsort((pix_depth, lin))
     lin_s, fid_s = lin[order], fid[order]
     first = np.ones(len(lin_s), dtype=bool)
     first[1:] = lin_s[1:] != lin_s[:-1]
@@ -132,7 +138,7 @@ def _render_single_view_task(args: Tuple) -> Tuple[np.ndarray, np.ndarray, Optio
     tri = view[faces]
     sx = (tri[:, :, 0] / span * 0.92 + 0.5) * resolution
     sy = (tri[:, :, 1] / span * 0.92 + 0.5) * resolution
-    depth = tri[:, :, 2].mean(axis=1)
+    depth = tri[:, :, 2]
 
     e1 = tri[:, 1] - tri[:, 0]
     e2 = tri[:, 2] - tri[:, 0]
@@ -212,15 +218,25 @@ def _rasterize_votes(
     return vote, seen_px, vis_count, vote_front, vote_back
 
 
-def _find_connected_components(vertices: np.ndarray, faces: np.ndarray) -> Tuple[int, np.ndarray]:
-    """Groups connected triangles across spatial-welded edges using SciPy csgraph."""
+def _find_connected_components(
+    vertices: np.ndarray, faces: np.ndarray, weld: bool = True
+) -> Tuple[int, np.ndarray]:
+    """
+    Groups connected triangles by shared edges using SciPy csgraph.
+    weld=True joins edges across spatially-welded vertices (UV seams);
+    weld=False uses shared vertex indices only (one component per UV piece).
+    """
     n_faces = len(faces)
-    _, inv = np.unique(np.round(vertices, 5), axis=0, return_inverse=True)
-    gf = inv[faces]
+    if weld:
+        _, inv = np.unique(np.round(vertices, 5), axis=0, return_inverse=True)
+        gf = inv[faces]
+    else:
+        gf = faces
 
     edges = np.concatenate([gf[:, [0, 1]], gf[:, [1, 2]], gf[:, [2, 0]]], axis=0)
     edges = np.sort(edges, axis=1)
-    fids = np.repeat(np.arange(n_faces), 3)
+    # Edge rows are stacked [e01; e12; e20], so row r belongs to face r % n_faces.
+    fids = np.tile(np.arange(n_faces), 3)
     order = np.lexsort((fids, edges[:, 1], edges[:, 0]))
     s_edges = edges[order]
     s_fids = fids[order]
@@ -242,7 +258,10 @@ def orient_faces_by_visibility(
     max_workers: Optional[int] = None,
 ) -> np.ndarray:
     """
-    Orients mesh faces by visibility voting over connected components.
+    Orients mesh faces by visibility voting per UV piece (index-connected component).
+    Pieces are not welded across seams, so neighbouring pieces with opposite winding
+    are each flipped independently. Pieces never seen by the z-buffer (vote == 0)
+    keep their source winding.
     Strictly preserves 100% faces (Zero-Decimation Policy).
     Optimized with parallel multi-core rasterization and concurrent graph partitioning.
     """
@@ -253,7 +272,7 @@ def orient_faces_by_visibility(
 
     # Execute connected components and parallel rasterization concurrently
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as bg_pool:
-        comp_future = bg_pool.submit(_find_connected_components, vertices, faces)
+        comp_future = bg_pool.submit(_find_connected_components, vertices, faces, False)
         vote_future = bg_pool.submit(_rasterize_votes, vertices, faces, views, resolution, max_workers)
 
         n_comp, labels = comp_future.result()
@@ -263,21 +282,6 @@ def orient_faces_by_visibility(
     comp_votes = np.bincount(labels, weights=vote)
     flipped_comps = comp_votes < 0
     flip = flipped_comps[labels]
-
-    # Outward radial normal fallback for components with comp_votes == 0
-    mesh_center = (vertices.max(0) + vertices.min(0)) / 2.0
-    zero_comps = np.nonzero(comp_votes == 0)[0]
-    for c in zero_comps:
-        c_mask = (labels == c)
-        c_tris = vertices[faces[c_mask]]
-        c_centers = c_tris.mean(axis=1)
-        e1 = c_tris[:, 1] - c_tris[:, 0]
-        e2 = c_tris[:, 2] - c_tris[:, 0]
-        normals = np.cross(e1, e2)
-        rad_vec = c_centers - mesh_center
-        if np.sum(normals * rad_vec) < 0:
-            flip[c_mask] = True
-            flipped_comps[c] = True
 
     oriented = faces.copy()
     oriented[flip] = oriented[flip][:, ::-1]
