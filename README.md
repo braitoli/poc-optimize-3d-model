@@ -20,9 +20,7 @@ flowchart TD
     B --> C["Phase 2: Shell Orientation<br/>(Visibility Z-Buffer: CCW FrontSide Winding)"]
     C --> D{"Phase 3: UV Mode"}
     D -- "Re-chart (xatlas)<br/>(When UV is fragmented)" --> E["xatlas Repack & Barycentric Bake<br/>(Padding 4-16px, 1K/2K resolution)"]
-    D -- "Direct Master UV<br/>(Preserve master UV)" --> F["Lanczos Resample<br/>(1K/2K resolution)"]
     E --> G["16px Boundary Dilation<br/>(scipy ndimage: Eliminates black mipmap borders)"]
-    F --> G
     G --> H["Phase 4: Palette & Metadata<br/>(K-Means 10 dominant colors in glTF extras)"]
     H --> I["Phase 5: Angle-Weighted Smooth Normals<br/>(Spatial vertex hashing across UV seams)"]
     I --> J["Phase 6: Zero-Decimation Meshopt<br/>(14b pos, 16b UV, octahedral norm, GPU cache reorder)"]
@@ -96,7 +94,6 @@ python3 -m optimizer.cli input.glb output.glb
 |---|---|---|---|
 | `--resolution` | `-r` | `1024` | Target texture dimension (`512`, `1024`, `2048`, `4096`) |
 | `--format` | `-f` | `ktx2` | GPU texture format (`ktx2` or `webp`) |
-| `--rechart` | | `False` | Re-chart and repack UV atlas with xatlas |
 | `--no-smooth-normals` | | `False` | Disable angle-weighted smooth normals across seams |
 | `--double-sided` | | `False` | Keep DoubleSided material (default: FrontSide) |
 | `--json` | | `False` | Output result as machine-readable JSON |
@@ -114,12 +111,7 @@ python3 -m optimizer.cli input.glb output.glb
 ./bin/optimize-3d input.glb output_2k.glb --resolution 2048
 ```
 
-**3. With xatlas UV Repacking (for broken AI UVs)**:
-```bash
-./bin/optimize-3d input.glb output.glb --rechart
-```
-
-**4. WebP Fallback Format**:
+**3. WebP Fallback Format**:
 ```bash
 ./bin/optimize-3d input.glb output.glb --format webp
 ```

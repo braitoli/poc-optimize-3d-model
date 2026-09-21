@@ -107,7 +107,6 @@ def run_model_benchmark(
     model_path: Path,
     resolution: int = 1024,
     texture_format: str = "ktx2",
-    rechart_uv: bool = False,
     preserve_textures: bool = True,
     workdir: Optional[Path] = None,
     clean_workdir: bool = False,
@@ -137,7 +136,6 @@ def run_model_benchmark(
         pipeline = StepPipeline(
             resolution=resolution,
             texture_format=texture_format,
-            rechart_uv=rechart_uv,
             smooth_normals=True,
             double_sided=False,
             preserve_textures=preserve_textures,
@@ -269,7 +267,6 @@ def run_model_benchmark(
             "pipeline_config": {
                 "target_resolution": f"{resolution}x{resolution}",
                 "texture_format": texture_format.upper(),
-                "rechart_uv": rechart_uv,
                 "smooth_normals": True,
                 "preserve_textures": preserve_textures,
                 "rule_11_zero_decimation": True
@@ -385,7 +382,6 @@ def run_model_comparison(
     model_path: Path,
     resolution: int = 1024,
     texture_format: str = "ktx2",
-    rechart_uv: bool = False,
     workdir: Optional[Path] = None,
     clean_workdir: bool = False,
     verbose: bool = True
@@ -404,7 +400,6 @@ def run_model_comparison(
         model_path=model_path,
         resolution=resolution,
         texture_format=texture_format,
-        rechart_uv=rechart_uv,
         preserve_textures=False,
         workdir=base_workdir,
         clean_workdir=clean_workdir,
@@ -418,7 +413,6 @@ def run_model_comparison(
         model_path=model_path,
         resolution=resolution,
         texture_format=texture_format,
-        rechart_uv=rechart_uv,
         preserve_textures=True,
         workdir=opt_workdir,
         clean_workdir=clean_workdir,
@@ -630,11 +624,6 @@ def main() -> None:
         help="GPU texture compression format."
     )
     parser.add_argument(
-        "--rechart-uv",
-        action="store_true",
-        help="Re-chart UV islands using xatlas (default: Direct Master UV)."
-    )
-    parser.add_argument(
         "--workdir", "-w",
         default=None,
         help="Custom output workspace directory to preserve intermediate step GLBs."
@@ -712,7 +701,6 @@ def main() -> None:
                 model_path=model_path,
                 resolution=args.resolution,
                 texture_format=args.format,
-                rechart_uv=args.rechart_uv,
                 workdir=args.workdir,
                 clean_workdir=(args.workdir is None),
                 verbose=not args.quiet and not args.json_only
@@ -725,7 +713,6 @@ def main() -> None:
                 model_path=model_path,
                 resolution=args.resolution,
                 texture_format=args.format,
-                rechart_uv=args.rechart_uv,
                 preserve_textures=preserve,
                 workdir=args.workdir,
                 clean_workdir=(args.workdir is None),

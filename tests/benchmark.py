@@ -77,7 +77,6 @@ def run_benchmark_on_model(input_glb: Path, output_glb: Path, resolution: int = 
     optimizer = ModelOptimizer(
         resolution=resolution,
         texture_format=fmt,
-        rechart_uv=False,
         smooth_normals=True,
         double_sided=True,
         verbose=False

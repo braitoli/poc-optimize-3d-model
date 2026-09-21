@@ -8,7 +8,7 @@ const CANONICAL_STEPS = [
   { step: 0, key: 'step0', name: 'Raw Input', desc: 'Raw unoptimized AI/CAD model', file: 'step0_raw.glb' },
   { step: 1, key: 'step1', name: 'Clean & Auto-Ground', desc: 'Base at Y=0, clean geometry', file: 'step1_clean_ground.glb' },
   { step: 2, key: 'step2', name: 'Shell Orienting', desc: 'Z-buffer visibility CCW winding', file: 'step2_shell_orient.glb' },
-  { step: 3, key: 'step3', name: 'UV & Texture Bake', desc: '16px dilation, master UV resample', file: 'step3_uv_bake.glb' },
+  { step: 3, key: 'step3', name: 'UV & Texture Bake', desc: 'UV re-chart bake, 16px dilation', file: 'step3_uv_bake.glb' },
   { step: 4, key: 'step4', name: 'Palette Extraction', desc: '10 dominant surface swatches', file: 'step4_palette.glb' },
   { step: 5, key: 'step5', name: 'Meshopt Compression', desc: '14b pos, 16b UV, oct norm, cache reorder', file: 'step5_meshopt.glb' },
   { step: 6, key: 'step6', name: 'Final Model Polish', desc: 'GPU format / 100% Lossless Bitstream', file: 'step6_final.glb' }
@@ -562,7 +562,7 @@ function renderDeepDiveTabs(rawM, curM, finM) {
         <p style="font-size: 0.75rem; color: var(--text-dim); margin-top: 4px;">
           ${(curM.clamped || state.textureClamped)
             ? '⚠️ ' + (curM.clampedMessage || state.textureClampedMessage || 'Texture gốc nhỏ hơn kích thước yêu cầu: Áp dụng chính sách NO-UPSCALE để bảo toàn độ sắc nét và tối ưu VRAM GPU.')
-            : 'Lanczos direct master UV resampling with 16-pixel boundary dilation padding (no black seam fringing).'}
+            : 'Re-charted UV atlas bake with 16-pixel boundary dilation padding.'}
         </p>
       </div>
       <div>

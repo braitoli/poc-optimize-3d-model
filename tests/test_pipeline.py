@@ -148,7 +148,7 @@ class TestRule11ZeroDecimation(unittest.TestCase):
         opt_glb = self.tmp_path / "synthetic_opt.glb"
 
         orig_faces = create_synthetic_textured_glb(raw_glb, subdivisions=2)
-        optimizer = ModelOptimizer(resolution=512, texture_format="webp", rechart_uv=False, verbose=False)
+        optimizer = ModelOptimizer(resolution=512, texture_format="webp", verbose=False)
         optimizer.optimize(raw_glb, opt_glb)
 
         self.assertTrue(opt_glb.exists(), "Optimized GLB was not created")
@@ -179,7 +179,7 @@ class TestRule11ZeroDecimation(unittest.TestCase):
             self.skipTest(f"Sample model not found: {sample_dinoki}")
 
         opt_glb = self.tmp_path / "dinoki_test_opt.glb"
-        optimizer = ModelOptimizer(resolution=512, texture_format="webp", rechart_uv=False, verbose=False)
+        optimizer = ModelOptimizer(resolution=512, texture_format="webp", verbose=False)
         optimizer.optimize(sample_dinoki, opt_glb)
 
         meta_before = inspect_glb_metadata(sample_dinoki)

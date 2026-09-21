@@ -2,7 +2,7 @@
 test_uv_baker.py
 
 Tests for:
-- optimizer/core/uv_baker.py (direct_resample_texture & rebake_texture_xatlas)
+- optimizer/core/uv_baker.py (rebake_texture_xatlas & rechart_and_bake_high_density)
 - doubleSided=True preservation
 - vertex_normals preservation (smooth shading, no flat normals)
 - Alpha channel preservation
@@ -18,7 +18,6 @@ from PIL import Image
 import trimesh
 
 from optimizer.core.uv_baker import (
-    direct_resample_texture,
     rebake_texture_xatlas,
     rechart_and_bake_high_density,
     compute_uv_metrics,
@@ -45,68 +44,6 @@ class TestUvBaker(unittest.TestCase):
             [0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9],
             [0.2, 0.2], [0.8, 0.2], [0.8, 0.8], [0.2, 0.8]
         ], dtype=np.float64)
-
-    def test_direct_resample_preserves_doublesided_and_material_properties(self):
-        mat = trimesh.visual.material.PBRMaterial(
-            metallicFactor=0.35,
-            roughnessFactor=0.65,
-            alphaMode="BLEND",
-            doubleSided=False  # Originally false
-        )
-        self.mesh.visual = trimesh.visual.TextureVisuals(uv=self.uv, material=mat)
-        img = Image.new("RGB", (256, 256), (200, 100, 50))
-
-        out_mesh, clean_pil = direct_resample_texture(
-            self.mesh,
-            source_image=img,
-            target_res=256,
-            dilation_padding=8,
-            double_sided=False
-        )
-
-        out_mat = out_mesh.visual.material
-        self.assertFalse(out_mat.doubleSided, "doubleSided must be False for FrontSide")
-        self.assertAlmostEqual(out_mat.metallicFactor, 0.35, places=2)
-        self.assertAlmostEqual(out_mat.roughnessFactor, 0.65, places=2)
-        self.assertEqual(out_mat.alphaMode, "BLEND")
-        self.assertEqual(clean_pil.size, (256, 256))
-
-        # Also verify double_sided=True when explicitly requested
-        out_mesh_ds, _ = direct_resample_texture(
-            self.mesh,
-            source_image=img,
-            target_res=256,
-            dilation_padding=8,
-            double_sided=True
-        )
-        self.assertTrue(out_mesh_ds.visual.material.doubleSided, "doubleSided must be True when requested")
-
-    def test_direct_resample_preserves_alpha_channel(self):
-        mat = trimesh.visual.material.PBRMaterial(alphaMode="BLEND")
-        self.mesh.visual = trimesh.visual.TextureVisuals(uv=self.uv, material=mat)
-        # Create RGBA image with transparent border
-        rgba_img = Image.new("RGBA", (128, 128), (0, 0, 0, 0))
-        # Fill center with semi-transparent color
-        for x in range(32, 96):
-            for y in range(32, 96):
-                rgba_img.putpixel((x, y), (255, 120, 40, 180))
-
-        out_mesh, clean_pil = direct_resample_texture(
-            self.mesh,
-            source_image=rgba_img,
-            target_res=128,
-            dilation_padding=8
-        )
-
-        self.assertEqual(clean_pil.mode, "RGBA", "Must preserve RGBA mode")
-        arr = np.array(clean_pil)
-        self.assertEqual(arr.shape[2], 4, "Must have 4 channels")
-        # Center should maintain color and alpha
-        center_pixel = arr[64, 64]
-        self.assertEqual(center_pixel[0], 255)
-        self.assertEqual(center_pixel[1], 120)
-        self.assertEqual(center_pixel[2], 40)
-        self.assertEqual(center_pixel[3], 180)
 
     def test_rebake_xatlas_preserves_doublesided_and_normals(self):
         orig_normals = self.mesh.vertex_normals.copy()
@@ -233,17 +170,6 @@ class TestUvBaker(unittest.TestCase):
         self.assertEqual(clamp_target_resolution(2048, (2048, 1024)), 2048)
         # 2048x1024 requested 4096 -> clamps to 2048
         self.assertEqual(clamp_target_resolution(4096, (2048, 1024)), 2048)
-
-    def test_no_upscale_enforced_in_direct_resample(self):
-        img = Image.new("RGB", (128, 128), (200, 100, 50))
-        out_mesh, clean_pil = direct_resample_texture(
-            self.mesh,
-            source_image=img,
-            target_res=256,
-            dilation_padding=8
-        )
-        # 256 > 128 -> clamped to 128 (largest POT <= 128)
-        self.assertEqual(clean_pil.size, (128, 128))
 
     def test_no_upscale_enforced_in_rechart_and_bake(self):
         img = Image.new("RGB", (128, 128), (80, 160, 240))

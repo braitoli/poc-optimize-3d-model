@@ -44,11 +44,6 @@ def parse_args():
         help="GPU texture compression format"
     )
     parser.add_argument(
-        "--rechart",
-        action="store_true",
-        help="Re-chart and repack UV atlas with xatlas (default: preserve master UV)"
-    )
-    parser.add_argument(
         "--no-smooth-normals",
         action="store_true",
         help="Disable angle-weighted smooth vertex normals across UV seams"
@@ -98,7 +93,6 @@ def main():
     optimizer = ModelOptimizer(
         resolution=args.resolution,
         texture_format=args.format,
-        rechart_uv=args.rechart,
         smooth_normals=not args.no_smooth_normals,
         double_sided=args.double_sided,
         verbose=not args.quiet and not args.json,

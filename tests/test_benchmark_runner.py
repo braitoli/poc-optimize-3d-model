@@ -54,7 +54,6 @@ class TestBenchmarkRunner(unittest.TestCase):
                 model_path=SAMPLE_DINOKI,
                 resolution=1024,
                 texture_format="ktx2",
-                rechart_uv=False,
                 workdir=workdir,
                 clean_workdir=False,
                 verbose=False

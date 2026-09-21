@@ -65,12 +65,11 @@
         <div class="config-item config-item-uv">
           <label class="config-label" for="uvModeSelect">
             UV Unwrap Mode
-            <span class="policy-tooltip-trigger" title="Direct mode bảo toàn 100% bit-for-bit texture và UV gốc; Re-chart tối đa hóa Texel Density">UV Policy ⓘ</span>
+            <span class="policy-tooltip-trigger" title="Re-chart (xatlas) hoặc Microsoft UVAtlas: unwrap lại UV atlas và bake texture, tối đa hóa Texel Density">UV Policy ⓘ</span>
           </label>
           <select class="config-select" id="uvModeSelect">
             <option value="rechart" selected>Re-chart (xatlas)</option>
             <option value="uvatlas">Re-chart (Microsoft UVAtlas)</option>
-            <option value="direct">Direct Master UV (Bit-for-Bit Lossless)</option>
           </select>
         </div>
 
