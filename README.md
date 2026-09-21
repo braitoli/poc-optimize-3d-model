@@ -126,15 +126,48 @@ python3 -m optimizer.cli input.glb output.glb
 
 ---
 
-## 🧪 Running the Sample Test
+## 🧪 Representative Models & Batch Testing
 
-A sample raw 3D model (`Dinoki` raw chibi dinosaur, 45,000 triangles) is included:
+The repository includes **10 representative 3D models** under `examples/models/` spanning diverse geometries, polycounts, and characters from the 3D Painting catalog:
+
+| # | Model File | Character Name | Character Type | Raw Size |
+|---|---|---|---|---|
+| 1 | `dinoki_raw.glb` | **Dinoki** | Khủng Long T-Rex Chibi | 1.9 MB |
+| 2 | `vulparon_raw.glb` | **Vulparon** | Cáo Linh Thú | 10.0 MB |
+| 3 | `flamibo_raw.glb` | **Flamibo** | Chim Hồng Hạc | 11.0 MB |
+| 4 | `gravilux_raw.glb` | **Gravilux** | Quái Thú Đá | 11.0 MB |
+| 5 | `lumiflora_raw.glb` | **Lumiflora** | Linh Thú Hoa | 12.0 MB |
+| 6 | `tigravolt_raw.glb` | **Tigravolt** | Hổ Sấm Sét | 12.0 MB |
+| 7 | `vosiruto_raw.glb` | **Vosiruto** | Chiến Binh Sấm Sét | 34.0 MB |
+| 8 | `koidrax_raw.glb` | **Koidrax** | Rồng Cá Chép | 12.0 MB |
+| 9 | `coramini.glb` | **Coramini** | Rùa San Hô Biển | 6.7 MB |
+| 10 | `flamibo_baseline.glb`| **Flamibo (Clean)** | Bản Hình Học Sạch | 2.9 MB |
+
+### Quick Single Test
 
 ```bash
+# Run test on default sample model:
 ./examples/run_sample.sh
 ```
 
-To run unit and end-to-end tests:
+### Batch Test Runner
+
+Optimize any or all representative models with a single command:
+
+```bash
+# 1. Run quick test on first 3 models:
+./examples/batch_test.sh
+
+# 2. Run on a specific model by name:
+./examples/batch_test.sh dinoki
+./examples/batch_test.sh vulparon
+./examples/batch_test.sh koidrax
+
+# 3. Run full batch across all 10 models:
+./examples/batch_test.sh --all
+```
+
+### Automated Unit & E2E Tests
 
 ```bash
 pytest tests/
