@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Build & temporary files
+dist/
+build/
+*.egg-info/
+tmp/
+scratch/
+*.tmp.glb
+*.tmp.glbenc
+
+# Environment & IDE
+.DS_Store
+.env
+.idea/
+.vscode/
+
+# Logs
+*.log
+npm-debug.log*

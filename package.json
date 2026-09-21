@@ -1,0 +1,30 @@
+{
+  "name": "poc-optimize-3d-model",
+  "version": "1.0.0",
+  "description": "Zero-Decimation 3D Model (.glb) Optimization Pipeline",
+  "type": "module",
+  "scripts": {
+    "optimize": "node optimizer/node/optimize_meshopt.mjs",
+    "test": "node --test"
+  },
+  "keywords": [
+    "3d",
+    "glb",
+    "gltf",
+    "meshopt",
+    "ktx2",
+    "uastc",
+    "zero-decimation",
+    "threejs"
+  ],
+  "author": "Braitoli",
+  "license": "MIT",
+  "dependencies": {
+    "@gltf-transform/core": "^4.5.0",
+    "@gltf-transform/extensions": "^4.5.0",
+    "@gltf-transform/functions": "^4.5.0",
+    "draco3d": "^1.5.7",
+    "meshoptimizer": "^1.2.0",
+    "three": "^0.174.0"
+  }
+}
