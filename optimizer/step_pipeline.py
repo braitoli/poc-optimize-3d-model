@@ -108,7 +108,8 @@ class StepPipeline:
         double_sided: bool = False,
         preserve_textures: bool = True,
         verbose: bool = True,
-        stream_events: bool = True
+        stream_events: bool = True,
+        ktx2_min_vram_mb: float = 20.0
     ):
         self.texture_format = texture_format.lower()
         self.uv_mode = uv_mode.lower()
@@ -120,6 +121,12 @@ class StepPipeline:
         if size_mode not in SIZE_MODES:
             raise ValueError(f"Unsupported size_mode '{size_mode}' (expected one of {', '.join(SIZE_MODES)})")
         self.size_mode = size_mode
+        # Step 6 KTX2 runs only when the Step 5 texture VRAM estimate reaches this many MB (0 = always)
+        if isinstance(ktx2_min_vram_mb, bool) or not isinstance(ktx2_min_vram_mb, (int, float)):
+            raise TypeError(f"ktx2_min_vram_mb must be a number, got {ktx2_min_vram_mb!r}")
+        if not ktx2_min_vram_mb >= 0:
+            raise ValueError(f"ktx2_min_vram_mb must be a non-negative number, got {ktx2_min_vram_mb!r}")
+        self.ktx2_min_vram_mb = float(ktx2_min_vram_mb)
 
         if smooth_normals is None:
             self.smooth_normals = True
@@ -189,6 +196,7 @@ class StepPipeline:
 
         steps_record: List[Dict[str, Any]] = []
         texture_resolution: Optional[str] = None  # "WxH" of the Step 3 texture, once known
+        texture_format_label = self.texture_format.upper()  # real final format once Step 6 skips KTX2
 
         def save_and_record_metrics(
             step_idx: int,
@@ -249,7 +257,7 @@ class StepPipeline:
                 "downscale": self.downscale,
                 "sizeMode": self.size_mode,
                 "uvMode": self.uv_mode,
-                "textureFormat": self.texture_format.upper(),
+                "textureFormat": texture_format_label,
                 "steps": steps_record,
                 "lastCompletedStep": step_idx
             }
@@ -517,6 +525,19 @@ class StepPipeline:
         m5 = save_and_record_metrics(5, step5_file, t_step_start=t_s5)
         self.log(f"   ✓ Step 5 complete ({m5['durationFormatted']}): Geometry compressed ({m5['faces']:,} faces preserved 100%, {m5['fileSizeFormatted']})")
 
+        # Small textures: KTX2 UASTC grows the file while the uncompressed VRAM is already small,
+        # so Step 6 keeps the Step 5 textures when the texture VRAM estimate is below the threshold.
+        texture_vram_bytes = m5["totalGpuVramBytes"]
+        texture_vram_mb = texture_vram_bytes / (1024 * 1024)
+        skip_ktx2 = self.texture_format == "ktx2" and texture_vram_mb < self.ktx2_min_vram_mb
+        vram_vs_threshold = f"{texture_vram_mb:.2f} MB {'<' if skip_ktx2 else '>='} {self.ktx2_min_vram_mb:g} MB"
+        ktx2_reason = f"texture VRAM {vram_vs_threshold}"
+        if self.texture_format == "ktx2":
+            self.log(
+                f"   Texture VRAM estimate: {vram_vs_threshold} -> "
+                f"{'Step 6 KTX2 will be skipped' if skip_ktx2 else 'Step 6 KTX2 UASTC'}"
+            )
+
         # =====================================================================
         # STEP 6: KTX2 / WebP / Original GPU Compression, FrontSide Material, Extras
         # =====================================================================
@@ -525,6 +546,12 @@ class StepPipeline:
         is_original_format = self.texture_format in ("original", "passthrough", "raw")
         if is_original_format:
             self.log("▶️ [Step 6/6] Finalizing Model (Original Texture Bitstream Pass-through 100% Lossless)...")
+            final_bytes = step5_file.read_bytes()
+        elif skip_ktx2:
+            self.log(
+                f"▶️ [Step 6/6] KTX2 GPU Texture Compression SKIPPED ({ktx2_reason}): "
+                f"final model keeps the Step 5 textures..."
+            )
             final_bytes = step5_file.read_bytes()
         else:
             self.log(f"▶️ [Step 6/6] Basis Universal GPU Texture Compression ({self.texture_format.upper()})...")
@@ -578,11 +605,25 @@ class StepPipeline:
             "policy": "STRICT 0-DECIMATION (--ratio 1.0)",
             "tool": "poc-optimize-3d-model v1.0.0"
         }
+        step6_extra = None
+        if self.texture_format == "ktx2":
+            if skip_ktx2:
+                # The final file keeps the Step 5 textures: record their real format(s), never "KTX2"
+                final_extras["texture_format"] = "+".join(dict.fromkeys(t["format"] for t in m5["textures"]))
+                final_extras["gpu_compression"] = f"skipped: {ktx2_reason}"
+                texture_format_label = final_extras["texture_format"]
+            else:
+                final_extras["gpu_compression"] = "ktx2 uastc"
+            step6_extra = {
+                "gpuCompressionSkipped": skip_ktx2,
+                "gpuCompressionReason": ktx2_reason,
+                "textureVramEstimateBytes": texture_vram_bytes
+            }
         final_bytes = embed_gltf_extras(final_bytes, final_extras)
         step6_file = output_dir / "step_06_final.glb"
         step6_file.write_bytes(final_bytes)
 
-        m6 = save_and_record_metrics(6, step6_file, t_step_start=t_s6)
+        m6 = save_and_record_metrics(6, step6_file, step6_extra, t_step_start=t_s6)
         self.log(f"   ✓ Step 6 complete ({m6['durationFormatted']}): Final GLB ready ({m6['fileSizeFormatted']}, GPU VRAM: {m6['totalGpuVramFormatted']})")
 
         # =====================================================================

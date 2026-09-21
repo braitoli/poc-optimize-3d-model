@@ -86,9 +86,10 @@ class TestBenchmarkRunner(unittest.TestCase):
             self.assertEqual(fs["raw_input_bytes"], 2026696)
             self.assertEqual(fs["step_01_intermediate_file"], "step_01_cleaned_grounded.glb")
             self.assertGreater(fs["step_01_intermediate_bytes"], 1000000)
-            # Dinoki keeps its 1536x1536 texture (1:1 fit is larger), and KTX2 UASTC of that texture
-            # is larger on disk than the source JPEG: the file can grow while GPU VRAM shrinks.
+            # Dinoki keeps its 1536x1536 texture (1:1 fit is larger); its 12 MB texture VRAM is below the
+            # 20 MB KTX2 threshold, so Step 6 keeps the JPEG and the file shrinks (KTX2 UASTC would grow it).
             self.assertGreater(fs["final_output_bytes"], 0)
+            self.assertLess(fs["final_output_bytes"], fs["raw_input_bytes"])
             self.assertEqual(fs["saved_bytes"], fs["raw_input_bytes"] - fs["final_output_bytes"])
 
             # 3. Rule 11 Zero-Decimation geometric integrity check
@@ -106,9 +107,13 @@ class TestBenchmarkRunner(unittest.TestCase):
             # Dinoki's 1:1 fit is larger than its 1536x1536 texture, so Step 3 keeps the original
             self.assertEqual(tv["texture_resolution_after"], "1536x1536")
             self.assertEqual(tv["texture_format_before"], "JPEG")
-            self.assertEqual(tv["texture_format_after"], "KTX2")
-            self.assertGreater(tv["total_gpu_vram_saved_percent"], 50.0)
-            self.assertGreater(tv["texture_vram_saved_percent"], 70.0)
+            # KTX2 skipped (texture VRAM < 20 MB): the final texture stays JPEG, its VRAM unchanged
+            self.assertEqual(tv["texture_format_after"], "JPEG")
+            self.assertEqual(tv["texture_vram_after_bytes"], tv["texture_vram_before_bytes"])
+            self.assertEqual(tv["texture_vram_saved_percent"], 0.0)
+            step6_metrics = json.loads((workdir / "metrics.json").read_text())["steps"][6]["metrics"]
+            self.assertIs(step6_metrics["gpuCompressionSkipped"], True)
+            self.assertEqual(step6_metrics["gpuCompressionReason"], "texture VRAM 12.00 MB < 20 MB")
 
             # 5. Intermediate files preservation check
             step1_file = workdir / "step_01_cleaned_grounded.glb"

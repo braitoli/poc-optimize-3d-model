@@ -138,10 +138,12 @@ class TestStepPipeline(unittest.TestCase):
             self.assertLess(metrics_data["steps"][1]["metrics"]["fileSizeBytes"], 3 * 1024 * 1024)
             self.assertLess(metrics_data["steps"][2]["metrics"]["fileSizeBytes"], 3 * 1024 * 1024)
 
-            # Check final step has KTX2 and meshopt extensions
+            # Final step keeps meshopt; dinoki's 1536x1536 texture (12 MB VRAM < 20 MB default) skips KTX2
             final_step = metrics_data["steps"][6]["metrics"]
             self.assertIn("EXT_meshopt_compression", final_step["extensions"]["used"])
-            self.assertIn("KHR_texture_basisu", final_step["extensions"]["used"])
+            self.assertNotIn("KHR_texture_basisu", final_step["extensions"]["used"])
+            self.assertIs(final_step["gpuCompressionSkipped"], True)
+            self.assertEqual(final_step["textures"][0]["format"], "JPEG")
             self.assertGreater(len(final_step["palette"]), 0)
 
             # Step 3 must have FrontSide rendering (doubleSided=False) when double_sided=False
@@ -305,7 +307,8 @@ class TestStepPipelineRechart(unittest.TestCase):
         cls.raw_glb = tmp / "grid.glb"
         cls.orig_faces = create_sphere_grid_glb(cls.raw_glb, src_res=2048)
         cls.exact_dir = tmp / "exact"
-        StepPipeline(texture_format="ktx2", verbose=False, stream_events=False).run(cls.raw_glb, cls.exact_dir)
+        # ktx2_min_vram_mb=0: the fit canvas is below the 20 MB VRAM threshold, force the KTX2 path
+        StepPipeline(texture_format="ktx2", ktx2_min_vram_mb=0, verbose=False, stream_events=False).run(cls.raw_glb, cls.exact_dir)
         cls.exact = json.loads((cls.exact_dir / "metrics.json").read_text())
         cls.pot_up_dir = tmp / "pot_up"
         StepPipeline(size_mode="pot-up", texture_format="webp", verbose=False, stream_events=False).run(cls.raw_glb, cls.pot_up_dir)

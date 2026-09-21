@@ -495,8 +495,10 @@ function renderComparisonTable(rawM, curM, finM, stepNum) {
       name: 'Texture Format',
       raw: rawM.textureFormat || 'PNG/JPEG',
       cur: curM.textureFormat || 'Pending',
-      delta: stepNum >= 6 ? 'Basis KTX2 GPU Transcode' : 'CPU Pixel Buffer',
-      badge: stepNum >= 6 ? 'badge-green' : 'badge-orange'
+      delta: curM.textureFormat === 'KTX2'
+        ? 'Basis KTX2 GPU Transcode'
+        : (curM.gpuCompressionSkipped ? `KTX2 skipped: ${escapeHtml(curM.gpuCompressionReason)}` : 'CPU Pixel Buffer'),
+      badge: curM.textureFormat === 'KTX2' ? 'badge-green' : 'badge-orange'
     },
     {
       name: 'Texture Dimensions',
@@ -584,8 +586,10 @@ function renderDeepDiveTabs(rawM, curM, finM) {
       </div>
       <div>
         <p style="color: var(--text-muted); margin-bottom: 4px;">GPU Texture Compression:</p>
-        <p style="font-weight: 700; color: var(--accent-light);">${curM.textureFormat || 'KTX2 UASTC'}</p>
-        <p style="font-size: 0.75rem; color: var(--text-dim); margin-top: 4px;">Direct GPU VRAM block decompression. Eliminates browser main-thread JPEG/PNG decode stalls.</p>
+        <p style="font-weight: 700; color: var(--accent-light);">${curM.gpuCompressionSkipped ? `Skipped (${curM.textureFormat})` : (curM.textureFormat || 'KTX2 UASTC')}</p>
+        <p style="font-size: 0.75rem; color: var(--text-dim); margin-top: 4px;">${curM.gpuCompressionSkipped
+          ? `KTX2 bỏ qua: ${escapeHtml(curM.gpuCompressionReason)}. Texture giữ nguyên ${curM.textureFormat} từ Step 5.`
+          : 'Direct GPU VRAM block decompression. Eliminates browser main-thread JPEG/PNG decode stalls.'}</p>
       </div>
     </div>
   `;
