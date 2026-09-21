@@ -18,7 +18,8 @@ INSPECT_SCRIPT = REPO_ROOT / "optimizer" / "inspect_metrics.mjs"
 SAMPLE_DINOKI = REPO_ROOT / "examples" / "sample_dinoki.glb"
 
 from optimizer.step_pipeline import StepPipeline, inspect_glb_metrics
-from optimizer.pipeline import set_doublesided_material
+from optimizer.core.glb_utils import set_doublesided_material
+from tests.fixtures import create_mock_glb
 
 
 class TestMetricsEngine(unittest.TestCase):
@@ -246,6 +247,43 @@ class TestStepPipeline(unittest.TestCase):
             initial_faces = metrics_data["steps"][0]["metrics"]["faces"]
             for step_info in metrics_data["steps"]:
                 self.assertEqual(step_info["metrics"]["faces"], initial_faces, f"Face count changed at {step_info['file']}")
+
+
+class TestStepPipelineMockGlb(unittest.TestCase):
+    """Synthetic textured icosphere (the CI smoke-test input) run through all 7 steps."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._tmp = tempfile.TemporaryDirectory(prefix="test_mock_glb_pipeline_")
+        tmp = Path(cls._tmp.name)
+        raw_glb = tmp / "mock.glb"
+        cls.orig_faces = create_mock_glb(raw_glb)
+        StepPipeline(
+            resolution=512,
+            texture_format="webp",
+            verbose=False,
+            stream_events=False
+        ).run(raw_glb, tmp / "out")
+        cls.final_gltf = _read_glb_json(tmp / "out" / "step_06_final.glb")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._tmp.cleanup()
+
+    def test_zero_decimation_synthetic_mesh(self):
+        """Rule 11: the final GLB keeps 100% of the synthetic mesh triangles."""
+        prim = self.final_gltf["meshes"][0]["primitives"][0]
+        tris = self.final_gltf["accessors"][prim["indices"]]["count"] // 3
+        self.assertEqual(tris, self.orig_faces)
+
+    def test_extras_and_palette_embedding(self):
+        """The final GLB embeds the palette and optimization metadata in glTF extras."""
+        extras = self.final_gltf.get("extras", {})
+        self.assertIn("palette", extras, "glTF extras missing 'palette'")
+        self.assertIn("primaryColor", extras, "glTF extras missing 'primaryColor'")
+        self.assertIn("policy", extras, "glTF extras missing 'policy'")
+        self.assertEqual(extras["policy"], "STRICT 0-DECIMATION (--ratio 1.0)")
+        self.assertGreaterEqual(len(extras["palette"]), 1)
 
 
 def _read_glb_json(glb_path: Path) -> dict:

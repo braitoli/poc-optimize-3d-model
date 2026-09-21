@@ -3,6 +3,8 @@
 # bin/optimize-3d
 #
 # Unified CLI entrypoint for 3D model (.glb) optimization pipeline.
+# Runs optimizer.step_pipeline into a temp dir and copies its final step
+# (step_06_final.glb) to <output.glb>.
 # Usage: ./bin/optimize-3d <input.glb> <output.glb> [options]
 # ==============================================================================
 
@@ -29,6 +31,86 @@ if ! command -v node &>/dev/null; then
     exit 1
 fi
 
-# Run python CLI
+usage() {
+    cat <<'EOF'
+Usage: optimize-3d <input.glb> <output.glb> [options]
+
+Zero-decimation .glb optimizer (runs optimizer.step_pipeline).
+
+Options:
+  -r, --resolution RES  Target texture size: auto, 512, 1024, 2048, ... (default: auto; never upscales)
+  -f, --format FMT      Texture format: ktx2, webp, original (default: ktx2)
+      --uv-mode MODE    UV unwrap mode: xatlas, uvatlas (default: xatlas)
+      --double-sided    Keep double-sided materials (default: single-sided FrontSide)
+  -q, --quiet           Suppress progress logs
+  -h, --help            Show this help and exit
+EOF
+}
+
+INPUT=""
+OUTPUT=""
+QUIET=0
+PIPELINE_ARGS=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        -r|--resolution|-f|--format|--uv-mode)
+            if [[ $# -lt 2 ]]; then
+                echo "Error: $1 requires a value." >&2
+                exit 2
+            fi
+            PIPELINE_ARGS+=("$1" "$2")
+            shift 2
+            ;;
+        --double-sided)
+            PIPELINE_ARGS+=("$1")
+            shift
+            ;;
+        -q|--quiet)
+            PIPELINE_ARGS+=("$1")
+            QUIET=1
+            shift
+            ;;
+        -*)
+            echo "Error: unknown option: $1" >&2
+            usage >&2
+            exit 2
+            ;;
+        *)
+            if [[ -z "${INPUT}" ]]; then
+                INPUT="$1"
+            elif [[ -z "${OUTPUT}" ]]; then
+                OUTPUT="$1"
+            else
+                echo "Error: unexpected argument: $1" >&2
+                usage >&2
+                exit 2
+            fi
+            shift
+            ;;
+    esac
+done
+
+if [[ -z "${INPUT}" || -z "${OUTPUT}" ]]; then
+    echo "Error: <input.glb> and <output.glb> are required." >&2
+    usage >&2
+    exit 2
+fi
+
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/optimize-3d.XXXXXX")"
+trap 'rm -rf "${TMP_DIR}"' EXIT
+
+# Run step pipeline (stdout carries NDJSON step events for the web server; not needed here)
 export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
-exec "${PYTHON_BIN}" -m optimizer.cli "$@"
+"${PYTHON_BIN}" -m optimizer.step_pipeline "${INPUT}" --output-dir "${TMP_DIR}" \
+    ${PIPELINE_ARGS[@]+"${PIPELINE_ARGS[@]}"} > /dev/null
+
+mkdir -p "$(dirname "${OUTPUT}")"
+cp "${TMP_DIR}/step_06_final.glb" "${OUTPUT}"
+
+if [[ "${QUIET}" -eq 0 ]]; then
+    echo "Output written to: ${OUTPUT}" >&2
+fi

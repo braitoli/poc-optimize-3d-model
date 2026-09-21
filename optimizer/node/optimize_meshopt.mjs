@@ -344,7 +344,6 @@ Options:
   let forceSingleSided = false;
   let keepDoubleSided = false;
   let enableJson = false;
-  let exportIntermediateMeshopt = null;
   let texturesOnly = false;
 
   for (let i = 0; i < args.length; i++) {
@@ -353,7 +352,6 @@ Options:
     else if (a === '--smooth-normals') enableSmoothNormals = true;
     else if (a === '--no-smooth-normals') enableSmoothNormals = false;
     else if (a === '--keep-uv-float32') keepUvFloat32 = true;
-    else if (a === '--export-intermediate-meshopt' && args[i + 1]) exportIntermediateMeshopt = args[++i];
     else if (a === '--pos-bits' && args[i + 1]) posBits = parseInt(args[++i], 10);
     else if (a === '--weld' && args[i + 1]) weldTol = parseFloat(args[++i]);
     else if (a === '--reorder') enableReorder = true;
@@ -460,14 +458,6 @@ Options:
     doc.createExtension(EXTMeshoptCompression)
       .setRequired(true)
       .setEncoderOptions({ method: EXTMeshoptCompression.EncoderMethod.FILTER });
-  }
-
-  // Intermediate Step 5 Export (Geometry + Meshopt compressed, before texture transcode)
-  if (exportIntermediateMeshopt) {
-    const intermediateMeshoptGlb = await io.writeBinary(doc);
-    await fs.mkdir(path.dirname(exportIntermediateMeshopt), { recursive: true });
-    await fs.writeFile(exportIntermediateMeshopt, Buffer.from(intermediateMeshoptGlb));
-    if (!enableJson) console.log(`   * Exported Step 5 Meshopt intermediate: ${exportIntermediateMeshopt}`);
   }
 
   // 5. Texture compression (KTX2 UASTC or WebP)

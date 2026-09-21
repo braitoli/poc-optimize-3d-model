@@ -82,26 +82,27 @@ cd poc-optimize-3d-model
 ./bin/optimize-3d input.glb output.glb
 ```
 
-Or via Python directly:
+`bin/optimize-3d` runs the step pipeline (`optimizer/step_pipeline.py`) in a temporary directory and copies its final step, `step_06_final.glb`, to the output path.
+
+To keep all 7 intermediate step files and `metrics.json`, run the step pipeline directly:
 
 ```bash
-python3 -m optimizer.cli input.glb output.glb
+python3 -m optimizer.step_pipeline input.glb --output-dir out/
 ```
 
 ### CLI Options
 
 | Flag | Short | Default | Description |
 |---|---|---|---|
-| `--resolution` | `-r` | `1024` | Target texture dimension (`512`, `1024`, `2048`, `4096`) |
-| `--format` | `-f` | `ktx2` | GPU texture format (`ktx2` or `webp`) |
-| `--no-smooth-normals` | | `False` | Disable angle-weighted smooth normals across seams |
+| `--resolution` | `-r` | `auto` | Target texture dimension (`auto`, `512`, `1024`, `2048`, `4096`; never upscaled) |
+| `--format` | `-f` | `ktx2` | GPU texture format (`ktx2`, `webp` or `original`) |
+| `--uv-mode` | | `xatlas` | UV unwrap mode (`xatlas` or `uvatlas`) |
 | `--double-sided` | | `False` | Keep DoubleSided material (default: FrontSide) |
-| `--json` | | `False` | Output result as machine-readable JSON |
-| `--quiet` | `-q` | `False` | Suppress non-error console logs |
+| `--quiet` | `-q` | `False` | Suppress progress logs |
 
 ### Examples
 
-**1. Standard Mobile 1K KTX2 (Default)**:
+**1. Default (auto resolution, KTX2)**:
 ```bash
 ./bin/optimize-3d input.glb output_1k.glb
 ```

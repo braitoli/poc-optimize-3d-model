@@ -33,25 +33,16 @@ import trimesh
 from optimizer.core.cleaner import clean_and_repair_mesh, auto_ground_and_center
 from optimizer.core.shell_orient import orient_faces_by_visibility, DEFAULT_VIEWS, DEFAULT_RESOLUTION
 from optimizer.core.uv_baker import (
-    rebake_texture_xatlas,
-    rebake_texture_uvatlas,
     rechart_and_bake_high_density,
-    compute_uv_metrics,
-    can_downscale_texture,
-    determine_safe_downscale_resolution,
-    maximize_uv_bounds,
-    compute_original_island_pixels,
     select_repack_canvas_resolution
 )
-from optimizer.core.uvatlas import is_uvatlas_available
 from optimizer.core.palette import extract_palette, embed_gltf_extras
 from optimizer.core.texture_utils import (
     extract_original_texture_info,
     preserve_mesh_textures,
-    clamp_target_resolution,
     optimize_mesh_texture_for_export
 )
-from optimizer.pipeline import set_frontside_material, set_doublesided_material, check_glb_double_sided
+from optimizer.core.glb_utils import set_frontside_material, set_doublesided_material, check_glb_double_sided
 
 MODULE_ROOT = Path(__file__).resolve().parent
 INSPECT_SCRIPT = MODULE_ROOT / "inspect_metrics.mjs"

@@ -21,10 +21,7 @@ from optimizer.core.uvatlas import (
     ensure_manifold_zero_decimation,
     unwrap_mesh_uvatlas
 )
-from optimizer.core.uv_baker import (
-    rebake_texture_uvatlas,
-    rechart_and_bake_high_density
-)
+from optimizer.core.uv_baker import rechart_and_bake_high_density
 from optimizer.step_pipeline import StepPipeline
 
 
@@ -88,21 +85,6 @@ class TestUVAtlas(unittest.TestCase):
         self.assertGreaterEqual(float(uv_unwrapped.min()), 0.0)
         self.assertLessEqual(float(uv_unwrapped.max()), 1.0)
         self.assertGreater(stats.get("uvatlas_chart_count", 0), 0)
-
-    def test_rebake_texture_uvatlas(self):
-        orig_img = getattr(self.mesh.visual.material, "baseColorTexture")
-        orig_uv = self.mesh.visual.uv
-        out_mesh, baked_pil = rebake_texture_uvatlas(
-            self.mesh,
-            source_image=orig_img,
-            source_uv=orig_uv,
-            target_res=256,
-            dilation_padding=8,
-            double_sided=True
-        )
-        self.assertEqual(len(out_mesh.faces), len(self.mesh.faces), "Faces preserved")
-        self.assertEqual(baked_pil.size, (256, 256), "Texture resolution correct")
-        self.assertTrue(out_mesh.visual.material.doubleSided, "doubleSided must be True")
 
     def test_rechart_and_bake_high_density_uvatlas_mode(self):
         orig_img = getattr(self.mesh.visual.material, "baseColorTexture")

@@ -13,13 +13,10 @@ from PIL import Image
 from scipy import ndimage
 import trimesh
 import xatlas
-from optimizer.core.uvatlas import unwrap_mesh_uvatlas, is_uvatlas_available
+from optimizer.core.uvatlas import unwrap_mesh_uvatlas
 from optimizer.core.texture_utils import (
     clamp_target_resolution,
-    optimize_mesh_texture_for_export,
-    can_downscale_texture,
-    maximize_uv_space,
-    apply_bitstream_passthrough
+    optimize_mesh_texture_for_export
 )
 
 
@@ -225,42 +222,6 @@ def dilate_texture(image_rgb: np.ndarray, mask_covered: np.ndarray, padding: int
     sub_out[grow] = sub_img[near[0][grow], near[1][grow]]
     out[sub_rmin:sub_rmax, sub_cmin:sub_cmax] = sub_out
     return out
-
-
-def compute_uv_metrics(
-    mesh: trimesh.Trimesh,
-    target_res: int = 1024,
-    uv: Optional[np.ndarray] = None
-) -> Dict[str, Any]:
-    """
-    Measures UV Coverage Ratio (%) and Texel Density (px/unit) for any mesh and UV layout.
-    """
-    if uv is None:
-        uv = getattr(mesh.visual, "uv", None)
-    if uv is None or len(uv) == 0:
-        return {
-            "uv_coverage_ratio_percent": 0.0,
-            "texel_density_linear": 0.0,
-            "texel_density_area": 0.0,
-            "covered_pixels": 0,
-            "canvas_pixels": target_res * target_res,
-            "mesh_surface_area": round(float(mesh.area), 4)
-        }
-
-    sel, _, _ = _rasterize_uv_atlas(mesh.faces, uv, target_res)
-    mesh_area = float(mesh.area)
-    covered_pixels = int(len(sel))
-    total_pixels = target_res * target_res
-
-    return {
-        "target_resolution": target_res,
-        "canvas_pixels": total_pixels,
-        "covered_pixels": covered_pixels,
-        "uv_coverage_ratio_percent": round(float(covered_pixels / total_pixels * 100.0), 2),
-        "texel_density_linear": round(float(np.sqrt(covered_pixels) / np.sqrt(max(mesh_area, 1e-6))), 2),
-        "texel_density_area": round(float(covered_pixels / max(mesh_area, 1e-6)), 2),
-        "mesh_surface_area": round(mesh_area, 4)
-    }
 
 
 def get_adaptive_chart_options(n_faces: int) -> xatlas.ChartOptions:
@@ -521,88 +482,6 @@ def can_downscale_texture(
         "mesh_surface_area": round(mesh_area, 4)
     }
     return can_downscale, target_res, details
-
-
-def determine_safe_downscale_resolution(
-    mesh: trimesh.Trimesh,
-    orig_size: Tuple[int, int],
-    uv: Optional[np.ndarray] = None,
-    min_texel_density: float = 120.0,
-    requested_res: Union[int, str] = "auto",
-    sample_dim: int = 256,
-    preserve_original: bool = False
-) -> Tuple[int, Dict[str, Any]]:
-    """
-    Direct Pure Downscale Strategy:
-    Analyzes original texture resolution and determines the target resolution.
-    - If preserve_original is True and requested_res == 'auto':
-      Preserves 100% original texture resolution (True Zero-Loss Direct Mode).
-    - Otherwise (auto-adaptive downscale):
-      4096 -> 2048, 1536/2048 -> 1024.
-    - If requested_res is numeric:
-      Clamps strictly <= orig_max (no upscaling).
-
-    Guarantees 100% original UV coordinates are preserved (no chart tearing, rotation, or distortion).
-    """
-    w, h = orig_size
-    orig_max = max(w, h)
-    mesh_area = float(max(mesh.area, 1e-6))
-
-    if uv is None:
-        uv = getattr(mesh.visual, "uv", None)
-
-    # Compute effective UV coverage on original UV coordinates
-    if uv is not None and len(uv) > 0 and len(mesh.faces) > 0:
-        uv_norm = uv % 1.0 if (np.any(uv < 0.0) or np.any(uv > 1.0)) else uv
-        sel, _, _ = _rasterize_uv_atlas(mesh.faces, uv_norm, dim=sample_dim)
-        effective_uv_area = max(float(len(sel)) / float(sample_dim * sample_dim), 0.1)
-    else:
-        effective_uv_area = 0.55
-
-    # Linear Texel Densities at candidate targets (px / 3D unit)
-    td_1024 = (1024.0 * np.sqrt(effective_uv_area)) / np.sqrt(mesh_area)
-    td_2048 = (2048.0 * np.sqrt(effective_uv_area)) / np.sqrt(mesh_area)
-
-    is_auto = isinstance(requested_res, str) and requested_res.lower() == "auto"
-
-    if is_auto:
-        if preserve_original:
-            # True Zero-Loss: Preserve 100% original resolution bit-for-bit
-            target_res = orig_max
-        elif orig_max >= 4096:
-            # 4K textures: Safely downscale 1 POT tier from 4096 to 2048 (2K)
-            target_res = 2048
-        elif orig_max > 1024:
-            # 1536 or 2048: drop to 1024 (1K)
-            target_res = 1024
-        else:
-            # <= 1024: largest POT <= orig_max
-            target_res = 1 << int(math.floor(math.log2(orig_max)))
-            target_res = max(256, target_res)
-    else:
-        target_res = clamp_target_resolution(requested_res, orig_size)
-
-    td_final = (float(target_res) * np.sqrt(effective_uv_area)) / np.sqrt(mesh_area)
-    td_orig = (float(orig_max) * np.sqrt(effective_uv_area)) / np.sqrt(mesh_area)
-
-    details = {
-        "downscaled": target_res < orig_max,
-        "originalResolution": f"{orig_max}x{orig_max}",
-        "finalResolution": f"{target_res}x{target_res}",
-        "original_resolution": orig_max,
-        "final_resolution": target_res,
-        "mesh_surface_area": round(mesh_area, 4),
-        "uvCoverageRatio": round(effective_uv_area, 4),
-        "texelDensityOrig": round(td_orig, 2),
-        "texelDensityFinal": round(td_final, 2),
-        "texelDensity1024": round(td_1024, 2),
-        "texelDensity2048": round(td_2048, 2),
-        "texelDensityDelta": round(td_final - td_orig, 2),
-        "min_texel_density_threshold": min_texel_density,
-        "uvPreserved100Percent": True,
-        "decision": f"{orig_max} -> {target_res} (TD={td_final:.1f} px/u)"
-    }
-    return target_res, details
 
 
 def maximize_uv_bounds(
@@ -936,72 +815,3 @@ def rechart_and_bake_high_density(
     return recharted_mesh, dilated_pil
 
 
-def rebake_texture_uvatlas(
-    mesh: trimesh.Trimesh,
-    source_image: Image.Image,
-    source_uv: np.ndarray,
-    target_res: int = 1024,
-    dilation_padding: int = 16,
-    gutter: float = 4.0,
-    double_sided: Optional[bool] = None
-) -> Tuple[trimesh.Trimesh, Image.Image]:
-    """
-    Repacks UV charts with Microsoft UVAtlas and bakes new high-coverage texture.
-    Preserves 100% triangles (Zero-Decimation).
-    Enforces gutter >= 4.0 and mandatory EDT dilation (min 8px) to prevent white seams.
-    """
-    if double_sided is None:
-        double_sided = True
-
-    target_res = clamp_target_resolution(target_res, source_image.size)
-    eff_padding = max(8, int(dilation_padding))
-    eff_gutter = max(4.0, float(gutter))
-    res = rechart_and_bake_high_density(
-        mesh=mesh,
-        target_res=target_res,
-        source_image=source_image,
-        source_uv=source_uv,
-        dilation_padding=eff_padding,
-        double_sided=double_sided,
-        return_stats=False,
-        unwrap_method="uvatlas",
-        uvatlas_gutter=eff_gutter
-    )
-    return res[0], res[1]
-
-
-def rebake_texture_xatlas(
-    mesh: trimesh.Trimesh,
-    source_image: Image.Image,
-    source_uv: np.ndarray,
-    target_res: int = 1024,
-    dilation_padding: int = 16,
-    target_coverage: Optional[float] = None,
-    double_sided: Optional[bool] = None
-) -> Tuple[trimesh.Trimesh, Image.Image]:
-    """
-    Repacks UV charts with xatlas and bakes new high-coverage texture.
-    Preserves 100% triangles (Zero-Decimation).
-    Maintains backward compatibility with pipeline calls (guaranteeing doubleSided=True).
-    """
-    if double_sided is None:
-        double_sided = True
-
-    target_res = clamp_target_resolution(target_res, source_image.size)
-    pack_opts = None
-    if target_coverage is not None and target_coverage < 0.99:
-        area = mesh.area
-        tpu = float(np.sqrt(target_coverage * target_res * target_res / max(area, 1e-4)))
-        pack_opts = {"texels_per_unit": tpu}
-
-    res = rechart_and_bake_high_density(
-        mesh=mesh,
-        target_res=target_res,
-        source_image=source_image,
-        source_uv=source_uv,
-        dilation_padding=dilation_padding,
-        pack_options=pack_opts,
-        double_sided=double_sided,
-        return_stats=False
-    )
-    return res[0], res[1]

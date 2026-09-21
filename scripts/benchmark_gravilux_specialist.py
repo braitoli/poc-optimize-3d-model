@@ -38,7 +38,7 @@ from optimizer.core.texture_utils import (
     extract_original_texture_info,
     optimize_mesh_texture_for_export
 )
-from optimizer.pipeline import set_doublesided_material
+from optimizer.core.glb_utils import set_doublesided_material
 from optimizer.step_pipeline import StepPipeline, inspect_glb_metrics, format_duration
 
 

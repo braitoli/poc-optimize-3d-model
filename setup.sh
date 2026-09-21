@@ -58,7 +58,7 @@ echo "📦 Installing Node.js dependencies via npm..."
 npm install --omit=dev --no-audit --no-fund
 
 # 6. Make CLI wrapper executable
-chmod +x bin/optimize-3d optimizer/cli.py optimizer/node/optimize_meshopt.mjs
+chmod +x bin/optimize-3d optimizer/node/optimize_meshopt.mjs
 
 echo "=================================================================="
 echo "🎉 Setup complete! Verifying CLI..."

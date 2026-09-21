@@ -2,7 +2,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { exec, spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { Readable } from 'node:stream';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -301,40 +301,20 @@ function startPipelineJob({ jobId, rawGlbPath, workspaceDir, resolution = 'auto'
 
   const venvPython = path.join(__dirname, '.venv', 'bin', 'python');
   const pythonBin = fs.existsSync(venvPython) ? venvPython : 'python3';
-  const hasStepPipeline = fs.existsSync(path.join(__dirname, 'optimizer', 'step_pipeline.py'));
 
-  let args;
-  if (hasStepPipeline) {
-    args = [
-      '-m', 'optimizer.step_pipeline',
-      rawGlbPath,
-      '--output-dir', workspaceDir,
-      '--resolution', String(finalResolution),
-      '--format', finalFormat
-    ];
+  const args = [
+    '-m', 'optimizer.step_pipeline',
+    rawGlbPath,
+    '--output-dir', workspaceDir,
+    '--resolution', String(finalResolution),
+    '--format', finalFormat
+  ];
 
-    if (isDoubleSided) {
-      args.push('--double-sided');
-    }
-
-    args.push('--uv-mode', finalUvMode === 'uvatlas' ? 'uvatlas' : 'xatlas');
-  } else {
-    args = [
-      '-m', 'optimizer.cli',
-      rawGlbPath,
-      path.join(workspaceDir, 'step_06_final.glb'),
-      '-r', String(finalResolution),
-      '-f', finalFormat,
-      '--export-steps', workspaceDir,
-      '--step-events'
-    ];
-    if (isDoubleSided) {
-      args.push('--double-sided');
-    }
-    if (finalUvMode === 'uvatlas') {
-      args.push('--uv-mode', 'uvatlas');
-    }
+  if (isDoubleSided) {
+    args.push('--double-sided');
   }
+
+  args.push('--uv-mode', finalUvMode === 'uvatlas' ? 'uvatlas' : 'xatlas');
 
   console.log(`[Job ${jobId}] Spawning pipeline: ${pythonBin} ${args.join(' ')}`);
 
@@ -358,11 +338,7 @@ function startPipelineJob({ jobId, rawGlbPath, workspaceDir, resolution = 'auto'
       if (!trimmed) continue;
 
       let payload = null;
-      if (trimmed.startsWith('__STEP_EVENT__:')) {
-        try {
-          payload = JSON.parse(trimmed.slice('__STEP_EVENT__:'.length));
-        } catch (_) {}
-      } else if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+      if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
         try {
           payload = JSON.parse(trimmed);
         } catch (_) {}
@@ -822,67 +798,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // 6. Legacy API: Run single-shot optimization
-  if (pathname === '/api/optimize' && req.method === 'POST') {
-    let body = '';
-    req.on('data', chunk => { body += chunk; });
-    req.on('end', () => {
-      try {
-        const { input, resolution = 'auto', format = 'ktx2' } = JSON.parse(body || '{}');
-        if (!input) {
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Missing input model path' }));
-          return;
-        }
-
-        const sanitized = sanitizeOptimizationOptions({ resolution, format });
-        const inputPath = path.resolve(__dirname, input.replace(/^\//, ''));
-        const outputFilename = `opt_${Date.now()}_${path.basename(inputPath)}`;
-        const outputPath = path.join(__dirname, 'examples', outputFilename);
-
-        console.log(`[API /api/optimize] Single-shot request: input=${inputPath}, res=${sanitized.resolution}, format=${sanitized.format}`);
-
-        const isDoubleSided = detectGlbDoubleSided(inputPath);
-        if (isDoubleSided) {
-          console.log(`[API /api/optimize] Auto-detected doubleSided: true in input model: enabling --double-sided`);
-        }
-
-        let cmd = `"${path.join(__dirname, 'bin', 'optimize-3d')}" "${inputPath}" "${outputPath}" -r ${sanitized.resolution} -f ${sanitized.format}`;
-        if (isDoubleSided) {
-          cmd += ' --double-sided';
-        }
-        cmd += ' --json';
-
-        exec(cmd, { cwd: __dirname }, (error, stdout, stderr) => {
-          if (error) {
-            res.writeHead(500, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: stderr || error.message }));
-            return;
-          }
-          const isClamped = stdout.includes('NO-UPSCALE') || stdout.toLowerCase().includes('clamped') || (stderr && stderr.includes('NO-UPSCALE'));
-          if (isClamped) {
-            console.warn(`[API /api/optimize][POLICY] Texture resolution clamped (NO-UPSCALE)`);
-          }
-          const outStat = fs.statSync(outputPath);
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({
-            success: true,
-            outputUrl: `/examples/${outputFilename}`,
-            sizeBytes: outStat.size,
-            sizeFormatted: formatBytes(outStat.size),
-            textureClamped: isClamped,
-            details: stdout
-          }));
-        });
-      } catch (err) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: err.message }));
-      }
-    });
-    return;
-  }
-
-  // 7. Static File Serving (Viewer & Examples)
+  // 6. Static File Serving (Viewer & Examples)
   if (pathname === '/' || pathname === '/index.html') {
     pathname = '/viewer/index.html';
   }

@@ -93,7 +93,7 @@ COPY . .
 
 # Symlink .venv for CLI path resolution and ensure executables
 RUN ln -sf /opt/venv /app/.venv \
-    && chmod +x /app/bin/optimize-3d /app/optimizer/cli.py /app/optimizer/node/optimize_meshopt.mjs
+    && chmod +x /app/bin/optimize-3d /app/optimizer/node/optimize_meshopt.mjs
 
 # Dedicated workspace directory for user volume mounts
 RUN mkdir -p /data

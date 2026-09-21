@@ -2,8 +2,7 @@
 test_uv_baker.py
 
 Tests for:
-- optimizer/core/uv_baker.py (rebake_texture_xatlas & rechart_and_bake_high_density)
-- doubleSided=True preservation
+- optimizer/core/uv_baker.py (rechart_and_bake_high_density)
 - vertex_normals preservation (smooth shading, no flat normals)
 - Alpha channel preservation
 - Material properties preservation (roughness, metallic, alphaMode)
@@ -18,20 +17,13 @@ from PIL import Image
 import trimesh
 
 from optimizer.core.uv_baker import (
-    rebake_texture_xatlas,
     rechart_and_bake_high_density,
-    compute_uv_metrics,
     can_downscale_texture as uv_baker_can_downscale,
-    determine_safe_downscale_resolution,
     maximize_uv_bounds,
     get_adaptive_chart_options
 )
-from optimizer.core.texture_utils import (
-    clamp_target_resolution,
-    can_downscale_texture,
-    maximize_uv_space
-)
-from optimizer.pipeline import set_doublesided_material
+from optimizer.core.texture_utils import clamp_target_resolution
+from optimizer.core.glb_utils import set_doublesided_material
 
 
 class TestUvBaker(unittest.TestCase):
@@ -45,44 +37,18 @@ class TestUvBaker(unittest.TestCase):
             [0.2, 0.2], [0.8, 0.2], [0.8, 0.8], [0.2, 0.8]
         ], dtype=np.float64)
 
-    def test_rebake_xatlas_preserves_doublesided_and_normals(self):
-        orig_normals = self.mesh.vertex_normals.copy()
-        mat = trimesh.visual.material.PBRMaterial(
-            metallicFactor=0.1,
-            roughnessFactor=0.9,
-            doubleSided=False
-        )
-        self.mesh.visual = trimesh.visual.TextureVisuals(uv=self.uv, material=mat)
-        img = Image.new("RGB", (128, 128), (100, 150, 200))
-
-        recharted_mesh, dilated_pil = rebake_texture_xatlas(
-            self.mesh,
-            source_image=img,
-            source_uv=self.uv,
-            target_res=256,
-            dilation_padding=8
-        )
-
-        # 1. doubleSided must be True
-        self.assertTrue(recharted_mesh.visual.material.doubleSided, "doubleSided must be True")
-        # 2. Material properties preserved
-        self.assertAlmostEqual(recharted_mesh.visual.material.metallicFactor, 0.1, places=2)
-        self.assertAlmostEqual(recharted_mesh.visual.material.roughnessFactor, 0.9, places=2)
-        # 3. Vertex normals must be preserved
-        self.assertIsNotNone(recharted_mesh.vertex_normals, "Vertex normals must be preserved")
-        self.assertEqual(len(recharted_mesh.vertex_normals), len(recharted_mesh.vertices))
-
-    def test_rebake_xatlas_preserves_rgba(self):
+    def test_rechart_preserves_rgba(self):
         mat = trimesh.visual.material.PBRMaterial(doubleSided=True)
         self.mesh.visual = trimesh.visual.TextureVisuals(uv=self.uv, material=mat)
         rgba_img = Image.new("RGBA", (128, 128), (220, 80, 50, 200))
 
-        recharted_mesh, dilated_pil = rebake_texture_xatlas(
+        recharted_mesh, dilated_pil = rechart_and_bake_high_density(
             self.mesh,
+            target_res=128,
             source_image=rgba_img,
             source_uv=self.uv,
-            target_res=128,
-            dilation_padding=4
+            dilation_padding=4,
+            double_sided=True
         )
 
         self.assertEqual(dilated_pil.mode, "RGBA", "Must preserve RGBA texture mode in xatlas bake")
@@ -148,14 +114,6 @@ class TestUvBaker(unittest.TestCase):
         self.assertEqual(stats["canvas_pixels"], 256 * 256)
         self.assertEqual(dilated_pil.size, (256, 256))
 
-    def test_compute_uv_metrics_standalone(self):
-        metrics = compute_uv_metrics(self.mesh, target_res=256, uv=self.uv)
-        self.assertIn("uv_coverage_ratio_percent", metrics)
-        self.assertIn("texel_density_linear", metrics)
-        self.assertIn("texel_density_area", metrics)
-        self.assertEqual(metrics["canvas_pixels"], 256 * 256)
-        self.assertGreaterEqual(metrics["covered_pixels"], 0)
-
     def test_no_upscale_clamp_target_resolution_helper(self):
         # 1536x1536 -> largest POT <= 1536 is 1024
         self.assertEqual(clamp_target_resolution(2048, (1536, 1536)), 1024)
@@ -193,69 +151,6 @@ class TestUvBaker(unittest.TestCase):
         self.assertEqual(clamp_target_resolution("auto", (2048, 1024)), 2048)
         self.assertEqual(clamp_target_resolution("auto", (512, 512)), 512)
 
-    def test_can_downscale_texture_evaluation(self):
-        # 4K texture with box mesh: should downscale to 2048
-        img_4k = Image.new("RGB", (4096, 4096), (100, 150, 200))
-        can_down, optimal_res, details = can_downscale_texture(
-            self.mesh,
-            source_image=img_4k,
-            uv=self.uv,
-            target_res="auto",
-            min_texel_density=64.0
-        )
-        self.assertTrue(can_down, "4K texture should be downscaled for web performance")
-        self.assertEqual(optimal_res, 2048)
-        self.assertEqual(details["candidate_res"], 2048)
-        self.assertEqual(details["base_res"], 4096)
-
-        # 512 texture: should NOT downscale below 512
-        img_512 = Image.new("RGB", (512, 512), (100, 150, 200))
-        can_down_512, optimal_res_512, details_512 = can_downscale_texture(
-            self.mesh,
-            source_image=img_512,
-            uv=self.uv,
-            target_res="auto",
-            min_texel_density=200.0
-        )
-        self.assertFalse(can_down_512, "512 texture should not be downscaled below 512")
-        self.assertEqual(optimal_res_512, 512)
-
-    def test_maximize_uv_space_subregion(self):
-        # Mesh with UVs only occupying [0.2, 0.2] to [0.6, 0.6]
-        sub_uv = np.array([
-            [0.2, 0.2], [0.6, 0.2], [0.6, 0.6], [0.2, 0.6],
-            [0.3, 0.3], [0.5, 0.3], [0.5, 0.5], [0.3, 0.5]
-        ], dtype=np.float64)
-        mat = trimesh.visual.material.PBRMaterial()
-        self.mesh.visual = trimesh.visual.TextureVisuals(uv=sub_uv, material=mat)
-        img = Image.new("RGB", (256, 256), (150, 100, 50))
-
-        out_mesh, cropped_img, new_uv, info = maximize_uv_space(
-            self.mesh,
-            source_image=img,
-            uv=sub_uv,
-            target_res=256
-        )
-
-        self.assertTrue(info["adjusted"], "UV space should be adjusted when sub-rectangle has margins")
-        self.assertAlmostEqual(new_uv.min(), 0.0, places=1)
-        self.assertAlmostEqual(new_uv.max(), 1.0, places=1)
-        self.assertEqual(cropped_img.size, (256, 256))
-
-    def test_maximize_uv_space_already_maximized(self):
-        # UVs already spanning full [0, 1]
-        full_uv = np.array([
-            [0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0],
-            [0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]
-        ], dtype=np.float64)
-        img = Image.new("RGB", (256, 256), (150, 100, 50))
-
-        _, _, _, info = maximize_uv_space(
-            self.mesh,
-            source_image=img,
-            uv=full_uv,
-            target_res=256
-        )
     def test_uv_baker_can_downscale_threshold_logic(self):
         # When TD_new_downscaled >= 0.85 * TD_orig: downscale 4096 -> 2048
         # Simulate mesh with surface area 10.0
@@ -391,57 +286,6 @@ class TestUvBaker(unittest.TestCase):
         self.assertIn("uvCoverageRatio", stats)
         self.assertIn("texelDensityDelta", stats)
         self.assertGreater(stats["uvCoverageRatio"], 0.0)
-
-    def test_determine_safe_downscale_resolution(self):
-        """Verify smallest safe resolution logic: 4K -> 1024 or 2048, 1.5K/2K -> 1024."""
-        # 1. 4K texture safely downscales 1 tier to 2048 (2K) to preserve micro-details
-        res_4k, details_4k = determine_safe_downscale_resolution(
-            self.mesh,
-            orig_size=(4096, 4096),
-            uv=self.uv,
-            min_texel_density=120.0,
-            requested_res="auto"
-        )
-        self.assertEqual(res_4k, 2048, "4K texture should safely downscale to 2048 (2K) to preserve micro-details")
-        self.assertTrue(details_4k["downscaled"])
-        self.assertEqual(details_4k["originalResolution"], "4096x4096")
-        self.assertEqual(details_4k["finalResolution"], "2048x2048")
-
-        # 2. 1536 (1.5K like Dinoki) -> 1024 (1K)
-        res_1536, details_1536 = determine_safe_downscale_resolution(
-            self.mesh,
-            orig_size=(1536, 1536),
-            uv=self.uv,
-            min_texel_density=120.0,
-            requested_res="auto"
-        )
-        self.assertEqual(res_1536, 1024, "1536 (1.5K) texture should automatically downscale to 1024")
-        self.assertTrue(details_1536["downscaled"])
-
-        # 3. 2048 (2K) -> 1024 (1K)
-        res_2k, details_2k = determine_safe_downscale_resolution(
-            self.mesh,
-            orig_size=(2048, 2048),
-            uv=self.uv,
-            min_texel_density=120.0,
-            requested_res="auto"
-        )
-        self.assertEqual(res_2k, 1024, "2048 (2K) texture should automatically downscale to 1024")
-        self.assertTrue(details_2k["downscaled"])
-
-        # 4. Large mesh where TD at 1024 < 120 px/unit -> picks 2048
-        # Create a large scaled mesh with area > 100
-        large_mesh = self.mesh.copy()
-        large_mesh.apply_scale(5.0)  # Area becomes ~6 * 25 = 150
-        res_large, details_large = determine_safe_downscale_resolution(
-            large_mesh,
-            orig_size=(4096, 4096),
-            uv=self.uv,
-            min_texel_density=120.0,
-            requested_res="auto"
-        )
-        self.assertEqual(res_large, 2048, "Large mesh (like Gravilux) should downscale to 2048 for visual safety")
-        self.assertTrue(details_large["downscaled"])
 
 
 if __name__ == "__main__":

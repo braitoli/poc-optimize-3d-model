@@ -39,7 +39,7 @@ from optimizer.core.uv_baker import (
     compute_uv_metrics
 )
 from optimizer.core.texture_utils import clamp_target_resolution, optimize_mesh_texture_for_export
-from optimizer.pipeline import set_doublesided_material
+from optimizer.core.glb_utils import set_doublesided_material
 
 
 def get_rss_mb() -> float:
