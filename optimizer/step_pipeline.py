@@ -283,7 +283,7 @@ class StepPipeline:
         self.ktx2_min_vram_mb = float(ktx2_min_vram_mb)
 
         if smooth_normals is None:
-            self.smooth_normals = True
+            self.smooth_normals = False
         else:
             self.smooth_normals = smooth_normals
 
