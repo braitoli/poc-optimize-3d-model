@@ -927,14 +927,17 @@ def reduce_faces(
     isolated_min_faces: int = DEFAULT_ISOLATED_MIN_FACES,
     hidden_views: int = DEFAULT_HIDDEN_VIEWS,
     hidden_resolution: int = DEFAULT_HIDDEN_RESOLUTION,
-    stats: Optional[Dict[str, Any]] = None
+    stats: Optional[Dict[str, Any]] = None,
+    pre_collapse: Optional[Dict[str, Any]] = None
 ) -> trimesh.Trimesh:
     """
     Repairs and reduces `mesh` with `engine`, keeping the result within `quality_budget_percent`.
     `normal_budget_degrees` is an angle, or "auto" to read one off the mesh: `normal_budget_factor`
     times how far its surface already turns per edge (`auto_normal_budget`), ignored otherwise.
     Returns a new mesh; `stats` (when given) records what each operation removed, the measured
-    deviation and whether the UVs survived.
+    deviation and whether the UVs survived. `pre_collapse` (when given) receives, under "mesh", the
+    mesh as the removals left it, with the source UVs still on it - only set when a collapse then
+    threw those UVs away, because that is the surface a caller has to measure the source against.
     Raises PipelineAbort when the engine is unavailable, when the removal operations alone exceed
     the quality budget, or when they would leave no face at all.
     """
@@ -1069,7 +1072,11 @@ def reduce_faces(
         )
         if best is not None:
             merged_vertices, merged_faces, final_deviation = best
-            # Collapsing edges rewrites the topology: no UV of the input survives it
+            # Collapsing edges rewrites the topology: no UV of the input survives it. Hand the
+            # caller the mesh as it was here - removals done, source UVs intact - so it can still
+            # measure the source texture against the surface that survives, not the one that went.
+            if pre_collapse is not None:
+                pre_collapse["mesh"] = reduced
             reduced = trimesh.Trimesh(vertices=merged_vertices, faces=merged_faces, process=False)
             record["uvInvalidated"] = True
             record["mergedFaces"] = int(len(merged_faces))

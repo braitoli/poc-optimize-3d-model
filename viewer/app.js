@@ -64,17 +64,11 @@ const dom = {
   downscaleSelect: document.getElementById('downscaleSelect'),
   sizeModeSelect: document.getElementById('sizeModeSelect'),
   mergeIslandsSelect: document.getElementById('mergeIslandsSelect'),
-  flatSwatchSelect: document.getElementById('flatSwatchSelect'),
-  flatToleranceInput: document.getElementById('flatToleranceInput'),
-  flatMinGroupInput: document.getElementById('flatMinGroupInput'),
   smoothNormalsSelect: document.getElementById('smoothNormalsSelect'),
   uvModeItem: document.querySelector('.config-item-uv'),
   downscaleItem: document.querySelector('.config-item-downscale'),
   sizeModeItem: document.querySelector('.config-item-size'),
   mergeIslandsItem: document.querySelector('.config-item-merge-islands'),
-  flatSwatchItem: document.querySelector('.config-item-flat-swatch'),
-  flatToleranceItem: document.querySelector('.config-item-flat-tolerance'),
-  flatMinGroupItem: document.querySelector('.config-item-flat-min-group'),
   smoothNormalsItem: document.querySelector('.config-item-smooth-normals'),
   step3Config: document.getElementById('step3Config'),
   reduceEngineSelect: document.getElementById('reduceEngineSelect'),
@@ -400,9 +394,6 @@ function syncStepDependentControls() {
   dom.downscaleItem.hidden = !bakeOn;
   dom.sizeModeItem.hidden = !bakeOn;
   dom.mergeIslandsItem.hidden = !bakeOn;
-  dom.flatSwatchItem.hidden = !bakeOn;
-  dom.flatToleranceItem.hidden = !bakeOn;
-  dom.flatMinGroupItem.hidden = !bakeOn;
   dom.smoothNormalsItem.hidden = !meshoptOn;
   dom.smoothNormalsSelect.disabled = running;
 
@@ -412,11 +403,6 @@ function syncStepDependentControls() {
   dom.sizeModeSelect.disabled = running || downscaleOff;
   dom.downscaleSelect.disabled = running;
   dom.mergeIslandsSelect.disabled = running || downscaleOff;
-  // The swatches are part of the re-chart, so they follow Step 4 and its Downscale switch
-  const flatOff = dom.flatSwatchSelect.value === 'off';
-  dom.flatSwatchSelect.disabled = running || downscaleOff;
-  dom.flatToleranceInput.disabled = running || downscaleOff || flatOff;
-  dom.flatMinGroupInput.disabled = running || downscaleOff || flatOff;
   dom.reduceEngineSelect.disabled = running;
   dom.reduceQualityBudgetInput.disabled = running;
   dom.reduceNormalBudgetInput.disabled = running;
@@ -1516,11 +1502,6 @@ async function startOptimization() {
     formData.append('downscale', dom.downscaleSelect.value);
     formData.append('sizeMode', dom.sizeModeSelect.value);
     formData.append('mergeUvIslands', dom.mergeIslandsSelect.value);
-    formData.append('flatSwatch', dom.flatSwatchSelect.value);
-    if (dom.flatSwatchSelect.value === 'on') {
-      formData.append('flatTolerance', dom.flatToleranceInput.value);
-      formData.append('flatMinGroupFaces', dom.flatMinGroupInput.value);
-    }
   }
 
   if (isStepOn(STEP_MESHOPT)) {
@@ -1698,7 +1679,6 @@ window.addEventListener('DOMContentLoaded', async () => {
   }
 
   dom.downscaleSelect.onchange = syncStepDependentControls;
-  dom.flatSwatchSelect.onchange = syncStepDependentControls;
   dom.reduceOpsRow.querySelectorAll('input.reduce-op').forEach(cb => {
     cb.onchange = syncStepDependentControls;
   });

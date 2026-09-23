@@ -44,11 +44,6 @@ import trimesh
 from optimizer.core.cleaner import clean_and_repair_mesh, auto_ground_and_center
 from optimizer.core.shell_orient import orient_faces_by_visibility, DEFAULT_VIEWS, DEFAULT_RESOLUTION
 from optimizer.core.uv_baker import SIZE_MODES, plan_uv_canvas, bake_uv_plan
-
-# Step 4 flat-colour swatch defaults: per-channel spread (0..255) a face may have and still count
-# as flat, and the smallest group worth holding out of the chart pass
-DEFAULT_FLAT_TOLERANCE = 8.0
-DEFAULT_FLAT_MIN_GROUP_FACES = 16
 from optimizer.core.face_reduce import (
     DEFAULT_ISOLATED_MIN_FACES,
     AUTO_NORMAL_BUDGET,
@@ -302,9 +297,6 @@ class StepPipeline:
         downscale: bool = True,
         size_mode: str = "exact",
         merge_uv_islands: bool = True,
-        flat_swatch: bool = False,
-        flat_tolerance: float = DEFAULT_FLAT_TOLERANCE,
-        flat_min_group_faces: int = DEFAULT_FLAT_MIN_GROUP_FACES,
         smooth_normals: Optional[bool] = None,
         double_sided: bool = False,
         preserve_textures: bool = True,
@@ -334,20 +326,6 @@ class StepPipeline:
         if not isinstance(merge_uv_islands, bool):
             raise TypeError(f"merge_uv_islands must be a bool, got {merge_uv_islands!r}")
         self.merge_uv_islands = merge_uv_islands
-        # Step 4 flat-colour swatches: faces whose source colour is uniform share one small swatch
-        if not isinstance(flat_swatch, bool):
-            raise TypeError(f"flat_swatch must be a bool, got {flat_swatch!r}")
-        self.flat_swatch = flat_swatch
-        if isinstance(flat_tolerance, bool) or not isinstance(flat_tolerance, (int, float)):
-            raise TypeError(f"flat_tolerance must be a number, got {flat_tolerance!r}")
-        if not 0 < float(flat_tolerance) <= 64:
-            raise ValueError(f"flat_tolerance must be within (0, 64], got {flat_tolerance!r}")
-        self.flat_tolerance = float(flat_tolerance)
-        if isinstance(flat_min_group_faces, bool) or not isinstance(flat_min_group_faces, int):
-            raise TypeError(f"flat_min_group_faces must be an int, got {flat_min_group_faces!r}")
-        if flat_min_group_faces < 1:
-            raise ValueError(f"flat_min_group_faces must be at least 1, got {flat_min_group_faces!r}")
-        self.flat_min_group_faces = int(flat_min_group_faces)
         # Step 6 KTX2 runs only when the Step 5 texture VRAM estimate reaches this many MB (0 = always)
         if isinstance(ktx2_min_vram_mb, bool) or not isinstance(ktx2_min_vram_mb, (int, float)):
             raise TypeError(f"ktx2_min_vram_mb must be a number, got {ktx2_min_vram_mb!r}")
@@ -612,7 +590,6 @@ class StepPipeline:
             f"   Downscale: {'ON' if self.downscale else 'OFF'} | Size Mode: {self.size_mode} | "
             f"Format: {self.texture_format.upper()} | UV Mode: {self.uv_mode.upper()} | "
             f"Merge UV islands: {'ON' if self.merge_uv_islands else 'OFF'} | "
-            f"Flat swatch: {f'ON (tol {self.flat_tolerance:g}, min group {self.flat_min_group_faces})' if self.flat_swatch else 'OFF'} | "
             f"Smooth normals: {'ON' if self.smooth_normals else 'OFF'}"
         )
         if self.enabled(3):
@@ -708,6 +685,11 @@ class StepPipeline:
         # original texture through this projector instead
         uv_projector: Optional[SourceUVProjector] = None
         textured_source: Optional[trimesh.Trimesh] = None  # the pre-reduction mesh, kept for Step 4
+        # The surface Step 4 measures the source texture's density against: what the removals left,
+        # with the source UVs still on it. The pre-reduction mesh would include the hidden shell the
+        # removals cut away, and on an AI model that shell holds most of the source atlas - sizing
+        # the canvas for it asks for texels no visible face will ever sample.
+        density_source: Optional[trimesh.Trimesh] = None
         reduce_stats: Dict[str, Any] = {}
         faces_before_reduction = initial_faces
         if self.enabled(3):
@@ -719,6 +701,7 @@ class StepPipeline:
             t_s3 = time.perf_counter()
             faces_before_reduction = len(mesh.faces)
             textured_source = mesh.copy()  # the UV-carrying mesh a collapse would invalidate
+            pre_collapse: Dict[str, Any] = {}  # filled by reduce_faces when it collapses edges
             mesh = reduce_faces(
                 mesh,
                 engine=self.reduce_engine,
@@ -727,9 +710,11 @@ class StepPipeline:
                 normal_budget_degrees=self.reduce_normal_budget,
                 normal_budget_factor=self.reduce_normal_factor,
                 isolated_min_faces=self.reduce_isolated_min_faces,
-                stats=reduce_stats
+                stats=reduce_stats,
+                pre_collapse=pre_collapse
             )
             if reduce_stats["uvInvalidated"]:
+                density_source = pre_collapse.get("mesh", textured_source)
                 uv_projector = SourceUVProjector(textured_source)
                 # Collapsing edges returns bare positions and faces, so the model's hard edges -
                 # which a glTF mesh carries as split vertex normals, not as geometry - would be
@@ -801,13 +786,9 @@ class StepPipeline:
                     unwrap_method=self.uv_mode,
                     # After a collapse the texel density of the source texture is the one the
                     # pre-reduction mesh carried, not what the projected UVs of the new faces say
-                    density_mesh=textured_source if uv_projector is not None else None,
-                    density_uv=textured_source.visual.uv if uv_projector is not None else None,
-                    merge_islands=self.merge_uv_islands,
-                    flat_swatch=self.flat_swatch,
-                    flat_tolerance=self.flat_tolerance,
-                    flat_min_group_faces=self.flat_min_group_faces,
-                    source_uv_sampler=uv_projector
+                    density_mesh=density_source if uv_projector is not None else None,
+                    density_uv=density_source.visual.uv if uv_projector is not None else None,
+                    merge_islands=self.merge_uv_islands
                 )
                 canvas = plan["final_resolution"]
                 if uv_projector is not None:
@@ -883,12 +864,6 @@ class StepPipeline:
                 "uvCoverageRatio": uv_stats["uvCoverageRatio"] if rechart else None,
                 "doubleSided": self.double_sided,
                 "mergeUvIslands": self.merge_uv_islands,
-                "flatSwatch": self.flat_swatch,
-                "flatTolerance": self.flat_tolerance,
-                "flatMinGroupFaces": self.flat_min_group_faces,
-                "flatSwatchResult": (plan.get("flat") or {}).get("stats") if plan else None,
-                # Why the swatches did not apply, when they were asked for: never silently dropped
-                "flatSwatchDisabled": plan.get("flat_disabled") if plan else None,
                 "islandMerge": plan["island_merge"] if plan is not None else None,
                 "uvMetrics": uv_stats
             }
@@ -906,21 +881,6 @@ class StepPipeline:
                     f"{len(islands['levels'])} tried), island border {islands['boundaryTexelsAfter']:,.0f} texels "
                     f"({islands['boundaryReductionPercent']:+.2f}% vs unmerged)"
                 )
-                if self.flat_swatch:
-                    # Only a re-chart bakes the swatches; kept_original keeps the source atlas as is
-                    flat_stats = (plan.get("flat") or {}).get("stats") if rechart else None
-                    if flat_stats:
-                        self.log(
-                            f"   Flat swatches: {flat_stats['swatches']} colours over {flat_stats['groups']} groups, "
-                            f"{flat_stats['flatFacesPercent']}% of faces / {flat_stats['flatAreaPercent']}% of "
-                            f"surface kept out of the chart pass (strip {plan['swatch_strip_px']}px)"
-                        )
-                    else:
-                        reason = (
-                            plan.get("flat_disabled")
-                            or ("the original texture was kept, so nothing was baked" if not rechart else "no flat group found")
-                        )
-                        self.log(f"   Flat swatches: not applied ({reason})")
         else:
             skip_step(4)
             # No bake: the model keeps the texture it came in with
@@ -1277,27 +1237,6 @@ def main():
              "need the smallest canvas. Fewer islands mean less chart border, hence less of the "
              "texture spent on gutter padding ('off' charts once, with the default segmentation)"
     )
-    parser.add_argument(
-        "--flat-swatch",
-        choices=["on", "off"],
-        default="off",
-        help="Step 4: keep faces whose source colour is uniform out of the chart pass and give each "
-             "colour one small swatch, so the canvas only holds the faces that carry detail"
-    )
-    parser.add_argument(
-        "--flat-tolerance",
-        type=float,
-        default=DEFAULT_FLAT_TOLERANCE,
-        help="Step 4 (--flat-swatch on): per-channel spread (0..255) a face may show over the source "
-             "texture and still count as flat. A swatched face never moves further than this"
-    )
-    parser.add_argument(
-        "--flat-min-group-faces",
-        type=int,
-        default=DEFAULT_FLAT_MIN_GROUP_FACES,
-        help="Step 4 (--flat-swatch on): smallest flat group held out of the chart pass; cutting a "
-             "tiny hole out of the mesh costs more chart border than the texels it saves"
-    )
     parser.add_argument("--smooth-normals", dest="smooth_normals", action="store_true", default=None, help="Force angle-weighted normal smoothing across seams")
     parser.add_argument("--no-smooth-normals", dest="smooth_normals", action="store_false", default=None, help="Disable angle-weighted normal smoothing across seams")
     parser.add_argument("--double-sided", action="store_true", help="Keep double-sided materials instead of forcing single-sided FrontSide")
@@ -1373,9 +1312,6 @@ def main():
             downscale=(args.downscale == "on"),
             size_mode=args.size_mode,
             merge_uv_islands=(args.merge_uv_islands == "on"),
-            flat_swatch=(args.flat_swatch == "on"),
-            flat_tolerance=args.flat_tolerance,
-            flat_min_group_faces=args.flat_min_group_faces,
             smooth_normals=args.smooth_normals,
             double_sided=args.double_sided,
             preserve_textures=not args.no_preserve_textures,

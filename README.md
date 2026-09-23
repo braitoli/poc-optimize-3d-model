@@ -42,22 +42,16 @@ flowchart TD
 3. **UV Island Merging (Step 4)**:
    - Charts the mesh at several island-merge levels and keeps the one whose islands need the smallest canvas at 1:1 texel density (`--merge-uv-islands off` charts once, with the default segmentation).
    - Fewer islands mean less chart border, and border is what the packer has to surround with gutter padding. `metrics.json` reports the island count, the island border length in texels and the canvas for every level tried.
-4. **Flat-Colour Swatches (Step 4, `--flat-swatch on`)**:
-   - A face whose source colour is uniform carries no detail, so it needs no texels of its own. Those faces are held out of the chart pass and each colour gets one 8x8 swatch in a strip along the bottom of the canvas, block-aligned so KTX2 reproduces it exactly.
-   - A face only counts as flat when every re-baked slot (base colour, normal, metallicRoughness, occlusion, emissive) is uniform over it, and every sample of a swatched face is checked against the swatch colour it would get: no point ever moves further than `--flat-tolerance`.
-   - The mesh is charted both ways and the smaller canvas wins, so the option can never grow the canvas; when it does not help, `metrics.json` records why in `flatSwatchDisabled`.
-   - Measured at tolerance 20 (full pipeline, KTX2): koidrax 2612 -> 2272 canvas and 8.69 -> 6.56 MB VRAM, dinoki 1528 -> 1500.
-
-5. **16px Boundary Dilation**:
+4. **16px Boundary Dilation**:
    - Uses Euclidean distance transform (`ndimage.distance_transform_edt`) to bleed island boundary colors 16 pixels into black/transparent padding.
    - Triệt tiêu 100% viền đen khi GPU thu nhỏ mipmap texture.
-6. **Angle-Weighted Smooth Vertex Normals**:
+5. **Angle-Weighted Smooth Vertex Normals**:
    - Thürmer & Wüthrich / Bærentzen & Aanaes algorithm with spatial vertex position hashing.
    - Vertices split across UV seams share continuous smooth normals, eliminating ugly light creases and seam cracks.
-7. **EXT_meshopt_compression**:
+6. **EXT_meshopt_compression**:
    - Quantization: 14-bit position, 16-bit UV (`--keep-uv-float32` to opt out), octahedral-filtered normals.
    - GPU vertex cache reordering for maximum Metal/Vulkan throughput.
-8. **Hardware GPU Texture Compression (Basis Universal KTX2 UASTC)**:
+7. **Hardware GPU Texture Compression (Basis Universal KTX2 UASTC)**:
    - Encodes texture into KTX2 UASTC Level 2 RDO 1.0 with mipmaps using `basisu`.
    - Transcodes on-the-fly to GPU native compressed formats (ASTC on iOS/Android, BC7 on Desktop).
    - Drastically lowers GPU VRAM from ~32 MB down to **~2–3 MB**.
@@ -114,10 +108,7 @@ python3 -m optimizer.step_pipeline input.glb --output-dir out/
 | `--format` | `-f` | `ktx2` | GPU texture format (`ktx2`, `webp` or `original`) |
 | `--uv-mode` | | `xatlas` | UV unwrap mode (`xatlas` or `uvatlas`) |
 | `--merge-uv-islands` | | `on` | Step 4: chart at several island-merge levels and keep the one whose islands need the smallest canvas (less chart border, hence less gutter padding) |
-| `--flat-swatch` | | `off` | Step 4: keep faces whose source colour is uniform out of the chart pass and give each colour one small swatch, so the canvas only holds the faces that carry detail |
-| `--flat-tolerance` | | `8` | Step 4 (`--flat-swatch on`): per-channel spread (0..255) a face may show and still count as flat. No point of a swatched face ever moves further than this |
 | `--smooth-normals` / `--no-smooth-normals` | | on | Step 6: angle-weighted smooth vertex normals welded across UV seams, which heals the shading seam a UV split leaves and drops the duplicate vertices with it. Only vertices whose normals already agree are welded, so hard edges survive: welding each position whole flattened every crease in the model (dinoki: 5,195 creased positions in, 0 out) |
-| `--flat-min-group-faces` | | `16` | Step 4 (`--flat-swatch on`): smallest flat group held out of the chart pass; cutting a tiny hole costs more chart border than the texels it saves |
 | `--skip-steps` | | *(none)* | Comma-separated steps to skip, e.g. `3,5`. Steps 1-6 are optional; Step 0 and Step 7 always run |
 | `--reduce-engine` | | `cgal` | Step 3 engine: `cgal` (the `optimizer/cgal` helper) or `meshlab` (pymeshlab). At a tight budget CGAL reduces far more: koidrax at 0.1% is -66% with CGAL and -6% with MeshLab |
 | `--reduce-ops` | | `repair,isolated,hidden,merge` | Step 3 operations, any subset of `repair`, `self_intersection`, `isolated`, `hidden`, `merge` |

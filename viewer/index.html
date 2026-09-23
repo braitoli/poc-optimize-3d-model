@@ -177,36 +177,6 @@
           </select>
         </div>
 
-        <!-- Flat colour swatches (Step 4) -->
-        <div class="config-item config-item-flat-swatch">
-          <label class="config-label" for="flatSwatchSelect">
-            Flat Swatch
-            <span class="policy-tooltip-trigger" title="Mặt nào có màu nguồn đồng đều thì không cần texel riêng: giữ chúng ngoài lượt chart và cho mỗi màu một ô swatch nhỏ, nhờ đó canvas chỉ phải chứa phần thật sự có chi tiết. Một mặt chỉ được coi là phẳng khi mọi slot texture được bake lại đều phẳng">ⓘ</span>
-          </label>
-          <select class="config-select" id="flatSwatchSelect">
-            <option value="off" selected>Tắt</option>
-            <option value="on" title="Gom vùng màu trơn về swatch dùng chung">Bật</option>
-          </select>
-        </div>
-
-        <!-- Flat tolerance (Step 4) -->
-        <div class="config-item config-item-flat-tolerance">
-          <label class="config-label" for="flatToleranceInput">
-            Ngưỡng phẳng τ
-            <span class="policy-tooltip-trigger" title="Biên độ tối đa (0..255, mỗi kênh) mà màu nguồn của một mặt được phép dao động mà vẫn tính là phẳng. Mặt bị gom về swatch không bao giờ lệch quá τ so với màu gốc của nó. τ càng lớn, canvas càng nhỏ nhưng sai màu càng tăng">ⓘ</span>
-          </label>
-          <input class="config-input" type="number" id="flatToleranceInput" value="8" min="1" max="64" step="1" />
-        </div>
-
-        <!-- Flat min group (Step 4) -->
-        <div class="config-item config-item-flat-min-group">
-          <label class="config-label" for="flatMinGroupInput">
-            Nhóm phẳng tối thiểu
-            <span class="policy-tooltip-trigger" title="Nhóm mặt phẳng nhỏ hơn số này vẫn đi theo lượt chart bình thường: khoét một lỗ nhỏ khỏi mesh sinh thêm đường biên tốn nhiều gutter hơn số texel tiết kiệm được">ⓘ</span>
-          </label>
-          <input class="config-input" type="number" id="flatMinGroupInput" value="16" min="1" step="1" />
-        </div>
-
         <!-- Smooth Normals (Step 6) -->
         <div class="config-item config-item-smooth-normals">
           <label class="config-label" for="smoothNormalsSelect">

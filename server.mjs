@@ -223,7 +223,6 @@ const ALLOWED_UV_MODES = ['xatlas', 'uvatlas', ...Object.keys(UV_MODE_ALIASES)];
 const ALLOWED_DOWNSCALE = ['on', 'off'];
 const ALLOWED_MERGE_UV_ISLANDS = ['on', 'off'];
 const ALLOWED_SIZE_MODES = ['exact', 'pot-up', 'pot-down'];
-const ALLOWED_FLAT_SWATCH = ['on', 'off'];
 const ALLOWED_SMOOTH_NORMALS = ['on', 'off'];
 const ALLOWED_REDUCE_ENGINES = ['cgal', 'meshlab'];
 const ALLOWED_REDUCE_OPS = ['repair', 'self_intersection', 'isolated', 'hidden', 'merge'];
@@ -235,12 +234,12 @@ const SKIPPABLE_STEPS = [1, 2, 3, 4, 5, 6];
 // The options each optional step owns: sending one of them for a skipped step is a 400
 const STEP_OPTION_FIELDS = {
   3: ['reduceEngine', 'reduceOps', 'reduceQualityBudget', 'reduceNormalBudget', 'reduceNormalFactor', 'reduceIsolatedMinFaces'],
-  4: ['uvMode', 'downscale', 'sizeMode', 'mergeUvIslands', 'flatSwatch', 'flatTolerance', 'flatMinGroupFaces'],
+  4: ['uvMode', 'downscale', 'sizeMode', 'mergeUvIslands'],
   6: ['smoothNormals']
 };
 const OPTION_FIELDS = [
   'format', 'uvMode', 'downscale', 'sizeMode', 'mergeUvIslands',
-  'flatSwatch', 'flatTolerance', 'flatMinGroupFaces', 'smoothNormals',
+  'smoothNormals',
   'skipSteps', 'reduceEngine', 'reduceOps', 'reduceQualityBudget', 'reduceNormalBudget', 'reduceNormalFactor',
   'reduceIsolatedMinFaces'
 ];
@@ -333,8 +332,8 @@ function validateNormalBudget(value) {
 }
 
 function sanitizeOptimizationOptions(fields = {}) {
-  const { format, uvMode, downscale, sizeMode, mergeUvIslands, flatSwatch, flatTolerance,
-    flatMinGroupFaces, smoothNormals, skipSteps, reduceEngine, reduceOps,
+  const { format, uvMode, downscale, sizeMode, mergeUvIslands, smoothNormals,
+    skipSteps, reduceEngine, reduceOps,
     reduceQualityBudget, reduceNormalBudget, reduceNormalFactor, reduceIsolatedMinFaces } = fields;
   const fmt = validateChoice('format', format, ALLOWED_FORMATS, 'ktx2');
   const uv = validateChoice('uvMode', uvMode, ALLOWED_UV_MODES, 'xatlas');
@@ -344,11 +343,6 @@ function sanitizeOptimizationOptions(fields = {}) {
     downscale: validateChoice('downscale', downscale, ALLOWED_DOWNSCALE, 'on'),
     sizeMode: validateChoice('sizeMode', sizeMode, ALLOWED_SIZE_MODES, 'exact'),
     mergeUvIslands: validateChoice('mergeUvIslands', mergeUvIslands, ALLOWED_MERGE_UV_ISLANDS, 'on'),
-    flatSwatch: validateChoice('flatSwatch', flatSwatch, ALLOWED_FLAT_SWATCH, 'off'),
-    flatTolerance: validateNumber('flatTolerance', flatTolerance, 8, n => n > 0 && n <= 64,
-      'a number within (0, 64]'),
-    flatMinGroupFaces: validateNumber('flatMinGroupFaces', flatMinGroupFaces, 16,
-      n => Number.isInteger(n) && n >= 1, 'an integer of at least 1'),
     smoothNormals: validateChoice('smoothNormals', smoothNormals, ALLOWED_SMOOTH_NORMALS, 'on'),
     skipSteps: validateList('skipSteps', skipSteps, parseSkipStep, []),
     reduceEngine: validateChoice('reduceEngine', reduceEngine, ALLOWED_REDUCE_ENGINES, 'cgal'),
@@ -603,8 +597,7 @@ function handlePipelineLogLine(job, trimmed) {
 
 // Options must already be validated (sanitizeOptimizationOptions) and doubleSided detected
 function startPipelineJob({ jobId, rawGlbPath, workspaceDir, format, uvMode, downscale, sizeMode,
-  mergeUvIslands, flatSwatch, flatTolerance, flatMinGroupFaces, smoothNormals,
-  skipSteps, reduceEngine, reduceOps,
+  mergeUvIslands, smoothNormals, skipSteps, reduceEngine, reduceOps,
   reduceQualityBudget, reduceNormalBudget, reduceNormalFactor, reduceIsolatedMinFaces,
   doubleSided }) {
   const job = {
@@ -612,8 +605,8 @@ function startPipelineJob({ jobId, rawGlbPath, workspaceDir, format, uvMode, dow
     workspaceDir,
     status: 'started',
     config: {
-      format, uvMode, downscale, sizeMode, mergeUvIslands, flatSwatch, flatTolerance,
-      flatMinGroupFaces, smoothNormals, skipSteps, reduceEngine, reduceOps,
+      format, uvMode, downscale, sizeMode, mergeUvIslands, smoothNormals,
+      skipSteps, reduceEngine, reduceOps,
       reduceQualityBudget, reduceNormalBudget, reduceNormalFactor, reduceIsolatedMinFaces, doubleSided
     },
     startTime: Date.now(),
@@ -636,8 +629,7 @@ function startPipelineJob({ jobId, rawGlbPath, workspaceDir, format, uvMode, dow
 
   console.log(
     `[Job ${jobId}] Initialized with downscale=${downscale}, sizeMode=${sizeMode}, format=${format}, ` +
-    `uvMode=${uvMode}, mergeUvIslands=${mergeUvIslands}, flatSwatch=${flatSwatch}, ` +
-    `flatTolerance=${flatTolerance}, flatMinGroupFaces=${flatMinGroupFaces}, ` +
+    `uvMode=${uvMode}, mergeUvIslands=${mergeUvIslands}, ` +
     `smoothNormals=${smoothNormals}, ` +
     `skipSteps=${skipSteps.join(',') || 'none'}, ` +
     `reduceEngine=${reduceEngine}, reduceOps=${reduceOps.join(',') || 'none'}, ` +
@@ -670,9 +662,6 @@ function startPipelineJob({ jobId, rawGlbPath, workspaceDir, format, uvMode, dow
     '--size-mode', sizeMode,
     '--uv-mode', uvMode,
     '--merge-uv-islands', mergeUvIslands,
-    '--flat-swatch', flatSwatch,
-    '--flat-tolerance', String(flatTolerance),
-    '--flat-min-group-faces', String(flatMinGroupFaces),
     smoothNormals === 'on' ? '--smooth-normals' : '--no-smooth-normals',
     '--reduce-engine', reduceEngine,
     '--reduce-ops', reduceOps.join(','),
