@@ -17,6 +17,7 @@
 #include <CGAL/Polygon_mesh_processing/self_intersections.h>
 #include <CGAL/Polygon_mesh_processing/connected_components.h>
 #include <CGAL/Polygon_mesh_processing/orient_polygon_soup.h>
+#include <CGAL/Polygon_mesh_processing/orientation.h>
 #include <CGAL/Surface_mesh_simplification/edge_collapse.h>
 #include <CGAL/Surface_mesh_simplification/Policies/Edge_collapse/GarlandHeckbert_plane_policies.h>
 #include <CGAL/Surface_mesh_simplification/Policies/Edge_collapse/Bounded_normal_change_filter.h>
@@ -502,18 +503,52 @@ static Mesh build_mesh(const Soup& s) {
       polys[i][k] = static_cast<size_t>(remap[v]);
     }
 
+  // Which way each triangle faced before the soup was oriented. orient_polygon_soup only makes
+  // the triangles of a component agree with each other; it has no notion of inside or outside and
+  // picks one of the two directions per component by whichever triangle it happens to reach first.
+  // The caller's winding is not a guess - Step 2 established it by rendering the model - so it is
+  // recorded here and put back below. Positions do not move, so comparing the face normal before
+  // and against after says whether a triangle was turned over, and that survives the point
+  // duplication orient_polygon_soup may do.
+  std::vector<Kernel::Vector_3> before(polys.size());
+  for (size_t i = 0; i < polys.size(); ++i)
+    before[i] = CGAL::cross_product(pts[polys[i][1]] - pts[polys[i][0]],
+                                    pts[polys[i][2]] - pts[polys[i][0]]);
+
   PMP::orient_polygon_soup(pts, polys);  // may duplicate points; never changes polygon count/order
 
   Mesh mesh;
   mesh.reserve(pts.size(), pts.size() * 3, polys.size());
   std::vector<Mesh::Vertex_index> vh(pts.size());
   for (size_t i = 0; i < pts.size(); ++i) vh[i] = mesh.add_vertex(pts[i]);
+  std::vector<Mesh::Face_index> face_of(polys.size());
+  std::vector<double> turned(polys.size(), 0.0);
   for (size_t i = 0; i < polys.size(); ++i) {
     const auto f = mesh.add_face(vh[polys[i][0]], vh[polys[i][1]], vh[polys[i][2]]);
     if (f == Mesh::null_face())
       fail("face " + std::to_string(s.orig[i]) + " cannot be added to a manifold surface mesh; "
            "run with --repair first");
+    face_of[i] = f;
+    const Kernel::Vector_3 after = CGAL::cross_product(pts[polys[i][1]] - pts[polys[i][0]],
+                                                       pts[polys[i][2]] - pts[polys[i][0]]);
+    // Signed by area, so a component is decided by how much surface changed hands, not by how
+    // many slivers did
+    turned[i] = (before[i] * after < 0 ? -1.0 : 1.0) * std::sqrt(CGAL::to_double(after.squared_length()));
   }
+
+  // Put each component back the way it came in, if that is what most of its surface says
+  auto ccmap = mesh.add_property_map<Mesh::Face_index, std::size_t>("f:orient_cc", 0).first;
+  const std::size_t components = PMP::connected_components(mesh, ccmap);
+  std::vector<double> vote(components, 0.0);
+  for (size_t i = 0; i < polys.size(); ++i) vote[get(ccmap, face_of[i])] += turned[i];
+  std::vector<std::vector<Mesh::Face_index>> flip(components);
+  for (size_t i = 0; i < polys.size(); ++i) {
+    const std::size_t c = get(ccmap, face_of[i]);
+    if (vote[c] < 0.0) flip[c].push_back(face_of[i]);
+  }
+  for (std::size_t c = 0; c < components; ++c)
+    if (!flip[c].empty()) PMP::reverse_face_orientations(flip[c], mesh);
+  mesh.remove_property_map(ccmap);
   return mesh;
 }
 

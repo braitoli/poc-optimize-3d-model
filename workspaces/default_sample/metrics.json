@@ -433,53 +433,62 @@
       "textureRes": "896x896",
       "gpuVramMb": 4.08,
       "palette": [
-        "#4c802a",
-        "#39651a",
-        "#1b1d15",
-        "#28450f",
+        "#2f3e1e",
+        "#376219",
+        "#4b7c27",
+        "#1c1f17",
+        "#5c923b",
         "#b45a07",
-        "#699638",
-        "#393734",
         "#a09f80",
-        "#25717c",
-        "#cfcec6"
+        "#30676e",
+        "#8f9b24",
+        "#d0cec6"
       ],
       "paletteDetails": [
         {
-          "hex": "#4c802a",
+          "hex": "#2f3e1e",
           "rgb": [
-            76,
-            128,
-            42
+            47,
+            62,
+            30
           ],
-          "weight": 0.1726
+          "weight": 0.1715
         },
         {
-          "hex": "#39651a",
+          "hex": "#376219",
           "rgb": [
-            57,
-            101,
-            26
+            55,
+            98,
+            25
           ],
-          "weight": 0.1681
+          "weight": 0.1693
         },
         {
-          "hex": "#1b1d15",
+          "hex": "#4b7c27",
           "rgb": [
-            27,
-            29,
-            21
+            75,
+            124,
+            39
           ],
-          "weight": 0.1321
+          "weight": 0.1542
         },
         {
-          "hex": "#28450f",
+          "hex": "#1c1f17",
           "rgb": [
-            40,
-            69,
-            15
+            28,
+            31,
+            23
           ],
-          "weight": 0.1176
+          "weight": 0.1532
+        },
+        {
+          "hex": "#5c923b",
+          "rgb": [
+            92,
+            146,
+            59
+          ],
+          "weight": 0.1204
         },
         {
           "hex": "#b45a07",
@@ -488,25 +497,7 @@
             90,
             7
           ],
-          "weight": 0.1132
-        },
-        {
-          "hex": "#699638",
-          "rgb": [
-            105,
-            150,
-            56
-          ],
-          "weight": 0.11
-        },
-        {
-          "hex": "#393734",
-          "rgb": [
-            57,
-            55,
-            52
-          ],
-          "weight": 0.101
+          "weight": 0.113
         },
         {
           "hex": "#a09f80",
@@ -515,28 +506,37 @@
             159,
             128
           ],
-          "weight": 0.0408
+          "weight": 0.0416
         },
         {
-          "hex": "#25717c",
+          "hex": "#30676e",
           "rgb": [
-            37,
-            113,
-            124
+            48,
+            103,
+            110
           ],
-          "weight": 0.0262
+          "weight": 0.037
         },
         {
-          "hex": "#cfcec6",
+          "hex": "#8f9b24",
           "rgb": [
-            207,
+            143,
+            155,
+            36
+          ],
+          "weight": 0.0215
+        },
+        {
+          "hex": "#d0cec6",
+          "rgb": [
+            208,
             206,
             198
           ],
-          "weight": 0.0184
+          "weight": 0.0182
         }
       ],
-      "primaryColor": "#4c802a",
+      "primaryColor": "#2f3e1e",
       "materials": [
         {
           "name": "material_0",
@@ -548,7 +548,7 @@
         }
       ],
       "details": {
-        "primaryColor": "#4c802a",
+        "primaryColor": "#2f3e1e",
         "paletteCount": 10
       }
     },
@@ -576,53 +576,62 @@
       "textureRes": "896x896",
       "gpuVramMb": 4.08,
       "palette": [
-        "#4c802a",
-        "#39651a",
-        "#1b1d15",
-        "#28450f",
+        "#2f3e1e",
+        "#376219",
+        "#4b7c27",
+        "#1c1f17",
+        "#5c923b",
         "#b45a07",
-        "#699638",
-        "#393734",
         "#a09f80",
-        "#25717c",
-        "#cfcec6"
+        "#30676e",
+        "#8f9b24",
+        "#d0cec6"
       ],
       "paletteDetails": [
         {
-          "hex": "#4c802a",
+          "hex": "#2f3e1e",
           "rgb": [
-            76,
-            128,
-            42
+            47,
+            62,
+            30
           ],
-          "weight": 0.1726
+          "weight": 0.1715
         },
         {
-          "hex": "#39651a",
+          "hex": "#376219",
           "rgb": [
-            57,
-            101,
-            26
+            55,
+            98,
+            25
           ],
-          "weight": 0.1681
+          "weight": 0.1693
         },
         {
-          "hex": "#1b1d15",
+          "hex": "#4b7c27",
           "rgb": [
-            27,
-            29,
-            21
+            75,
+            124,
+            39
           ],
-          "weight": 0.1321
+          "weight": 0.1542
         },
         {
-          "hex": "#28450f",
+          "hex": "#1c1f17",
           "rgb": [
-            40,
-            69,
-            15
+            28,
+            31,
+            23
           ],
-          "weight": 0.1176
+          "weight": 0.1532
+        },
+        {
+          "hex": "#5c923b",
+          "rgb": [
+            92,
+            146,
+            59
+          ],
+          "weight": 0.1204
         },
         {
           "hex": "#b45a07",
@@ -631,25 +640,7 @@
             90,
             7
           ],
-          "weight": 0.1132
-        },
-        {
-          "hex": "#699638",
-          "rgb": [
-            105,
-            150,
-            56
-          ],
-          "weight": 0.11
-        },
-        {
-          "hex": "#393734",
-          "rgb": [
-            57,
-            55,
-            52
-          ],
-          "weight": 0.101
+          "weight": 0.113
         },
         {
           "hex": "#a09f80",
@@ -658,28 +649,37 @@
             159,
             128
           ],
-          "weight": 0.0408
+          "weight": 0.0416
         },
         {
-          "hex": "#25717c",
+          "hex": "#30676e",
           "rgb": [
-            37,
-            113,
-            124
+            48,
+            103,
+            110
           ],
-          "weight": 0.0262
+          "weight": 0.037
         },
         {
-          "hex": "#cfcec6",
+          "hex": "#8f9b24",
           "rgb": [
-            207,
+            143,
+            155,
+            36
+          ],
+          "weight": 0.0215
+        },
+        {
+          "hex": "#d0cec6",
+          "rgb": [
+            208,
             206,
             198
           ],
-          "weight": 0.0184
+          "weight": 0.0182
         }
       ],
-      "primaryColor": "#4c802a",
+      "primaryColor": "#2f3e1e",
       "materials": [
         {
           "name": "material_0",
@@ -702,8 +702,8 @@
       "file": "step_07_final.glb",
       "glbUrl": "/workspaces/default_sample/step_07_final.glb",
       "skipped": false,
-      "fileSize": 815516,
-      "fileSizeFormatted": "796.4 KB",
+      "fileSize": 815520,
+      "fileSizeFormatted": "796.41 KB",
       "faces": 14139,
       "vertices": 13442,
       "drawCalls": 1,
@@ -718,53 +718,62 @@
       "textureRes": "896x896",
       "gpuVramMb": 4.08,
       "palette": [
-        "#4c802a",
-        "#39651a",
-        "#1b1d15",
-        "#28450f",
+        "#2f3e1e",
+        "#376219",
+        "#4b7c27",
+        "#1c1f17",
+        "#5c923b",
         "#b45a07",
-        "#699638",
-        "#393734",
         "#a09f80",
-        "#25717c",
-        "#cfcec6"
+        "#30676e",
+        "#8f9b24",
+        "#d0cec6"
       ],
       "paletteDetails": [
         {
-          "hex": "#4c802a",
+          "hex": "#2f3e1e",
           "rgb": [
-            76,
-            128,
-            42
+            47,
+            62,
+            30
           ],
-          "weight": 0.1726
+          "weight": 0.1715
         },
         {
-          "hex": "#39651a",
+          "hex": "#376219",
           "rgb": [
-            57,
-            101,
-            26
+            55,
+            98,
+            25
           ],
-          "weight": 0.1681
+          "weight": 0.1693
         },
         {
-          "hex": "#1b1d15",
+          "hex": "#4b7c27",
           "rgb": [
-            27,
-            29,
-            21
+            75,
+            124,
+            39
           ],
-          "weight": 0.1321
+          "weight": 0.1542
         },
         {
-          "hex": "#28450f",
+          "hex": "#1c1f17",
           "rgb": [
-            40,
-            69,
-            15
+            28,
+            31,
+            23
           ],
-          "weight": 0.1176
+          "weight": 0.1532
+        },
+        {
+          "hex": "#5c923b",
+          "rgb": [
+            92,
+            146,
+            59
+          ],
+          "weight": 0.1204
         },
         {
           "hex": "#b45a07",
@@ -773,25 +782,7 @@
             90,
             7
           ],
-          "weight": 0.1132
-        },
-        {
-          "hex": "#699638",
-          "rgb": [
-            105,
-            150,
-            56
-          ],
-          "weight": 0.11
-        },
-        {
-          "hex": "#393734",
-          "rgb": [
-            57,
-            55,
-            52
-          ],
-          "weight": 0.101
+          "weight": 0.113
         },
         {
           "hex": "#a09f80",
@@ -800,28 +791,37 @@
             159,
             128
           ],
-          "weight": 0.0408
+          "weight": 0.0416
         },
         {
-          "hex": "#25717c",
+          "hex": "#30676e",
           "rgb": [
-            37,
-            113,
-            124
+            48,
+            103,
+            110
           ],
-          "weight": 0.0262
+          "weight": 0.037
         },
         {
-          "hex": "#cfcec6",
+          "hex": "#8f9b24",
           "rgb": [
-            207,
+            143,
+            155,
+            36
+          ],
+          "weight": 0.0215
+        },
+        {
+          "hex": "#d0cec6",
+          "rgb": [
+            208,
             206,
             198
           ],
-          "weight": 0.0184
+          "weight": 0.0182
         }
       ],
-      "primaryColor": "#4c802a",
+      "primaryColor": "#2f3e1e",
       "materials": [
         {
           "name": "material_0",
@@ -842,97 +842,97 @@
   "summary": {
     "model": "dinoki_raw.glb",
     "outputDir": "/Users/lyld/poc-optimize-3d-model/workspaces/default_sample",
-    "elapsedSeconds": 8.095,
-    "elapsedFormatted": "8.09s",
-    "elapsedMs": 8094.8,
-    "totalDurationSeconds": 8.095,
-    "totalDurationFormatted": "8.09s",
+    "elapsedSeconds": 11.215,
+    "elapsedFormatted": "11.22s",
+    "elapsedMs": 11215.3,
+    "totalDurationSeconds": 11.215,
+    "totalDurationFormatted": "11.22s",
     "stepDurations": {
       "raw": {
         "step": 0,
         "file": "step_00_raw.glb",
         "skipped": false,
-        "durationSeconds": 0.076,
-        "durationFormatted": "76ms",
-        "totalDurationSeconds": 0.128,
-        "seconds": 0.076,
-        "ms": 75.5
+        "durationSeconds": 0.122,
+        "durationFormatted": "0.12s",
+        "totalDurationSeconds": 0.207,
+        "seconds": 0.122,
+        "ms": 121.7
       },
       "cleaned_grounded": {
         "step": 1,
         "file": "step_01_cleaned_grounded.glb",
         "skipped": false,
-        "durationSeconds": 0.106,
-        "durationFormatted": "0.11s",
-        "totalDurationSeconds": 0.251,
-        "seconds": 0.106,
-        "ms": 105.7
+        "durationSeconds": 0.144,
+        "durationFormatted": "0.14s",
+        "totalDurationSeconds": 0.369,
+        "seconds": 0.144,
+        "ms": 144.0
       },
       "oriented": {
         "step": 2,
         "file": "step_02_oriented.glb",
         "skipped": false,
-        "durationSeconds": 0.897,
-        "durationFormatted": "0.90s",
-        "totalDurationSeconds": 1.149,
-        "seconds": 0.897,
-        "ms": 897.4
+        "durationSeconds": 1.551,
+        "durationFormatted": "1.55s",
+        "totalDurationSeconds": 1.921,
+        "seconds": 1.551,
+        "ms": 1551.3
       },
       "face_reduced": {
         "step": 3,
         "file": "step_03_face_reduced.glb",
         "skipped": false,
-        "durationSeconds": 3.111,
-        "durationFormatted": "3.11s",
-        "totalDurationSeconds": 4.26,
-        "seconds": 3.111,
-        "ms": 3111.1
+        "durationSeconds": 4.542,
+        "durationFormatted": "4.54s",
+        "totalDurationSeconds": 6.465,
+        "seconds": 4.542,
+        "ms": 4541.8
       },
       "texture_baked": {
         "step": 4,
         "file": "step_04_texture_baked.glb",
         "skipped": false,
-        "durationSeconds": 3.459,
-        "durationFormatted": "3.46s",
-        "totalDurationSeconds": 7.72,
-        "seconds": 3.459,
-        "ms": 3459.0
+        "durationSeconds": 4.26,
+        "durationFormatted": "4.26s",
+        "totalDurationSeconds": 10.727,
+        "seconds": 4.26,
+        "ms": 4260.1
       },
       "palette_tagged": {
         "step": 5,
         "file": "step_05_palette_tagged.glb",
         "skipped": false,
-        "durationSeconds": 0.08,
-        "durationFormatted": "80ms",
-        "totalDurationSeconds": 7.801,
-        "seconds": 0.08,
-        "ms": 80.4
+        "durationSeconds": 0.108,
+        "durationFormatted": "0.11s",
+        "totalDurationSeconds": 10.836,
+        "seconds": 0.108,
+        "ms": 108.3
       },
       "meshopt": {
         "step": 6,
         "file": "step_06_meshopt.glb",
         "skipped": false,
-        "durationSeconds": 0.193,
-        "durationFormatted": "0.19s",
-        "totalDurationSeconds": 7.995,
-        "seconds": 0.193,
-        "ms": 192.7
+        "durationSeconds": 0.264,
+        "durationFormatted": "0.26s",
+        "totalDurationSeconds": 11.101,
+        "seconds": 0.264,
+        "ms": 264.3
       },
       "final": {
         "step": 7,
         "file": "step_07_final.glb",
         "skipped": false,
-        "durationSeconds": 0.097,
-        "durationFormatted": "97ms",
-        "totalDurationSeconds": 8.094,
-        "seconds": 0.097,
-        "ms": 97.5
+        "durationSeconds": 0.11,
+        "durationFormatted": "0.11s",
+        "totalDurationSeconds": 11.213,
+        "seconds": 0.11,
+        "ms": 110.2
       }
     },
     "skippedSteps": [],
     "initialSizeBytes": 2026696,
-    "finalSizeBytes": 815516,
-    "savedBytes": 1211180,
+    "finalSizeBytes": 815520,
+    "savedBytes": 1211176,
     "savedPercent": 59.76,
     "initialFaces": 45000,
     "finalFaces": 14139,
@@ -963,18 +963,18 @@
     "initialGpuVramBytes": 12582904,
     "finalGpuVramBytes": 4281660,
     "gpuVramSavedPercent": 65.97,
-    "primaryColor": "#4c802a",
+    "primaryColor": "#2f3e1e",
     "palette": [
-      "#4c802a",
-      "#39651a",
-      "#1b1d15",
-      "#28450f",
+      "#2f3e1e",
+      "#376219",
+      "#4b7c27",
+      "#1c1f17",
+      "#5c923b",
       "#b45a07",
-      "#699638",
-      "#393734",
       "#a09f80",
-      "#25717c",
-      "#cfcec6"
+      "#30676e",
+      "#8f9b24",
+      "#d0cec6"
     ],
     "files": [
       "step_00_raw.glb",
