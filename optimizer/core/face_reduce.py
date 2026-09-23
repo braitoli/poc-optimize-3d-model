@@ -59,7 +59,7 @@ DEFAULT_QUALITY_BUDGET_PERCENT = 0.1
 # per 10,000 faces, dinoki 0.7, vosiruto 1.2, zelvaron 3.4. At 30 the two hard-surface ones jump
 # to 5.4 and 8.5. It is also most of what the setting can do: past roughly 30 degrees the 0.1%
 # surface budget takes over as the binding one, and zelvaron at 45 comes out identical to 30.
-DEFAULT_NORMAL_BUDGET_DEGREES = 20.0
+DEFAULT_NORMAL_BUDGET_DEGREES = 10.0
 # Which part of the surface the shading budget answers for. At the 95th percentile a glossy plate
 # covering a few percent of the model can be flattened without the number moving at all, and a
 # specular highlight breaking into facets is exactly what gets noticed, so it is the 99th.
