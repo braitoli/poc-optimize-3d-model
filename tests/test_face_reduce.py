@@ -14,15 +14,10 @@ import trimesh
 
 from optimizer.core.errors import PipelineAbort
 from optimizer.core.face_reduce import (
-    AUTO_NORMAL_BUDGET,
-    AUTO_NORMAL_BUDGET_FACTOR,
-    validate_normal_factor,
-    AUTO_NORMAL_BUDGET_RANGE,
     CGAL_HELPER,
     HARD_EDGE_DEGREES,
     MAX_DEVIATION_FACTOR,
     align_faces_outward,
-    auto_normal_budget,
     DEFAULT_OPS,
     ENGINES,
     OPS,
@@ -31,7 +26,8 @@ from optimizer.core.face_reduce import (
     reduce_faces,
     restore_hard_edges,
     validate_normal_budget,
-    validate_ops
+    validate_ops,
+    DEFAULT_NORMAL_BUDGET_DEGREES
 )
 from tests.fixtures import create_mock_glb
 
@@ -174,90 +170,27 @@ class TestRemovalOperations(unittest.TestCase):
         self.assertEqual(counts["meshlab"], counts["cgal"])
 
 
-class TestAutoShadingBudget(unittest.TestCase):
-    """The default shading budget is read off the mesh: a fixed angle buys a coarse model a
-    fraction of an edge's worth of collapse and a dense one several, so it is not a setting that
-    can be carried from one model to the next."""
+class TestShadingBudget(unittest.TestCase):
+    """The shading budget is one angle, the same on every model - there is no per-model factor to
+    read off the mesh any more. Measured, 20 degrees is the widest setting at which the rate of
+    faces lit unlike their neighbours stays at the floor on dinoki, vosiruto and zelvaron alike."""
 
-    @staticmethod
-    def budget_of(mesh: trimesh.Trimesh):
-        return auto_normal_budget(np.asarray(mesh.vertices), np.asarray(mesh.faces))
-
-    def test_it_reads_the_angle_the_surface_already_turns_per_edge(self):
-        mesh = trimesh.creation.icosphere(subdivisions=3, radius=1.0)
-        budget, per_edge = self.budget_of(mesh)
-        angles = np.degrees(mesh.face_adjacency_angles)
-        self.assertAlmostEqual(per_edge, float(np.median(angles[angles <= HARD_EDGE_DEGREES])), places=6)
-        self.assertAlmostEqual(budget, per_edge * AUTO_NORMAL_BUDGET_FACTOR, places=6)
-
-    def test_a_finer_mesh_of_the_same_shape_gets_a_smaller_budget(self):
-        # Subdividing halves how far the surface turns per edge, so the same shape may be turned
-        # half as far - which is what makes the setting mean the same thing on both
-        coarse, _ = self.budget_of(trimesh.creation.icosphere(subdivisions=2, radius=1.0))
-        fine, _ = self.budget_of(trimesh.creation.icosphere(subdivisions=4, radius=1.0))
-        self.assertLess(fine, coarse)
-
-    def test_creases_are_not_read_as_tessellation(self):
-        # A box is all creases: there is no smooth surface to measure, so it falls back to the floor
-        budget, per_edge = self.budget_of(trimesh.creation.box())
-        self.assertEqual(budget, AUTO_NORMAL_BUDGET_RANGE[0])
-        self.assertEqual(per_edge, 0.0)
-
-    def test_the_result_is_clamped(self):
-        for mesh in (trimesh.creation.icosphere(subdivisions=1), trimesh.creation.icosphere(subdivisions=5)):
-            with self.subTest(faces=len(mesh.faces)):
-                budget, _ = self.budget_of(mesh)
-                self.assertGreaterEqual(budget, AUTO_NORMAL_BUDGET_RANGE[0])
-                self.assertLessEqual(budget, AUTO_NORMAL_BUDGET_RANGE[1])
-
-    def test_an_angle_or_auto_is_accepted_and_nothing_else(self):
-        self.assertEqual(validate_normal_budget(AUTO_NORMAL_BUDGET), AUTO_NORMAL_BUDGET)
-        self.assertEqual(validate_normal_budget(8), 8)
-        self.assertEqual(validate_normal_budget(90), 90)
-        for bad in ("AUTO", "8", 0, -1, 90.5, True, None):
+    def test_an_angle_is_accepted_and_nothing_else(self):
+        self.assertEqual(validate_normal_budget(20), 20.0)
+        self.assertEqual(validate_normal_budget(90), 90.0)
+        for bad in ("auto", "20", 0, -1, 90.5, True, None):
             with self.subTest(budget=bad):
                 with self.assertRaises(ValueError):
                     validate_normal_budget(bad)
 
-    def test_a_run_records_the_angle_it_resolved_and_what_it_read(self):
-        mesh = textured_sphere(subdivisions=3)
-        expected, per_edge = self.budget_of(mesh)
-        stats = {}
-        reduce_faces(mesh, engine="cgal" if CGAL_AVAILABLE else "meshlab", ops=("repair",),
-                     normal_budget_degrees=AUTO_NORMAL_BUDGET, stats=stats)
-        self.assertTrue(stats["normalBudgetAuto"])
-        self.assertAlmostEqual(stats["normalBudgetDegrees"], round(expected, 2), places=2)
-        self.assertAlmostEqual(stats["perEdgeTurnDegrees"], round(per_edge, 2), places=2)
+    def test_the_default_is_the_measured_angle(self):
+        self.assertEqual(DEFAULT_NORMAL_BUDGET_DEGREES, 20.0)
 
-    def test_the_factor_scales_the_budget_and_is_recorded(self):
-        mesh = textured_sphere(subdivisions=3)
-        _, per_edge = self.budget_of(mesh)
-        for factor in (1.0, 2.0):
-            with self.subTest(factor=factor):
-                budget, _ = auto_normal_budget(np.asarray(mesh.vertices), np.asarray(mesh.faces), factor)
-                self.assertAlmostEqual(budget, min(per_edge * factor, AUTO_NORMAL_BUDGET_RANGE[1]), places=6)
-                stats = {}
-                reduce_faces(textured_sphere(subdivisions=3), engine="cgal" if CGAL_AVAILABLE else "meshlab",
-                             ops=("repair",), normal_budget_degrees=AUTO_NORMAL_BUDGET,
-                             normal_budget_factor=factor, stats=stats)
-                self.assertEqual(stats["normalBudgetFactor"], factor)
-                self.assertAlmostEqual(stats["normalBudgetDegrees"], round(budget, 2), places=2)
-
-    def test_the_factor_must_be_a_positive_number(self):
-        self.assertEqual(validate_normal_factor(7), 7.0)
-        for bad in (0, -1, 31, True, "3", None):
-            with self.subTest(factor=bad):
-                with self.assertRaises(ValueError):
-                    validate_normal_factor(bad)
-
-    def test_a_pinned_angle_is_used_as_given_and_reads_nothing(self):
+    def test_a_run_records_the_angle_it_used(self):
         stats = {}
         reduce_faces(textured_sphere(subdivisions=3), engine="cgal" if CGAL_AVAILABLE else "meshlab",
                      ops=("repair",), normal_budget_degrees=11.5, stats=stats)
-        self.assertFalse(stats["normalBudgetAuto"])
         self.assertEqual(stats["normalBudgetDegrees"], 11.5)
-        self.assertIsNone(stats["perEdgeTurnDegrees"])
-        self.assertIsNone(stats["normalBudgetFactor"])
 
 
 class TestQualityBudget(unittest.TestCase):

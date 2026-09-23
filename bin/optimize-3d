@@ -58,16 +58,11 @@ Options:
       --reduce-quality-budget PCT
                         How far step 3 may move the visible surface, in percent of
                         the bounding box diagonal (default: 0.1)
-      --reduce-normal-budget DEG|auto
-                        How far step 3 may let the surface turn, in degrees at the
-                        99th percentile - keeps sharp edges and narrow slots, which
-                        a position-only budget cannot see. 'auto' reads the angle
-                        off the model: how far it already turns from one face to
-                        the next, floored at 3 (default: auto)
-      --reduce-normal-factor K
-                        Only with --reduce-normal-budget auto: budget = K x how far
-                        the model already turns per edge. Higher cuts more; measured,
-                        vosiruto suits ~7 and zelvaron ~1 (default: 1)
+      --reduce-normal-budget DEG
+                        How far step 3 may let the surface turn away from the
+                        original, in degrees at the 99th percentile - keeps sharp
+                        edges and narrow slots, which a position-only budget
+                        cannot see (default: 20)
       --reduce-isolated-min-faces N
                         Step 3 drops components with fewer faces than this (default: 25)
       --double-sided    Keep double-sided materials (default: single-sided FrontSide)
@@ -87,7 +82,7 @@ while [[ $# -gt 0 ]]; do
             exit 0
             ;;
         -f|--format|--uv-mode|--downscale|--size-mode|--merge-uv-islands|--skip-steps|\
-        --reduce-engine|--reduce-ops|--reduce-quality-budget|--reduce-normal-budget|--reduce-normal-factor|\
+        --reduce-engine|--reduce-ops|--reduce-quality-budget|--reduce-normal-budget|\
         --reduce-isolated-min-faces)
             if [[ $# -lt 2 ]]; then
                 echo "Error: $1 requires a value." >&2

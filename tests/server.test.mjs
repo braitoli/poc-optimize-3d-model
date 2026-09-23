@@ -309,11 +309,9 @@ describe('upload parameter validation', () => {
       [{ samplePath: SAMPLE, reduceOps: 'repair,repair' }, /Duplicate reduceOps value\(s\): repair/],
       [{ samplePath: SAMPLE, reduceQualityBudget: '0' }, /Unsupported reduceQualityBudget '0' \(expected a number greater than 0\)/],
       [{ samplePath: SAMPLE, reduceQualityBudget: 'abc' }, /Unsupported reduceQualityBudget 'abc' \(expected a number greater than 0\)/],
-      [{ samplePath: SAMPLE, reduceNormalBudget: '0' }, /Unsupported reduceNormalBudget '0' \(expected 'auto' or an angle above 0 and at most 90\)/],
-      [{ samplePath: SAMPLE, reduceNormalBudget: '91' }, /Unsupported reduceNormalBudget '91' \(expected 'auto' or an angle above 0 and at most 90\)/],
-      [{ samplePath: SAMPLE, reduceNormalBudget: 'AUTO' }, /Unsupported reduceNormalBudget 'AUTO' \(expected 'auto' or an angle above 0 and at most 90\)/],
-      [{ samplePath: SAMPLE, reduceNormalFactor: '0' }, /Unsupported reduceNormalFactor '0' \(expected a number above 0 and at most 30\)/],
-      [{ samplePath: SAMPLE, reduceNormalFactor: '31' }, /Unsupported reduceNormalFactor '31' \(expected a number above 0 and at most 30\)/],
+      [{ samplePath: SAMPLE, reduceNormalBudget: '0' }, /Unsupported reduceNormalBudget '0' \(expected an angle above 0 and at most 90\)/],
+      [{ samplePath: SAMPLE, reduceNormalBudget: '91' }, /Unsupported reduceNormalBudget '91' \(expected an angle above 0 and at most 90\)/],
+      [{ samplePath: SAMPLE, reduceNormalBudget: 'auto' }, /Unsupported reduceNormalBudget 'auto' \(expected an angle above 0 and at most 90\)/],
       [{ samplePath: SAMPLE, reduceIsolatedMinFaces: '-1' }, /Unsupported reduceIsolatedMinFaces '-1' \(expected a non-negative integer\)/],
       [{ samplePath: SAMPLE, reduceIsolatedMinFaces: '2.5' }, /Unsupported reduceIsolatedMinFaces '2\.5' \(expected a non-negative integer\)/],
       [{ samplePath: SAMPLE, skipSteps: '3', reduceEngine: 'cgal' }, /Step 3 is skipped, so its option\(s\) must not be sent: reduceEngine/],
@@ -388,8 +386,7 @@ describe('upload parameter validation', () => {
     assert.equal(body.config.reduceEngine, 'cgal');
     assert.deepEqual(body.config.reduceOps, ['repair', 'isolated', 'hidden', 'merge']);
     assert.equal(body.config.reduceQualityBudget, 0.1);
-    assert.equal(body.config.reduceNormalBudget, 'auto');
-    assert.equal(body.config.reduceNormalFactor, 1);
+    assert.equal(body.config.reduceNormalBudget, 20);
     assert.equal(body.config.reduceIsolatedMinFaces, 25);
     assert.equal((await waitForJobEnd(server.url, body.jobId)).status, 'completed');
   });
@@ -403,7 +400,6 @@ describe('upload parameter validation', () => {
       reduceOps: ['repair', 'hidden'],
       reduceQualityBudget: 1.5,
       reduceNormalBudget: 12,
-      reduceNormalFactor: 7,
       reduceIsolatedMinFaces: 0
     });
     assert.equal(json.status, 200, JSON.stringify(json.body));
@@ -413,7 +409,6 @@ describe('upload parameter validation', () => {
     assert.deepEqual(json.body.config.reduceOps, ['repair', 'hidden']);
     assert.equal(json.body.config.reduceQualityBudget, 1.5);
     assert.equal(json.body.config.reduceNormalBudget, 12);
-    assert.equal(json.body.config.reduceNormalFactor, 7);
     assert.equal(json.body.config.reduceIsolatedMinFaces, 0);
     assert.equal((await waitForJobEnd(server.url, json.body.jobId)).status, 'completed');
 
@@ -424,8 +419,7 @@ describe('upload parameter validation', () => {
       reduceEngine: 'meshlab',
       reduceOps: 'repair,merge',
       reduceQualityBudget: '0.5',
-      // The viewer sends an empty Shading Budget field as the literal 'auto'
-      reduceNormalBudget: 'auto',
+      reduceNormalBudget: '35',
       reduceIsolatedMinFaces: '10'
     });
     assert.equal(form.status, 200, JSON.stringify(form.body));
@@ -433,7 +427,7 @@ describe('upload parameter validation', () => {
     assert.deepEqual(form.body.config.skipSteps, [1, 6]);
     assert.deepEqual(form.body.config.reduceOps, ['repair', 'merge']);
     assert.equal(form.body.config.reduceQualityBudget, 0.5);
-    assert.equal(form.body.config.reduceNormalBudget, 'auto');
+    assert.equal(form.body.config.reduceNormalBudget, 35);
     assert.equal(form.body.config.reduceIsolatedMinFaces, 10);
     assert.equal((await waitForJobEnd(server.url, form.body.jobId)).status, 'completed');
   });

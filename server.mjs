@@ -227,20 +227,18 @@ const ALLOWED_SMOOTH_NORMALS = ['on', 'off'];
 const ALLOWED_REDUCE_ENGINES = ['cgal', 'meshlab'];
 const ALLOWED_REDUCE_OPS = ['repair', 'self_intersection', 'isolated', 'hidden', 'merge'];
 const DEFAULT_REDUCE_OPS = ['repair', 'isolated', 'hidden', 'merge'];
-// Step 3 reads the shading budget off the model unless a number is sent instead
-const AUTO_NORMAL_BUDGET = 'auto';
 // Only these steps are optional; Step 0 (raw) and Step 7 (final) always run
 const SKIPPABLE_STEPS = [1, 2, 3, 4, 5, 6];
 // The options each optional step owns: sending one of them for a skipped step is a 400
 const STEP_OPTION_FIELDS = {
-  3: ['reduceEngine', 'reduceOps', 'reduceQualityBudget', 'reduceNormalBudget', 'reduceNormalFactor', 'reduceIsolatedMinFaces'],
+  3: ['reduceEngine', 'reduceOps', 'reduceQualityBudget', 'reduceNormalBudget', 'reduceIsolatedMinFaces'],
   4: ['uvMode', 'downscale', 'sizeMode', 'mergeUvIslands'],
   6: ['smoothNormals']
 };
 const OPTION_FIELDS = [
   'format', 'uvMode', 'downscale', 'sizeMode', 'mergeUvIslands',
   'smoothNormals',
-  'skipSteps', 'reduceEngine', 'reduceOps', 'reduceQualityBudget', 'reduceNormalBudget', 'reduceNormalFactor',
+  'skipSteps', 'reduceEngine', 'reduceOps', 'reduceQualityBudget', 'reduceNormalBudget',
   'reduceIsolatedMinFaces'
 ];
 const MULTIPART_FIELDS = ['file', 'samplePath', ...OPTION_FIELDS];
@@ -322,19 +320,10 @@ function rejectSkippedStepOptions(options, fields) {
   }
 }
 
-// The shading budget is either an angle or 'auto', which lets Step 3 read one off the model.
-// An empty field means the same as an absent one: the viewer leaves it blank to ask for 'auto'.
-function validateNormalBudget(value) {
-  if (value === undefined || (typeof value === 'string' && value.trim() === '')) return AUTO_NORMAL_BUDGET;
-  if (value === AUTO_NORMAL_BUDGET) return AUTO_NORMAL_BUDGET;
-  return validateNumber('reduceNormalBudget', value, AUTO_NORMAL_BUDGET, n => n > 0 && n <= 90,
-    `'${AUTO_NORMAL_BUDGET}' or an angle above 0 and at most 90`);
-}
-
 function sanitizeOptimizationOptions(fields = {}) {
   const { format, uvMode, downscale, sizeMode, mergeUvIslands, smoothNormals,
     skipSteps, reduceEngine, reduceOps,
-    reduceQualityBudget, reduceNormalBudget, reduceNormalFactor, reduceIsolatedMinFaces } = fields;
+    reduceQualityBudget, reduceNormalBudget, reduceIsolatedMinFaces } = fields;
   const fmt = validateChoice('format', format, ALLOWED_FORMATS, 'ktx2');
   const uv = validateChoice('uvMode', uvMode, ALLOWED_UV_MODES, 'xatlas');
   const options = {
@@ -348,9 +337,8 @@ function sanitizeOptimizationOptions(fields = {}) {
     reduceEngine: validateChoice('reduceEngine', reduceEngine, ALLOWED_REDUCE_ENGINES, 'cgal'),
     reduceOps: validateList('reduceOps', reduceOps, parseReduceOp, DEFAULT_REDUCE_OPS),
     reduceQualityBudget: validateNumber('reduceQualityBudget', reduceQualityBudget, 0.1, n => n > 0, 'a number greater than 0'),
-    reduceNormalBudget: validateNormalBudget(reduceNormalBudget),
-    reduceNormalFactor: validateNumber('reduceNormalFactor', reduceNormalFactor, 1, n => n > 0 && n <= 30,
-      'a number above 0 and at most 30'),
+    reduceNormalBudget: validateNumber('reduceNormalBudget', reduceNormalBudget, 20,
+      n => n > 0 && n <= 90, 'an angle above 0 and at most 90'),
     reduceIsolatedMinFaces: validateNumber('reduceIsolatedMinFaces', reduceIsolatedMinFaces, 25,
       n => Number.isInteger(n) && n >= 0, 'a non-negative integer')
   };
@@ -598,7 +586,7 @@ function handlePipelineLogLine(job, trimmed) {
 // Options must already be validated (sanitizeOptimizationOptions) and doubleSided detected
 function startPipelineJob({ jobId, rawGlbPath, workspaceDir, format, uvMode, downscale, sizeMode,
   mergeUvIslands, smoothNormals, skipSteps, reduceEngine, reduceOps,
-  reduceQualityBudget, reduceNormalBudget, reduceNormalFactor, reduceIsolatedMinFaces,
+  reduceQualityBudget, reduceNormalBudget, reduceIsolatedMinFaces,
   doubleSided }) {
   const job = {
     id: jobId,
@@ -607,7 +595,7 @@ function startPipelineJob({ jobId, rawGlbPath, workspaceDir, format, uvMode, dow
     config: {
       format, uvMode, downscale, sizeMode, mergeUvIslands, smoothNormals,
       skipSteps, reduceEngine, reduceOps,
-      reduceQualityBudget, reduceNormalBudget, reduceNormalFactor, reduceIsolatedMinFaces, doubleSided
+      reduceQualityBudget, reduceNormalBudget, reduceIsolatedMinFaces, doubleSided
     },
     startTime: Date.now(),
     totalSteps: TOTAL_STEPS,
@@ -634,7 +622,6 @@ function startPipelineJob({ jobId, rawGlbPath, workspaceDir, format, uvMode, dow
     `skipSteps=${skipSteps.join(',') || 'none'}, ` +
     `reduceEngine=${reduceEngine}, reduceOps=${reduceOps.join(',') || 'none'}, ` +
     `reduceQualityBudget=${reduceQualityBudget}, reduceNormalBudget=${reduceNormalBudget}, ` +
-    `reduceNormalFactor=${reduceNormalFactor}, ` +
     `reduceIsolatedMinFaces=${reduceIsolatedMinFaces}`
   );
   if (doubleSided) {
@@ -667,7 +654,6 @@ function startPipelineJob({ jobId, rawGlbPath, workspaceDir, format, uvMode, dow
     '--reduce-ops', reduceOps.join(','),
     '--reduce-quality-budget', String(reduceQualityBudget),
     '--reduce-normal-budget', String(reduceNormalBudget),
-    '--reduce-normal-factor', String(reduceNormalFactor),
     '--reduce-isolated-min-faces', String(reduceIsolatedMinFaces)
   ];
   if (skipSteps.length > 0) {

@@ -35,7 +35,7 @@ import argparse
 import subprocess
 import traceback
 from pathlib import Path
-from typing import Dict, Any, List, Optional, Sequence, Union
+from typing import Dict, Any, List, Optional, Sequence
 
 import numpy as np
 from PIL import Image
@@ -46,8 +46,6 @@ from optimizer.core.shell_orient import orient_faces_by_visibility, DEFAULT_VIEW
 from optimizer.core.uv_baker import SIZE_MODES, plan_uv_canvas, bake_uv_plan
 from optimizer.core.face_reduce import (
     DEFAULT_ISOLATED_MIN_FACES,
-    AUTO_NORMAL_BUDGET,
-    AUTO_NORMAL_BUDGET_FACTOR,
     DEFAULT_NORMAL_BUDGET_DEGREES,
     DEFAULT_OPS as DEFAULT_REDUCE_OPS,
     DEFAULT_QUALITY_BUDGET_PERCENT,
@@ -60,7 +58,6 @@ from optimizer.core.face_reduce import (
     align_faces_outward,
     _within_budget as within_budget,
     validate_normal_budget,
-    validate_normal_factor,
     validate_ops as validate_reduce_ops
 )
 from optimizer.core.uvatlas import is_uvatlas_available, UVATLAS_UNAVAILABLE
@@ -307,8 +304,7 @@ class StepPipeline:
         reduce_engine: str = "cgal",
         reduce_ops: Sequence[str] = DEFAULT_REDUCE_OPS,
         reduce_quality_budget: float = DEFAULT_QUALITY_BUDGET_PERCENT,
-        reduce_normal_budget: Union[float, str] = DEFAULT_NORMAL_BUDGET_DEGREES,
-        reduce_normal_factor: float = AUTO_NORMAL_BUDGET_FACTOR,
+        reduce_normal_budget: float = DEFAULT_NORMAL_BUDGET_DEGREES,
         reduce_isolated_min_faces: int = DEFAULT_ISOLATED_MIN_FACES
     ):
         self.texture_format = texture_format.lower()
@@ -365,19 +361,10 @@ class StepPipeline:
         if not reduce_quality_budget > 0:
             raise ValueError(f"reduce_quality_budget must be a positive number, got {reduce_quality_budget!r}")
         self.reduce_quality_budget = float(reduce_quality_budget)
-        # Either an angle or AUTO_NORMAL_BUDGET, which Step 3 resolves against the mesh it is
-        # given; the resolved angle is read back out of the step's stats
         try:
-            validate_normal_budget(reduce_normal_budget)
+            self.reduce_normal_budget = validate_normal_budget(reduce_normal_budget)
         except ValueError as err:
             raise ValueError(str(err).replace("normal_budget_degrees", "reduce_normal_budget")) from None
-        self.reduce_normal_budget = (
-            reduce_normal_budget if reduce_normal_budget == AUTO_NORMAL_BUDGET else float(reduce_normal_budget)
-        )
-        try:
-            self.reduce_normal_factor = validate_normal_factor(reduce_normal_factor)
-        except ValueError as err:
-            raise ValueError(str(err).replace("normal_budget_factor", "reduce_normal_factor")) from None
         if isinstance(reduce_isolated_min_faces, bool) or not isinstance(reduce_isolated_min_faces, int):
             raise TypeError(f"reduce_isolated_min_faces must be an integer, got {reduce_isolated_min_faces!r}")
         if reduce_isolated_min_faces < 0:
@@ -396,13 +383,6 @@ class StepPipeline:
         self.preserve_textures = preserve_textures
         self.verbose = verbose
         self.stream_events = stream_events
-
-    @property
-    def reduce_normal_budget_label(self) -> str:
-        """The shading budget as the opening log prints it, before Step 3 has resolved "auto"."""
-        if self.reduce_normal_budget == AUTO_NORMAL_BUDGET:
-            return f"{AUTO_NORMAL_BUDGET} ({self.reduce_normal_factor:g}x the model's own turn per edge)"
-        return f"{self.reduce_normal_budget:g}deg"
 
     def enabled(self, step: int) -> bool:
         """True when `step` runs in this pipeline (every non-optional step always does)."""
@@ -595,7 +575,7 @@ class StepPipeline:
         if self.enabled(3):
             self.log(
                 f"   Face reduction: {self.reduce_engine.upper()} | ops: {', '.join(self.reduce_ops)} | "
-                f"quality budget: {self.reduce_quality_budget:g}% / {self.reduce_normal_budget_label}"
+                f"quality budget: {self.reduce_quality_budget:g}% / {self.reduce_normal_budget:g}deg"
             )
         if skipped_steps:
             self.log(f"   Skipped steps: {', '.join(str(n) for n in skipped_steps)}")
@@ -708,7 +688,6 @@ class StepPipeline:
                 ops=self.reduce_ops,
                 quality_budget_percent=self.reduce_quality_budget,
                 normal_budget_degrees=self.reduce_normal_budget,
-                normal_budget_factor=self.reduce_normal_factor,
                 isolated_min_faces=self.reduce_isolated_min_faces,
                 stats=reduce_stats,
                 pre_collapse=pre_collapse
@@ -743,8 +722,7 @@ class StepPipeline:
                 f"(-{reduce_stats['faceReductionPercent']}%), visible-surface deviation "
                 f"{reduce_stats['deviation']['maxPercent']}% of the bbox diagonal, shading "
                 f"{reduce_stats['deviation']['normalDeviationDegrees']}deg (budget "
-                f"{self.reduce_quality_budget:g}% / {reduce_stats['normalBudgetDegrees']:g}deg"
-                f"{' auto' if reduce_stats['normalBudgetAuto'] else ''})"
+                f"{self.reduce_quality_budget:g}% / {self.reduce_normal_budget:g}deg)"
             )
         else:
             skip_step(3)
@@ -1133,11 +1111,7 @@ class StepPipeline:
                 "facesRemoved": faces_before_reduction - reduced_faces,
                 "percent": reduce_stats.get("faceReductionPercent", 0.0),
                 "qualityBudgetPercent": self.reduce_quality_budget if self.enabled(3) else None,
-                # The angle Step 3 ran with, which for an "auto" budget it read off the mesh
-                "normalBudgetDegrees": reduce_stats.get("normalBudgetDegrees") if self.enabled(3) else None,
-                "normalBudgetAuto": reduce_stats.get("normalBudgetAuto") if self.enabled(3) else None,
-                "normalBudgetFactor": reduce_stats.get("normalBudgetFactor") if self.enabled(3) else None,
-                "perEdgeTurnDegrees": reduce_stats.get("perEdgeTurnDegrees") if self.enabled(3) else None,
+                "normalBudgetDegrees": self.reduce_normal_budget if self.enabled(3) else None,
                 # The budget holds at the percentile the step measures at; the worst point
                 # anywhere is reported next to it rather than being what decides
                 "deviationPercent": reduce_stats.get("deviation", {}).get("percentilePercent"),
@@ -1145,8 +1119,7 @@ class StepPipeline:
                 "normalDeviationDegrees": reduce_stats.get("deviation", {}).get("normalDeviationDegrees"),
                 "withinQualityBudget": (
                     within_budget(
-                        reduce_stats["deviation"], self.reduce_quality_budget,
-                        reduce_stats["normalBudgetDegrees"]
+                        reduce_stats["deviation"], self.reduce_quality_budget, self.reduce_normal_budget
                     ) if reduce_stats.get("deviation") else None
                 )
             },
@@ -1189,16 +1162,6 @@ class StepPipeline:
         self.log("=" * 68)
 
         return final_payload
-
-
-def _normal_budget_arg(value: str) -> Union[float, str]:
-    """--reduce-normal-budget: the literal "auto", or an angle."""
-    if value == AUTO_NORMAL_BUDGET:
-        return value
-    try:
-        return validate_normal_budget(float(value))
-    except ValueError as err:
-        raise argparse.ArgumentTypeError(str(err)) from None
 
 
 def main():
@@ -1269,22 +1232,11 @@ def main():
     )
     parser.add_argument(
         "--reduce-normal-budget",
-        type=_normal_budget_arg,
-        default=DEFAULT_NORMAL_BUDGET_DEGREES,
-        help=f"Step 3 shading budget: how far the surface may turn, in degrees, at the 99th "
-             f"percentile. A collapse can round a crease away while barely moving the surface, so "
-             f"this is what keeps narrow slots and sharp edges. '{AUTO_NORMAL_BUDGET}' (the "
-             f"default) reads the angle off the model: how far it already turns from one face "
-             f"to the next"
-    )
-    parser.add_argument(
-        "--reduce-normal-factor",
         type=float,
-        default=AUTO_NORMAL_BUDGET_FACTOR,
-        help=f"Step 3, only when --reduce-normal-budget is '{AUTO_NORMAL_BUDGET}': how many edges' "
-             f"worth of the curvature the mesh already carries one collapse may erase. No measured "
-             f"property of a mesh predicts this - vosiruto wants about 7 and zelvaron about 1 - so "
-             f"it is a setting per model rather than a constant"
+        default=DEFAULT_NORMAL_BUDGET_DEGREES,
+        help="Step 3 shading budget: how far the surface may turn away from the original, in "
+             "degrees at the 99th percentile. A collapse can round a crease away while barely "
+             "moving the surface, so this is what keeps narrow slots and sharp edges"
     )
     parser.add_argument(
         "--reduce-isolated-min-faces",
@@ -1322,7 +1274,6 @@ def main():
             reduce_ops=parse_list(args.reduce_ops),
             reduce_quality_budget=args.reduce_quality_budget,
             reduce_normal_budget=args.reduce_normal_budget,
-            reduce_normal_factor=args.reduce_normal_factor,
             reduce_isolated_min_faces=args.reduce_isolated_min_faces
         )
         pipeline.run(Path(args.input), Path(args.output_dir))

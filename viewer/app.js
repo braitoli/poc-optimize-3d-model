@@ -75,7 +75,6 @@ const dom = {
   reduceOpsRow: document.getElementById('reduceOpsRow'),
   reduceQualityBudgetInput: document.getElementById('reduceQualityBudgetInput'),
   reduceNormalBudgetInput: document.getElementById('reduceNormalBudgetInput'),
-  reduceNormalFactorInput: document.getElementById('reduceNormalFactorInput'),
   reduceIsolatedMinFacesInput: document.getElementById('reduceIsolatedMinFacesInput'),
   startBtn: document.getElementById('startBtn'),
   startGuard: document.getElementById('startGuard'),
@@ -406,7 +405,6 @@ function syncStepDependentControls() {
   dom.reduceEngineSelect.disabled = running;
   dom.reduceQualityBudgetInput.disabled = running;
   dom.reduceNormalBudgetInput.disabled = running;
-  dom.reduceNormalFactorInput.disabled = running;
   dom.reduceIsolatedMinFacesInput.disabled = running;
   dom.reduceOpsRow.querySelectorAll('input.reduce-op').forEach(cb => { cb.disabled = running; });
 
@@ -1491,9 +1489,7 @@ async function startOptimization() {
     formData.append('reduceEngine', dom.reduceEngineSelect.value);
     formData.append('reduceOps', getSelectedReduceOps().join(','));
     formData.append('reduceQualityBudget', dom.reduceQualityBudgetInput.value);
-    // Blank means 'auto': the server lets Step 3 read the angle off the model
-    formData.append('reduceNormalBudget', dom.reduceNormalBudgetInput.value.trim() || 'auto');
-    formData.append('reduceNormalFactor', dom.reduceNormalFactorInput.value);
+    formData.append('reduceNormalBudget', dom.reduceNormalBudgetInput.value);
     formData.append('reduceIsolatedMinFaces', dom.reduceIsolatedMinFacesInput.value);
   }
 

@@ -18,7 +18,7 @@
       "merge"
     ],
     "reduceQualityBudget": 0.1,
-    "reduceNormalBudget": "auto"
+    "reduceNormalBudget": 20.0
   },
   "steps": {
     "0": {
@@ -159,10 +159,10 @@
       "file": "step_03_face_reduced.glb",
       "glbUrl": "/workspaces/default_sample/step_03_face_reduced.glb",
       "skipped": false,
-      "fileSize": 816860,
-      "fileSizeFormatted": "797.71 KB",
-      "faces": 20266,
-      "vertices": 23861,
+      "fileSize": 644864,
+      "fileSizeFormatted": "629.75 KB",
+      "faces": 14139,
+      "vertices": 19758,
       "drawCalls": 1,
       "meshes": 1,
       "primitives": 1,
@@ -187,10 +187,7 @@
           "merge"
         ],
         "qualityBudgetPercent": 0.1,
-        "normalBudgetDegrees": 6.2,
-        "normalBudgetAuto": true,
-        "normalBudgetFactor": 1.0,
-        "perEdgeTurnDegrees": 6.2,
+        "normalBudgetDegrees": 20.0,
         "facesBefore": 45000,
         "removed": {
           "repair": 24,
@@ -266,37 +263,37 @@
             "normalDeviationDegrees": 15.605
           },
           {
-            "targetFaces": 18860,
-            "faces": 18859,
-            "deviationMaxPercent": 0.0365,
-            "deviationPercentilePercent": 0.0153,
-            "normalDeviationDegrees": 8.967
+            "targetFaces": 14140,
+            "faces": 14139,
+            "deviationMaxPercent": 0.0676,
+            "deviationPercentilePercent": 0.0325,
+            "normalDeviationDegrees": 19.691
           },
           {
-            "targetFaces": 20268,
-            "faces": 20266,
-            "deviationMaxPercent": 0.0262,
-            "deviationPercentilePercent": 0.0073,
-            "normalDeviationDegrees": 3.125
+            "targetFaces": 13157,
+            "faces": 13155,
+            "deviationMaxPercent": 0.0676,
+            "deviationPercentilePercent": 0.0363,
+            "normalDeviationDegrees": 20.814
           }
         ],
-        "mergedFaces": 20266,
-        "facesAfter": 20266,
-        "facesRemoved": 24734,
-        "faceReductionPercent": 54.96,
+        "mergedFaces": 14139,
+        "facesAfter": 14139,
+        "facesRemoved": 30861,
+        "faceReductionPercent": 68.58,
         "deviation": {
-          "maxPercent": 0.0262,
-          "percentilePercent": 0.0073,
-          "rmsPercent": 0.0015,
-          "normalDeviationDegrees": 3.125,
-          "normalMedianDegrees": 0.0
+          "maxPercent": 0.0676,
+          "percentilePercent": 0.0325,
+          "rmsPercent": 0.0105,
+          "normalDeviationDegrees": 19.691,
+          "normalMedianDegrees": 1.104
         },
-        "qualityKeptPercent": 99.993,
+        "qualityKeptPercent": 99.968,
         "withinNormalBudget": true,
-        "hardEdgeVertices": 23849,
+        "hardEdgeVertices": 19737,
         "outwardFix": {
-          "windingFlipped": 3,
-          "normalsFlipped": 4
+          "windingFlipped": 6,
+          "normalsFlipped": 7
         }
       }
     },
@@ -308,10 +305,10 @@
       "file": "step_04_texture_baked.glb",
       "glbUrl": "/workspaces/default_sample/step_04_texture_baked.glb",
       "skipped": false,
-      "fileSize": 2496200,
-      "fileSizeFormatted": "2.38 MB",
-      "faces": 20266,
-      "vertices": 25506,
+      "fileSize": 1508564,
+      "fileSizeFormatted": "1.44 MB",
+      "faces": 14139,
+      "vertices": 21118,
       "drawCalls": 1,
       "meshes": 1,
       "primitives": 1,
@@ -321,8 +318,8 @@
         1.15048
       ],
       "textureFormat": "PNG",
-      "textureRes": "1540x1540",
-      "gpuVramMb": 12.06,
+      "textureRes": "896x896",
+      "gpuVramMb": 4.08,
       "palette": [],
       "paletteDetails": [],
       "primaryColor": null,
@@ -340,87 +337,75 @@
         "uvMode": "xatlas",
         "downscale": true,
         "sizeMode": "exact",
-        "fitResolution": 1540,
-        "finalResolution": "1540x1540",
+        "fitResolution": 896,
+        "finalResolution": "896x896",
         "originalResolution": "1536x1536",
         "downscaled": true,
-        "decision": "rechart (forced by the Step 3 merge): exact 1540x1540 vs original 1536x1536 (fit 1540)",
-        "texelDensityRatio": 1.0059,
-        "textureResolution": "1540x1540",
+        "decision": "rechart (forced by the Step 3 merge): exact 896x896 vs original 1536x1536 (fit 896)",
+        "texelDensityRatio": 1.0079,
+        "textureResolution": "896x896",
         "textureFormat": "PNG",
         "dilationPadding": 16,
-        "uvCoverageRatio": 0.6048,
+        "uvCoverageRatio": 0.5433,
         "doubleSided": false,
         "mergeUvIslands": true,
-        "flatSwatch": false,
-        "flatTolerance": 8.0,
-        "flatMinGroupFaces": 16,
-        "flatSwatchResult": null,
-        "flatSwatchDisabled": null,
         "islandMerge": {
           "enabled": true,
           "method": "xatlas",
-          "chosenLevel": 2,
+          "chosenLevel": 0,
           "levels": [
             {
               "level": 0,
-              "canvas": 1564,
-              "islands": 1480,
-              "boundaryTexels": 384918.8
+              "canvas": 896,
+              "islands": 1484,
+              "boundaryTexels": 225674.4
             },
             {
               "level": 1,
-              "canvas": 1544,
-              "islands": 1517,
-              "boundaryTexels": 392974.2
-            },
-            {
-              "level": 2,
-              "canvas": 1540,
-              "islands": 1402,
-              "boundaryTexels": 383127.1
+              "canvas": 904,
+              "islands": 1473,
+              "boundaryTexels": 227850.0
             }
           ],
-          "islandsBefore": 1480,
-          "islandsAfter": 1402,
-          "boundaryTexelsBefore": 384918.8,
-          "boundaryTexelsAfter": 383127.1,
-          "boundaryReductionPercent": 0.47,
-          "canvasBefore": 1564,
-          "canvasAfter": 1540
+          "islandsBefore": 1484,
+          "islandsAfter": 1484,
+          "boundaryTexelsBefore": 225674.4,
+          "boundaryTexelsAfter": 225674.4,
+          "boundaryReductionPercent": 0.0,
+          "canvasBefore": 896,
+          "canvasAfter": 896
         },
         "uvMetrics": {
           "size_mode": "exact",
           "unwrap_method": "xatlas",
-          "fit_resolution": 1540,
-          "final_resolution": 1540,
+          "fit_resolution": 896,
+          "final_resolution": 896,
           "fit_passes": 1,
           "repacked_at_final_resolution": false,
-          "texel_density_source": 472.583,
-          "texel_density_final": 475.3566,
-          "texel_density_ratio": 1.0059,
+          "texel_density_source": 260.0592,
+          "texel_density_final": 262.1108,
+          "texel_density_ratio": 1.0079,
           "textureFormat": "PNG",
-          "uvCoverageRatio": 0.6048,
-          "target_resolution": 1540,
-          "canvas_pixels": 2371600,
-          "covered_pixels": 1434256,
-          "uv_coverage_ratio_percent": 60.48,
-          "texel_density_linear": 475.37,
-          "texel_density_area": 225974.56,
-          "mesh_surface_area": 6.347,
+          "uvCoverageRatio": 0.5433,
+          "target_resolution": 896,
+          "canvas_pixels": 802816,
+          "covered_pixels": 436151,
+          "uv_coverage_ratio_percent": 54.33,
+          "texel_density_linear": 262.14,
+          "texel_density_area": 68716.59,
+          "mesh_surface_area": 6.3471,
           "dilation_padding": 16,
-          "flat_swatch": null,
           "rebaked_texture_slots": [
             "baseColorTexture"
           ],
           "normal_rebake_degenerate_pixels": 0,
           "double_sided": false,
-          "xatlas_chart_count": 344,
+          "xatlas_chart_count": 421,
           "xatlas_atlas_count": 1,
-          "xatlas_atlas_size": "1529x1521",
-          "xatlas_texels_per_unit": 472.583,
-          "xatlas_utilization_percent": 73.53,
-          "xatlas_merge_level": 2
+          "xatlas_atlas_size": "881x888",
+          "xatlas_texels_per_unit": 260.0592,
+          "xatlas_utilization_percent": 77.77,
+          "xatlas_merge_level": 0
         }
       }
     },
@@ -432,10 +417,10 @@
       "file": "step_05_palette_tagged.glb",
       "glbUrl": "/workspaces/default_sample/step_05_palette_tagged.glb",
       "skipped": false,
-      "fileSize": 2496888,
-      "fileSizeFormatted": "2.38 MB",
-      "faces": 20266,
-      "vertices": 25506,
+      "fileSize": 1509248,
+      "fileSizeFormatted": "1.44 MB",
+      "faces": 14139,
+      "vertices": 21118,
       "drawCalls": 1,
       "meshes": 1,
       "primitives": 1,
@@ -445,113 +430,113 @@
         1.15048
       ],
       "textureFormat": "PNG",
-      "textureRes": "1540x1540",
-      "gpuVramMb": 12.06,
+      "textureRes": "896x896",
+      "gpuVramMb": 4.08,
       "palette": [
-        "#416f20",
-        "#21231b",
-        "#588e36",
-        "#2d4e13",
-        "#c46709",
-        "#365c5f",
-        "#934004",
-        "#9f9e80",
-        "#8b9722",
-        "#cfcec5"
+        "#4c802a",
+        "#39651a",
+        "#1b1d15",
+        "#28450f",
+        "#b45a07",
+        "#699638",
+        "#393734",
+        "#a09f80",
+        "#25717c",
+        "#cfcec6"
       ],
       "paletteDetails": [
         {
-          "hex": "#416f20",
+          "hex": "#4c802a",
           "rgb": [
-            65,
-            111,
-            32
+            76,
+            128,
+            42
           ],
-          "weight": 0.2033
+          "weight": 0.1726
         },
         {
-          "hex": "#21231b",
+          "hex": "#39651a",
           "rgb": [
-            33,
-            35,
-            27
+            57,
+            101,
+            26
           ],
-          "weight": 0.2014
+          "weight": 0.1681
         },
         {
-          "hex": "#588e36",
+          "hex": "#1b1d15",
           "rgb": [
-            88,
-            142,
-            54
+            27,
+            29,
+            21
           ],
-          "weight": 0.1744
+          "weight": 0.1321
         },
         {
-          "hex": "#2d4e13",
+          "hex": "#28450f",
           "rgb": [
-            45,
-            78,
-            19
+            40,
+            69,
+            15
           ],
-          "weight": 0.1671
+          "weight": 0.1176
         },
         {
-          "hex": "#c46709",
+          "hex": "#b45a07",
           "rgb": [
-            196,
-            103,
-            9
+            180,
+            90,
+            7
           ],
-          "weight": 0.0691
+          "weight": 0.1132
         },
         {
-          "hex": "#365c5f",
+          "hex": "#699638",
           "rgb": [
-            54,
-            92,
-            95
+            105,
+            150,
+            56
           ],
-          "weight": 0.0521
+          "weight": 0.11
         },
         {
-          "hex": "#934004",
+          "hex": "#393734",
           "rgb": [
-            147,
-            64,
-            4
+            57,
+            55,
+            52
           ],
-          "weight": 0.05
+          "weight": 0.101
         },
         {
-          "hex": "#9f9e80",
+          "hex": "#a09f80",
           "rgb": [
+            160,
             159,
-            158,
             128
           ],
-          "weight": 0.0388
+          "weight": 0.0408
         },
         {
-          "hex": "#8b9722",
+          "hex": "#25717c",
           "rgb": [
-            139,
-            151,
-            34
+            37,
+            113,
+            124
           ],
-          "weight": 0.0263
+          "weight": 0.0262
         },
         {
-          "hex": "#cfcec5",
+          "hex": "#cfcec6",
           "rgb": [
             207,
             206,
-            197
+            198
           ],
-          "weight": 0.0177
+          "weight": 0.0184
         }
       ],
-      "primaryColor": "#416f20",
+      "primaryColor": "#4c802a",
       "materials": [
         {
           "name": "material_0",
@@ -563,7 +548,7 @@
         }
       ],
       "details": {
-        "primaryColor": "#416f20",
+        "primaryColor": "#4c802a",
         "paletteCount": 10
       }
     },
@@ -575,126 +560,126 @@
       "file": "step_06_meshopt.glb",
       "glbUrl": "/workspaces/default_sample/step_06_meshopt.glb",
       "skipped": false,
-      "fileSize": 1628332,
-      "fileSizeFormatted": "1.55 MB",
-      "faces": 20266,
-      "vertices": 17059,
+      "fileSize": 815296,
+      "fileSizeFormatted": "796.19 KB",
+      "faces": 14139,
+      "vertices": 13442,
       "drawCalls": 1,
       "meshes": 1,
       "primitives": 1,
       "bbox": [
-        1.2103,
+        1.21028,
         1.59994,
         1.15048
       ],
       "textureFormat": "PNG",
-      "textureRes": "1540x1540",
-      "gpuVramMb": 12.06,
+      "textureRes": "896x896",
+      "gpuVramMb": 4.08,
       "palette": [
-        "#416f20",
-        "#21231b",
-        "#588e36",
-        "#2d4e13",
-        "#c46709",
-        "#365c5f",
-        "#934004",
-        "#9f9e80",
-        "#8b9722",
-        "#cfcec5"
+        "#4c802a",
+        "#39651a",
+        "#1b1d15",
+        "#28450f",
+        "#b45a07",
+        "#699638",
+        "#393734",
+        "#a09f80",
+        "#25717c",
+        "#cfcec6"
       ],
       "paletteDetails": [
         {
-          "hex": "#416f20",
+          "hex": "#4c802a",
           "rgb": [
-            65,
-            111,
-            32
+            76,
+            128,
+            42
           ],
-          "weight": 0.2033
+          "weight": 0.1726
         },
         {
-          "hex": "#21231b",
+          "hex": "#39651a",
           "rgb": [
-            33,
-            35,
-            27
+            57,
+            101,
+            26
           ],
-          "weight": 0.2014
+          "weight": 0.1681
         },
         {
-          "hex": "#588e36",
+          "hex": "#1b1d15",
           "rgb": [
-            88,
-            142,
-            54
+            27,
+            29,
+            21
           ],
-          "weight": 0.1744
+          "weight": 0.1321
         },
         {
-          "hex": "#2d4e13",
+          "hex": "#28450f",
           "rgb": [
-            45,
-            78,
-            19
+            40,
+            69,
+            15
           ],
-          "weight": 0.1671
+          "weight": 0.1176
         },
         {
-          "hex": "#c46709",
+          "hex": "#b45a07",
           "rgb": [
-            196,
-            103,
-            9
+            180,
+            90,
+            7
           ],
-          "weight": 0.0691
+          "weight": 0.1132
         },
         {
-          "hex": "#365c5f",
+          "hex": "#699638",
           "rgb": [
-            54,
-            92,
-            95
+            105,
+            150,
+            56
           ],
-          "weight": 0.0521
+          "weight": 0.11
         },
         {
-          "hex": "#934004",
+          "hex": "#393734",
           "rgb": [
-            147,
-            64,
-            4
+            57,
+            55,
+            52
           ],
-          "weight": 0.05
+          "weight": 0.101
         },
         {
-          "hex": "#9f9e80",
+          "hex": "#a09f80",
           "rgb": [
+            160,
             159,
-            158,
             128
           ],
-          "weight": 0.0388
+          "weight": 0.0408
         },
         {
-          "hex": "#8b9722",
+          "hex": "#25717c",
           "rgb": [
-            139,
-            151,
-            34
+            37,
+            113,
+            124
           ],
-          "weight": 0.0263
+          "weight": 0.0262
         },
         {
-          "hex": "#cfcec5",
+          "hex": "#cfcec6",
           "rgb": [
             207,
             206,
-            197
+            198
           ],
-          "weight": 0.0177
+          "weight": 0.0184
         }
       ],
-      "primaryColor": "#416f20",
+      "primaryColor": "#4c802a",
       "materials": [
         {
           "name": "material_0",
@@ -717,126 +702,126 @@
       "file": "step_07_final.glb",
       "glbUrl": "/workspaces/default_sample/step_07_final.glb",
       "skipped": false,
-      "fileSize": 1628556,
-      "fileSizeFormatted": "1.55 MB",
-      "faces": 20266,
-      "vertices": 17059,
+      "fileSize": 815516,
+      "fileSizeFormatted": "796.4 KB",
+      "faces": 14139,
+      "vertices": 13442,
       "drawCalls": 1,
       "meshes": 1,
       "primitives": 1,
       "bbox": [
-        1.2103,
+        1.21028,
         1.59994,
         1.15048
       ],
       "textureFormat": "PNG",
-      "textureRes": "1540x1540",
-      "gpuVramMb": 12.06,
+      "textureRes": "896x896",
+      "gpuVramMb": 4.08,
       "palette": [
-        "#416f20",
-        "#21231b",
-        "#588e36",
-        "#2d4e13",
-        "#c46709",
-        "#365c5f",
-        "#934004",
-        "#9f9e80",
-        "#8b9722",
-        "#cfcec5"
+        "#4c802a",
+        "#39651a",
+        "#1b1d15",
+        "#28450f",
+        "#b45a07",
+        "#699638",
+        "#393734",
+        "#a09f80",
+        "#25717c",
+        "#cfcec6"
       ],
       "paletteDetails": [
         {
-          "hex": "#416f20",
+          "hex": "#4c802a",
           "rgb": [
-            65,
-            111,
-            32
+            76,
+            128,
+            42
           ],
-          "weight": 0.2033
+          "weight": 0.1726
         },
         {
-          "hex": "#21231b",
+          "hex": "#39651a",
           "rgb": [
-            33,
-            35,
-            27
+            57,
+            101,
+            26
           ],
-          "weight": 0.2014
+          "weight": 0.1681
         },
         {
-          "hex": "#588e36",
+          "hex": "#1b1d15",
           "rgb": [
-            88,
-            142,
-            54
+            27,
+            29,
+            21
           ],
-          "weight": 0.1744
+          "weight": 0.1321
         },
         {
-          "hex": "#2d4e13",
+          "hex": "#28450f",
           "rgb": [
-            45,
-            78,
-            19
+            40,
+            69,
+            15
           ],
-          "weight": 0.1671
+          "weight": 0.1176
         },
         {
-          "hex": "#c46709",
+          "hex": "#b45a07",
           "rgb": [
-            196,
-            103,
-            9
+            180,
+            90,
+            7
           ],
-          "weight": 0.0691
+          "weight": 0.1132
         },
         {
-          "hex": "#365c5f",
+          "hex": "#699638",
           "rgb": [
-            54,
-            92,
-            95
+            105,
+            150,
+            56
           ],
-          "weight": 0.0521
+          "weight": 0.11
         },
         {
-          "hex": "#934004",
+          "hex": "#393734",
           "rgb": [
-            147,
-            64,
-            4
+            57,
+            55,
+            52
           ],
-          "weight": 0.05
+          "weight": 0.101
         },
         {
-          "hex": "#9f9e80",
+          "hex": "#a09f80",
           "rgb": [
+            160,
             159,
-            158,
             128
           ],
-          "weight": 0.0388
+          "weight": 0.0408
         },
         {
-          "hex": "#8b9722",
+          "hex": "#25717c",
           "rgb": [
-            139,
-            151,
-            34
+            37,
+            113,
+            124
           ],
-          "weight": 0.0263
+          "weight": 0.0262
         },
         {
-          "hex": "#cfcec5",
+          "hex": "#cfcec6",
           "rgb": [
             207,
             206,
-            197
+            198
           ],
-          "weight": 0.0177
+          "weight": 0.0184
         }
       ],
-      "primaryColor": "#416f20",
+      "primaryColor": "#4c802a",
       "materials": [
         {
           "name": "material_0",
@@ -849,19 +834,19 @@
       ],
       "details": {
         "gpuCompressionSkipped": true,
-        "gpuCompressionReason": "texture VRAM 12.06 MB < 20 MB",
-        "textureVramEstimateBytes": 12647500
+        "gpuCompressionReason": "texture VRAM 4.08 MB < 20 MB",
+        "textureVramEstimateBytes": 4281660
       }
     }
   },
   "summary": {
     "model": "dinoki_raw.glb",
     "outputDir": "/Users/lyld/poc-optimize-3d-model/workspaces/default_sample",
-    "elapsedSeconds": 13.072,
-    "elapsedFormatted": "13.07s",
-    "elapsedMs": 13071.9,
-    "totalDurationSeconds": 13.072,
-    "totalDurationFormatted": "13.07s",
+    "elapsedSeconds": 8.095,
+    "elapsedFormatted": "8.09s",
+    "elapsedMs": 8094.8,
+    "totalDurationSeconds": 8.095,
+    "totalDurationFormatted": "8.09s",
     "stepDurations": {
       "raw": {
         "step": 0,
@@ -869,88 +854,88 @@
         "skipped": false,
         "durationSeconds": 0.076,
         "durationFormatted": "76ms",
-        "totalDurationSeconds": 0.13,
+        "totalDurationSeconds": 0.128,
         "seconds": 0.076,
-        "ms": 76.4
+        "ms": 75.5
       },
       "cleaned_grounded": {
         "step": 1,
         "file": "step_01_cleaned_grounded.glb",
         "skipped": false,
-        "durationSeconds": 0.108,
+        "durationSeconds": 0.106,
         "durationFormatted": "0.11s",
-        "totalDurationSeconds": 0.255,
-        "seconds": 0.108,
-        "ms": 107.8
+        "totalDurationSeconds": 0.251,
+        "seconds": 0.106,
+        "ms": 105.7
       },
       "oriented": {
         "step": 2,
         "file": "step_02_oriented.glb",
         "skipped": false,
-        "durationSeconds": 0.953,
-        "durationFormatted": "0.95s",
-        "totalDurationSeconds": 1.21,
-        "seconds": 0.953,
-        "ms": 953.4
+        "durationSeconds": 0.897,
+        "durationFormatted": "0.90s",
+        "totalDurationSeconds": 1.149,
+        "seconds": 0.897,
+        "ms": 897.4
       },
       "face_reduced": {
         "step": 3,
         "file": "step_03_face_reduced.glb",
         "skipped": false,
-        "durationSeconds": 3.182,
-        "durationFormatted": "3.18s",
-        "totalDurationSeconds": 4.392,
-        "seconds": 3.182,
-        "ms": 3181.8
+        "durationSeconds": 3.111,
+        "durationFormatted": "3.11s",
+        "totalDurationSeconds": 4.26,
+        "seconds": 3.111,
+        "ms": 3111.1
       },
       "texture_baked": {
         "step": 4,
         "file": "step_04_texture_baked.glb",
         "skipped": false,
-        "durationSeconds": 8.303,
-        "durationFormatted": "8.30s",
-        "totalDurationSeconds": 12.696,
-        "seconds": 8.303,
-        "ms": 8303.1
+        "durationSeconds": 3.459,
+        "durationFormatted": "3.46s",
+        "totalDurationSeconds": 7.72,
+        "seconds": 3.459,
+        "ms": 3459.0
       },
       "palette_tagged": {
         "step": 5,
         "file": "step_05_palette_tagged.glb",
         "skipped": false,
-        "durationSeconds": 0.084,
-        "durationFormatted": "84ms",
-        "totalDurationSeconds": 12.78,
-        "seconds": 0.084,
-        "ms": 83.9
+        "durationSeconds": 0.08,
+        "durationFormatted": "80ms",
+        "totalDurationSeconds": 7.801,
+        "seconds": 0.08,
+        "ms": 80.4
       },
       "meshopt": {
         "step": 6,
         "file": "step_06_meshopt.glb",
         "skipped": false,
-        "durationSeconds": 0.212,
-        "durationFormatted": "0.21s",
-        "totalDurationSeconds": 12.993,
-        "seconds": 0.212,
-        "ms": 211.5
+        "durationSeconds": 0.193,
+        "durationFormatted": "0.19s",
+        "totalDurationSeconds": 7.995,
+        "seconds": 0.193,
+        "ms": 192.7
       },
       "final": {
         "step": 7,
         "file": "step_07_final.glb",
         "skipped": false,
-        "durationSeconds": 0.077,
-        "durationFormatted": "77ms",
-        "totalDurationSeconds": 13.071,
-        "seconds": 0.077,
-        "ms": 76.7
+        "durationSeconds": 0.097,
+        "durationFormatted": "97ms",
+        "totalDurationSeconds": 8.094,
+        "seconds": 0.097,
+        "ms": 97.5
       }
     },
     "skippedSteps": [],
     "initialSizeBytes": 2026696,
-    "finalSizeBytes": 1628556,
-    "savedBytes": 398140,
-    "savedPercent": 19.64,
+    "finalSizeBytes": 815516,
+    "savedBytes": 1211180,
+    "savedPercent": 59.76,
     "initialFaces": 45000,
-    "finalFaces": 20266,
+    "finalFaces": 14139,
     "faceReduction": {
       "enabled": true,
       "engine": "cgal",
@@ -961,38 +946,35 @@
         "merge"
       ],
       "facesBefore": 45000,
-      "facesAfter": 20266,
-      "facesRemoved": 24734,
-      "percent": 54.96,
+      "facesAfter": 14139,
+      "facesRemoved": 30861,
+      "percent": 68.58,
       "qualityBudgetPercent": 0.1,
-      "normalBudgetDegrees": 6.2,
-      "normalBudgetAuto": true,
-      "normalBudgetFactor": 1.0,
-      "perEdgeTurnDegrees": 6.2,
-      "deviationPercent": 0.0073,
-      "deviationMaxPercent": 0.0262,
-      "normalDeviationDegrees": 3.125,
+      "normalBudgetDegrees": 20.0,
+      "deviationPercent": 0.0325,
+      "deviationMaxPercent": 0.0676,
+      "normalDeviationDegrees": 19.691,
       "withinQualityBudget": true
     },
     "facesPreservedPercent": 100.0,
     "zeroDecimationVerified": true,
     "initialVertices": 36648,
-    "finalVertices": 17059,
+    "finalVertices": 13442,
     "initialGpuVramBytes": 12582904,
-    "finalGpuVramBytes": 12647500,
-    "gpuVramSavedPercent": -0.51,
-    "primaryColor": "#416f20",
+    "finalGpuVramBytes": 4281660,
+    "gpuVramSavedPercent": 65.97,
+    "primaryColor": "#4c802a",
     "palette": [
-      "#416f20",
-      "#21231b",
-      "#588e36",
-      "#2d4e13",
-      "#c46709",
-      "#365c5f",
-      "#934004",
-      "#9f9e80",
-      "#8b9722",
-      "#cfcec5"
+      "#4c802a",
+      "#39651a",
+      "#1b1d15",
+      "#28450f",
+      "#b45a07",
+      "#699638",
+      "#393734",
+      "#a09f80",
+      "#25717c",
+      "#cfcec6"
     ],
     "files": [
       "step_00_raw.glb",

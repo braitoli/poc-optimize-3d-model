@@ -33,7 +33,7 @@ import os
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, Optional, Sequence, Tuple
 
 import numpy as np
 import trimesh
@@ -54,27 +54,12 @@ DEFAULT_QUALITY_BUDGET_PERCENT = 0.1
 # the surface by almost nothing, so the budget bounds the angle between the original surface and
 # the result as well.
 #
-# A fixed angle is the wrong instrument for it, because it means something different on every
-# model. Measured over the sample models, the surface already turns this far from one face to the
-# next: dinoki 6.2deg per edge over 45,000 faces, lumiflora 5.3, zelvaron 2.7, tigravolt 2.1 over
-# 280,714. A budget of 8deg therefore buys dinoki 1.3 edges' worth of collapse and tigravolt 3.8 -
-# which is why the same setting all but stopped the merge on dinoki while letting zelvaron's
-# helmet rim go soft. So the default is read off the mesh itself: how far a collapse may turn the surface
-# is a multiple of how far that surface already turns per edge, which is the same instruction on
-# every model. Pass a number instead to pin it.
-AUTO_NORMAL_BUDGET = "auto"
-DEFAULT_NORMAL_BUDGET_DEGREES = AUTO_NORMAL_BUDGET
-# How many edges' worth of the mesh's own curvature one collapse may erase. One: the result may
-# not turn away from the original any further than the original already turns between two adjacent
-# faces, so the collapse stays under the step the surface was already taking. 3 was tried first,
-# off dinoki's face count alone, and softened zelvaron's helmet rim and chest plate - the shading
-# cost was never measured on a crease-heavy model. At 1 zelvaron is back at 2.7deg / -80.6% (the
-# tight setting that fixed those) and dinoki still reaches -55%, the same as a flat 8deg.
-AUTO_NORMAL_BUDGET_FACTOR = 1.0
-# Floor and ceiling on the result. The floor is what a very dense mesh gets: below it the merge
-# collapses almost nothing whatever the model (measured: dinoki at 3deg). The ceiling catches a
-# mesh so coarse that its own per-edge turn is no longer evidence of anything.
-AUTO_NORMAL_BUDGET_RANGE = (3.0, 30.0)
+# 20 degrees, measured. It is the widest setting at which the rate of faces lit unlike their own
+# neighbours - the defect an eye actually catches - stays at the floor on every model tried:
+# per 10,000 faces, dinoki 0.7, vosiruto 1.2, zelvaron 3.4. At 30 the two hard-surface ones jump
+# to 5.4 and 8.5. It is also most of what the setting can do: past roughly 30 degrees the 0.1%
+# surface budget takes over as the binding one, and zelvaron at 45 comes out identical to 30.
+DEFAULT_NORMAL_BUDGET_DEGREES = 20.0
 # Which part of the surface the shading budget answers for. At the 95th percentile a glossy plate
 # covering a few percent of the model can be flattened without the number moving at all, and a
 # specular highlight breaking into facets is exactly what gets noticed, so it is the 99th.
@@ -123,19 +108,16 @@ def engine_available(engine: str) -> Tuple[bool, str]:
     raise ValueError(f"Unsupported engine '{engine}' (expected one of {', '.join(ENGINES)})")
 
 
-def validate_normal_budget(budget: Union[float, str]) -> Union[float, str]:
+def validate_normal_budget(budget: float) -> float:
     """`budget` unchanged when it is a usable shading budget, ValueError otherwise.
 
-    Accepts AUTO_NORMAL_BUDGET, or an angle above 0 and at most 90 (90 switches the budget off:
-    no collapse can turn a surface further than that)."""
-    if budget == AUTO_NORMAL_BUDGET:
-        return budget
+    An angle above 0 and at most 90; 90 switches the budget off, since no collapse can turn a
+    surface further than that."""
     if isinstance(budget, bool) or not isinstance(budget, (int, float)) or not 0 < budget <= 90:
         raise ValueError(
-            f"normal_budget_degrees must be '{AUTO_NORMAL_BUDGET}' or an angle above 0 and at "
-            f"most 90, got {budget!r}"
+            f"normal_budget_degrees must be an angle above 0 and at most 90, got {budget!r}"
         )
-    return budget
+    return float(budget)
 
 
 def validate_ops(ops: Sequence[str]) -> Tuple[str, ...]:
@@ -824,46 +806,6 @@ _NO_DEVIATION = {
 }
 
 
-def validate_normal_factor(factor: float) -> float:
-    """`factor` unchanged when it is a usable auto-budget multiplier, ValueError otherwise."""
-    if isinstance(factor, bool) or not isinstance(factor, (int, float)) or not 0 < factor <= 30:
-        raise ValueError(
-            f"normal_budget_factor must be a number above 0 and at most 30, got {factor!r}"
-        )
-    return float(factor)
-
-
-def auto_normal_budget(
-    vertices: np.ndarray,
-    faces: np.ndarray,
-    factor: float = AUTO_NORMAL_BUDGET_FACTOR
-) -> Tuple[float, float]:
-    """(shading budget, turn per edge) for a mesh, both in degrees.
-
-    How far a collapse may turn the surface, as `factor` times how far the surface already turns
-    from one face to the next. Only the smooth edges are measured: a crease is a feature the model
-    is meant to have, not evidence of how finely it is tessellated, and a mesh with many of them
-    would otherwise be handed a budget wide enough to erase them.
-
-    The mesh is welded first. glTF splits a vertex at every UV seam, so the raw face adjacency
-    misses every edge that crosses one and reads a model as far smoother than it is.
-
-    `factor` is a setting, not a constant that fits every model: measured across the sample
-    models, vosiruto wants roughly 7 and zelvaron roughly 1, and no property of the mesh measured
-    so far predicts which - per-edge turn puts them 1.5x apart and crease density 1.3x, against
-    the 10x their budgets actually differ by. Hence --reduce-normal-factor.
-    """
-    validate_normal_factor(factor)
-    probe = trimesh.Trimesh(vertices=vertices, faces=faces, process=True)
-    angles = np.degrees(probe.face_adjacency_angles)
-    smooth = angles[angles <= HARD_EDGE_DEGREES]
-    if len(smooth) == 0:
-        # Every edge is a crease (a box, a blocked-out prop): there is no tessellation to read
-        return AUTO_NORMAL_BUDGET_RANGE[0], 0.0
-    per_edge = float(np.median(smooth))
-    return float(np.clip(per_edge * factor, *AUTO_NORMAL_BUDGET_RANGE)), per_edge
-
-
 def _within_budget(measured: Dict[str, float], budget: float, normal_budget: float) -> bool:
     """Whether a candidate is inside both budgets: the surface and the shading at the percentile,
     and no point anywhere further than MAX_DEVIATION_FACTOR times the surface budget."""
@@ -922,8 +864,7 @@ def reduce_faces(
     engine: str = "cgal",
     ops: Sequence[str] = DEFAULT_OPS,
     quality_budget_percent: float = DEFAULT_QUALITY_BUDGET_PERCENT,
-    normal_budget_degrees: Union[float, str] = DEFAULT_NORMAL_BUDGET_DEGREES,
-    normal_budget_factor: float = AUTO_NORMAL_BUDGET_FACTOR,
+    normal_budget_degrees: float = DEFAULT_NORMAL_BUDGET_DEGREES,
     isolated_min_faces: int = DEFAULT_ISOLATED_MIN_FACES,
     hidden_views: int = DEFAULT_HIDDEN_VIEWS,
     hidden_resolution: int = DEFAULT_HIDDEN_RESOLUTION,
@@ -932,8 +873,7 @@ def reduce_faces(
 ) -> trimesh.Trimesh:
     """
     Repairs and reduces `mesh` with `engine`, keeping the result within `quality_budget_percent`.
-    `normal_budget_degrees` is an angle, or "auto" to read one off the mesh: `normal_budget_factor`
-    times how far its surface already turns per edge (`auto_normal_budget`), ignored otherwise.
+    `normal_budget_degrees` is how far the result may turn away from the original surface.
     Returns a new mesh; `stats` (when given) records what each operation removed, the measured
     deviation and whether the UVs survived. `pre_collapse` (when given) receives, under "mesh", the
     mesh as the removals left it, with the source UVs still on it - only set when a collapse then
@@ -949,18 +889,12 @@ def reduce_faces(
         raise PipelineAbort(reason)
     if not quality_budget_percent > 0:
         raise ValueError(f"quality_budget_percent must be a positive number, got {quality_budget_percent!r}")
-    validate_normal_budget(normal_budget_degrees)
-    validate_normal_factor(normal_budget_factor)
+    normal_budget_degrees = validate_normal_budget(normal_budget_degrees)
 
     record: Dict[str, Any] = stats if stats is not None else {}
     vertices = np.asarray(mesh.vertices, dtype=np.float64)
     faces = np.asarray(mesh.faces, dtype=np.int64)
     n_input = len(faces)
-    budget_is_auto = normal_budget_degrees == AUTO_NORMAL_BUDGET
-    if budget_is_auto:
-        normal_budget_degrees, per_edge_turn = auto_normal_budget(vertices, faces, normal_budget_factor)
-    else:
-        normal_budget_degrees, per_edge_turn = float(normal_budget_degrees), None
     removed = {"repair": 0, "selfIntersection": 0, "isolated": 0, "hidden": 0}
     # Defects an engine repaired without removing a face (reported, never charged to the budget)
     detected: Dict[str, int] = {}
@@ -968,11 +902,7 @@ def reduce_faces(
         "engine": engine,
         "ops": list(ops),
         "qualityBudgetPercent": quality_budget_percent,
-        "normalBudgetDegrees": round(normal_budget_degrees, 2),
-        "normalBudgetAuto": budget_is_auto,
-        "normalBudgetFactor": float(normal_budget_factor) if budget_is_auto else None,
-        # How far the input already turns per edge, the number the auto budget is read off
-        "perEdgeTurnDegrees": round(per_edge_turn, 2) if per_edge_turn is not None else None,
+        "normalBudgetDegrees": normal_budget_degrees,
         "facesBefore": n_input,
         "removed": removed,
         "detected": detected

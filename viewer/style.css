@@ -346,7 +346,6 @@ header {
 
 .config-item-reduce-budget,
 .config-item-reduce-normal,
-.config-item-reduce-normal-factor,
 .config-item-reduce-isolated {
   flex: 0.7;
   min-width: 95px;

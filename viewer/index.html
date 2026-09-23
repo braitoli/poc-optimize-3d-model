@@ -109,17 +109,9 @@
           <div class="config-item config-item-reduce-normal">
             <label class="config-label" for="reduceNormalBudgetInput">
               Shading Budget °
-              <span class="policy-tooltip-trigger" title="Bề mặt được phép xoay tối đa bao nhiêu độ (bách phân vị 99). Gộp face có thể bo tròn một cạnh sắc mà gần như không dịch chuyển bề mặt, nên đây mới là thứ giữ được khe hẹp và cạnh sắc. Để trống = tự đọc từ chính model: đúng bằng góc mà bề mặt đã xoay sẵn mỗi cạnh (tối thiểu 3°), nên cùng một thiết lập có cùng ý nghĩa trên mọi model">ⓘ</span>
+              <span class="policy-tooltip-trigger" title="Bề mặt được phép xoay tối đa bao nhiêu độ so với bản gốc (bách phân vị 99). Gộp face có thể bo tròn một cạnh sắc mà gần như không dịch chuyển bề mặt, nên đây mới là thứ giữ được khe hẹp và cạnh sắc. 20° là góc rộng nhất mà tỉ lệ face bị chiếu sáng khác hàng xóm còn ở mức sàn trên mọi model đã đo; trên ~30° thì ngân sách vị trí 0,1% mới là thứ chặn">ⓘ</span>
             </label>
-            <input class="config-input" type="number" id="reduceNormalBudgetInput" value="" placeholder="auto" min="0.5" max="90" step="0.5" />
-          </div>
-
-          <div class="config-item config-item-reduce-normal-factor">
-            <label class="config-label" for="reduceNormalFactorInput">
-              Auto k
-              <span class="policy-tooltip-trigger" title="Chỉ dùng khi ô Shading Budget để trống: ngân sách = k × góc mà bề mặt model đã xoay sẵn mỗi cạnh. k càng lớn càng giảm nhiều face. Đo được: vosiruto hợp k≈7 (1,2 triệu → 44k face vẫn nét), zelvaron hợp k≈1. Không có đặc trưng nào của lưới đoán được con số này, nên nó là thiết lập theo từng model">ⓘ</span>
-            </label>
-            <input class="config-input" type="number" id="reduceNormalFactorInput" value="1" min="0.1" max="30" step="0.5" />
+            <input class="config-input" type="number" id="reduceNormalBudgetInput" value="20" min="0.5" max="90" step="1" />
           </div>
 
           <div class="config-item config-item-reduce-isolated">
