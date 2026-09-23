@@ -3,4 +3,7 @@ scipy>=1.14.0
 trimesh>=4.5.0
 Pillow>=10.0.0
 xatlas>=0.0.9
+# Step 3 face reduction: MeshLab engine, plus the BVH used to measure its quality budget
+pymeshlab>=2023.12
+open3d>=0.18.0
 pytest>=8.0.0

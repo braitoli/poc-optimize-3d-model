@@ -4,8 +4,9 @@ scripts/benchmark_runner.py
 
 High-Precision 3D Model Optimization Pipeline Profiler & Benchmark Runner.
 Measures performance, microsecond step durations via time.perf_counter(),
-intermediate stage file sizes, Rule 11 Zero-Decimation geometric integrity,
-texture resolutions, and GPU VRAM footprint before and after optimization.
+intermediate stage file sizes, Rule 11 geometric integrity (Step 3 is the only step allowed to
+remove triangles, and only within its quality budget; every other step preserves 100% of what it
+is given), texture resolutions, and GPU VRAM footprint before and after optimization.
 
 Supports:
 - Model 1: koidrax (examples/models/koidrax_raw.glb)
@@ -116,7 +117,7 @@ def run_model_benchmark(
     verbose: bool = True
 ) -> Dict[str, Any]:
     """
-    Executes full 7-step pipeline on target model with high-precision time.perf_counter().
+    Executes full 8-step pipeline on target model with high-precision time.perf_counter().
     Captures step durations, file sizes, triangle integrity (Rule 11), and VRAM metrics.
     """
     model_path = Path(model_path).resolve()
@@ -178,41 +179,49 @@ def run_model_benchmark(
         step2_faces = step2_metrics.get("faces", 0)
         step2_verts = step2_metrics.get("vertices", 0)
 
-        # Step 3 (Texture Baked)
+        # Step 3 (Face Repair & Reduction)
         step3 = steps_map.get(3, {})
         step3_duration_sec = step3.get("durationSeconds", 0.0)
 
-        # Step 4 (Palette Tagged)
+        # Step 4 (Texture Baked)
         step4 = steps_map.get(4, {})
         step4_duration_sec = step4.get("durationSeconds", 0.0)
 
-        # Step 5 (Meshopt Geometry)
+        # Step 5 (Palette Tagged)
         step5 = steps_map.get(5, {})
         step5_duration_sec = step5.get("durationSeconds", 0.0)
 
-        # Step 6 (Final Output)
+        # Step 6 (Meshopt Geometry)
         step6 = steps_map.get(6, {})
-        step6_metrics = step6.get("metrics", {})
         step6_duration_sec = step6.get("durationSeconds", 0.0)
-        step6_file = effective_workdir / "step_06_final.glb"
-        final_bytes = step6_file.stat().st_size if step6_file.exists() else step6_metrics.get("fileSizeBytes", 0)
-        final_faces = step6_metrics.get("faces", 0)
-        final_verts = step6_metrics.get("vertices", 0)
+
+        # Step 7 (Final Output)
+        step7 = steps_map.get(7, {})
+        step7_metrics = step7.get("metrics", {})
+        step7_duration_sec = step7.get("durationSeconds", 0.0)
+        step7_file = effective_workdir / "step_07_final.glb"
+        final_bytes = step7_file.stat().st_size if step7_file.exists() else step7_metrics.get("fileSizeBytes", 0)
+        final_faces = step7_metrics.get("faces", 0)
+        final_verts = step7_metrics.get("vertices", 0)
 
         # Compression calculations
         saved_bytes = raw_bytes - final_bytes
         saved_pct = round((saved_bytes / raw_bytes) * 100.0, 2) if raw_bytes > 0 else 0.0
 
-        # Rule 11 Zero-Decimation verification
+        # Rule 11 verification: Step 3 is the only step allowed to remove triangles, and only within
+        # its quality budget; every other step preserves 100% of what it is given. So the final face
+        # count is compared against the count Step 3 left (the raw count when Step 3 was skipped).
+        face_reduction = pipeline_result.get("summary", {}).get("faceReduction", {})
+        reduced_faces = face_reduction.get("facesAfter", raw_faces)
         rule11_verified = (raw_faces > 0 and
                            step1_faces == raw_faces and
                            step2_faces == raw_faces and
-                           final_faces == raw_faces)
-        tri_preserved_pct = round((final_faces / raw_faces) * 100.0, 2) if raw_faces > 0 else 0.0
+                           final_faces == reduced_faces)
+        tri_preserved_pct = round((final_faces / reduced_faces) * 100.0, 2) if reduced_faces > 0 else 0.0
 
         # Textures & VRAM calculation
         raw_textures = step0_metrics.get("textures", [])
-        final_textures = step6_metrics.get("textures", [])
+        final_textures = step7_metrics.get("textures", [])
 
         raw_tex_res = raw_textures[0].get("resolutionFormatted", "N/A") if raw_textures else "N/A"
         final_tex_res = final_textures[0].get("resolutionFormatted", "N/A") if final_textures else "N/A"
@@ -229,7 +238,7 @@ def run_model_benchmark(
         raw_total_vram = raw_tex_vram + raw_geo_vram
 
         # GPU VRAM after (Final)
-        final_tex_vram = step6_metrics.get("totalGpuVramBytes", 0)
+        final_tex_vram = step7_metrics.get("totalGpuVramBytes", 0)
         if final_tex_vram == 0 and final_textures:
             w, h = final_textures[0].get("resolution", [0, 0])
             final_tex_vram = calculate_texture_vram(w, h, is_ktx2=(texture_format.lower() == "ktx2"))
@@ -284,21 +293,25 @@ def run_model_benchmark(
                         "seconds": round(step0_duration_sec, 4),
                         "ms": round(step0_duration_sec * 1000.0, 2)
                     },
-                    "step_03_texture_baked": {
+                    "step_03_face_reduced": {
                         "seconds": round(step3_duration_sec, 4),
                         "ms": round(step3_duration_sec * 1000.0, 2)
                     },
-                    "step_04_palette_tagged": {
+                    "step_04_texture_baked": {
                         "seconds": round(step4_duration_sec, 4),
                         "ms": round(step4_duration_sec * 1000.0, 2)
                     },
-                    "step_05_meshopt": {
+                    "step_05_palette_tagged": {
                         "seconds": round(step5_duration_sec, 4),
                         "ms": round(step5_duration_sec * 1000.0, 2)
                     },
-                    "step_06_final": {
+                    "step_06_meshopt": {
                         "seconds": round(step6_duration_sec, 4),
                         "ms": round(step6_duration_sec * 1000.0, 2)
+                    },
+                    "step_07_final": {
+                        "seconds": round(step7_duration_sec, 4),
+                        "ms": round(step7_duration_sec * 1000.0, 2)
                     }
                 },
                 "all_steps": step_items
@@ -326,6 +339,15 @@ def run_model_benchmark(
                 "raw_triangles": raw_faces,
                 "step_01_triangles": step1_faces,
                 "step_02_triangles": step2_faces,
+                "step_03_enabled": face_reduction.get("enabled", False),
+                "step_03_engine": face_reduction.get("engine"),
+                "step_03_triangles_before": face_reduction.get("facesBefore", raw_faces),
+                "step_03_triangles_after": reduced_faces,
+                "step_03_triangles_removed": face_reduction.get("facesRemoved", 0),
+                "step_03_reduction_percent": face_reduction.get("percent", 0.0),
+                "step_03_deviation_percent": face_reduction.get("deviationPercent"),
+                "step_03_quality_budget_percent": face_reduction.get("qualityBudgetPercent"),
+                "step_03_within_quality_budget": face_reduction.get("withinQualityBudget"),
                 "final_triangles": final_faces,
                 "zero_decimation_verified": rule11_verified,
                 "triangles_preserved_percent": tri_preserved_pct,
@@ -517,14 +539,14 @@ def print_comparison_table(comparisons: List[Dict[str, Any]]) -> None:
 def print_single_mode_summary(results: List[Dict[str, Any]]) -> None:
     """Prints a formatted summary table for a single mode run."""
     print("\n" + "=" * 135)
-    print(" 🚀 3D MODEL OPTIMIZATION PIPELINE PROFILER SUMMARY (RULE 11 ZERO-DECIMATION)")
+    print(" 🚀 3D MODEL OPTIMIZATION PIPELINE PROFILER SUMMARY (RULE 11: STEP 3 REDUCTION ONLY)")
     print("=" * 135)
     header = (
         f"{'Model':<10} | "
         f"{'Raw Size':<9} | "
         f"{'Opt Size':<9} | "
         f"{'Saved %':<8} | "
-        f"{'Triangles (Raw->Opt)':<22} | "
+        f"{'Triangles (Raw->S3->Opt)':<26} | "
         f"{'Rule 11':<10} | "
         f"{'GPU VRAM':<18} | "
         f"{'VRAM Saved':<10} | "
@@ -542,7 +564,7 @@ def print_single_mode_summary(results: List[Dict[str, Any]]) -> None:
         tm = r["timing"]
 
         rule11_label = "✅ PASS" if g["zero_decimation_verified"] else "❌ FAIL"
-        tri_str = f"{g['raw_triangles']:,} -> {g['final_triangles']:,}"
+        tri_str = f"{g['raw_triangles']:,} -> {g['step_03_triangles_after']:,} -> {g['final_triangles']:,}"
         vram_str = f"{tv['total_gpu_vram_before_formatted']} -> {tv['total_gpu_vram_after_formatted']}"
 
         row = (
@@ -550,7 +572,7 @@ def print_single_mode_summary(results: List[Dict[str, Any]]) -> None:
             f"{fs['raw_input_formatted']:>9} | "
             f"{fs['final_output_formatted']:>9} | "
             f"{fs['saved_percent']:>7.2f}% | "
-            f"{tri_str:<22} | "
+            f"{tri_str:<26} | "
             f"{rule11_label:<10} | "
             f"{vram_str:<18} | "
             f"{tv['total_gpu_vram_saved_percent']:>8.2f}% | "
@@ -563,7 +585,7 @@ def print_single_mode_summary(results: List[Dict[str, Any]]) -> None:
 
 
 def print_step_breakdown(result: Dict[str, Any]) -> None:
-    """Prints a granular breakdown table of all 7 pipeline steps for a single model."""
+    """Prints a granular breakdown table of all 8 pipeline steps for a single model."""
     print(f"\n📊 Step-by-Step Breakdown: {result['model_key'].upper()} [{result.get('mode', 'optimized').upper()}] ({result['model_name']})")
     print("-" * 105)
     header = f"{'Step':<6} | {'Step Name':<20} | {'Intermediate File':<28} | {'Duration (s)':<12} | {'Duration (ms)':<14} | {'Size':<10} | {'Triangles'}"
@@ -670,7 +692,7 @@ def main() -> None:
         print(f" Targets: {', '.join(t['key'] for t in targets)}")
         print(f" Mode: {args.mode.upper()}")
         print(f" Format: {args.format.upper()}")
-        print(f" Rule 11 Zero-Decimation Policy: ENFORCED (100% face count preservation)")
+        print(f" Rule 11 Policy: ENFORCED (only Step 3 removes triangles, within its quality budget)")
         print("=" * 80)
 
     comparison_results: List[Dict[str, Any]] = []

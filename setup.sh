@@ -53,6 +53,16 @@ echo "📦 Installing Python dependencies from requirements.txt..."
 "${REPO_ROOT}/.venv/bin/pip" install --upgrade pip
 "${REPO_ROOT}/.venv/bin/pip" install -r requirements.txt
 
+# 4b. Build the CGAL mesh_repair helper (Step 3 'cgal' face reduction engine)
+echo "🛠️  Building the CGAL face reduction helper..."
+if "${REPO_ROOT}/optimizer/cgal/build.sh"; then
+    echo "✅ Built optimizer/cgal/build/mesh_repair"
+else
+    echo "⚠️  WARNING: the CGAL helper did not build."
+    echo "   Step 3 defaults to this engine, so run it with --reduce-engine meshlab until it does"
+    echo "   (MeshLab reduces far less at a tight quality budget)."
+fi
+
 # 5. Setup Node.js Dependencies
 echo "📦 Installing Node.js dependencies via npm..."
 npm install --omit=dev --no-audit --no-fund

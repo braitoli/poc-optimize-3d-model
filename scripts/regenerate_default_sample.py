@@ -1,30 +1,35 @@
 """
 regenerate_default_sample.py
 
-Regenerates all 7 optimization steps for the Dinoki default showcase
-with doubleSided=True on Step 3, preserved vertex normals, and 100% zero-decimation.
-Populates workspaces/default_sample/ and examples/jobs/default_sample/steps/.
+Regenerates the Dinoki default showcase the viewer loads before any job has run:
+one full pipeline run into workspaces/default_sample/ (every step enabled, so the stepper shows
+what a complete run looks like), copied to examples/jobs/default_sample/steps/.
+
+The step GLBs keep the pipeline's own file names (step_00_raw.glb ... step_07_final.glb); the
+viewer reads metrics.json for their URLs.
 """
 
 import json
-import os
 import shutil
 from pathlib import Path
-from optimizer.step_pipeline import StepPipeline, inspect_glb_metrics
+
+from optimizer.step_pipeline import StepPipeline
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 INPUT_MODEL = REPO_ROOT / "examples" / "models" / "dinoki_raw.glb"
 WORKSPACE_DIR = REPO_ROOT / "workspaces" / "default_sample"
 EXAMPLES_STEPS_DIR = REPO_ROOT / "examples" / "jobs" / "default_sample" / "steps"
 
-CANONICAL_STEPS = [
-    {"step": 0, "name": "Raw Input", "desc": "Original raw unoptimized 3D asset (Dinoki)", "file": "step0_raw.glb", "pipe_file": "step_00_raw.glb"},
-    {"step": 1, "name": "Clean & Auto-Ground", "desc": "Base grounded at Y=0, degenerate faces cleaned, 100% geometry preserved", "file": "step1_clean_ground.glb", "pipe_file": "step_01_cleaned_grounded.glb"},
-    {"step": 2, "name": "Shell Orienting", "desc": "Z-Buffer visibility raycast, flipped faces to CCW FrontSide", "file": "step2_shell_orient.glb", "pipe_file": "step_02_oriented.glb"},
-    {"step": 3, "name": "UV & Texture Bake", "desc": "Master UV texture resampled to 1024x1024 with 16px boundary dilation (doubleSided)", "file": "step3_uv_bake.glb", "pipe_file": "step_03_texture_baked.glb"},
-    {"step": 4, "name": "Palette Extraction", "desc": "10 dominant surface colors extracted via KMeans", "file": "step4_palette.glb", "pipe_file": "step_04_palette_tagged.glb"},
-    {"step": 5, "name": "Meshopt Compression", "desc": "Smooth normals, weld, quantize, and EXT_meshopt_compression", "file": "step5_meshopt.glb", "pipe_file": "step_05_meshopt.glb"},
-    {"step": 6, "name": "KTX2 GPU Compression", "desc": "Basis UASTC L2 GPU mipmaps, frontSide, final extras", "file": "step6_final.glb", "pipe_file": "step_06_final.glb"}
+# Viewer-facing labels, one per pipeline step
+STEP_LABELS = [
+    ("Raw Input", "Original raw unoptimized 3D asset (Dinoki)"),
+    ("Clean & Auto-Ground", "Base grounded at Y=0, unreferenced vertices dropped, winding fixed"),
+    ("Shell Orienting", "Z-Buffer visibility raycast, flipped faces to CCW FrontSide"),
+    ("Face Repair & Reduction", "MeshLab/CGAL repair, isolated & hidden faces cut, edges collapsed within the quality budget"),
+    ("UV & Texture Bake", "UV re-chart at 1:1 texel density with 16px boundary dilation"),
+    ("Palette Extraction", "10 dominant surface colors extracted via KMeans"),
+    ("Meshopt Compression", "Weld, quantize, and EXT_meshopt_compression"),
+    ("KTX2 GPU Compression", "Basis UASTC L2 GPU mipmaps, frontSide, final extras")
 ]
 
 
@@ -33,12 +38,16 @@ def main():
     WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
     EXAMPLES_STEPS_DIR.mkdir(parents=True, exist_ok=True)
 
-    # 1. Run StepPipeline
+    # The run below writes every step file itself, so clear the directory of whatever an earlier
+    # layout left there (including the symlinks the old two-naming-schemes sample used)
+    for previous in list(WORKSPACE_DIR.glob("step*.glb")) + list(EXAMPLES_STEPS_DIR.glob("step*.glb")):
+        previous.unlink()
+
     pipeline = StepPipeline(
-        resolution=1024,
         texture_format="ktx2",
-        rechart_uv=False,
-        smooth_normals=True,
+        uv_mode="xatlas",
+        downscale=True,
+        size_mode="exact",
         double_sided=False,
         preserve_textures=True,
         verbose=True,
@@ -46,78 +55,78 @@ def main():
     )
     result = pipeline.run(INPUT_MODEL, WORKSPACE_DIR)
 
-    # 2. Ensure both file naming conventions exist (step0_raw.glb and step_00_raw.glb)
-    for step_def in CANONICAL_STEPS:
-        pipe_path = WORKSPACE_DIR / step_def["pipe_file"]
-        canon_path = WORKSPACE_DIR / step_def["file"]
-
-        # If pipe_path was generated as a real file
-        if pipe_path.exists() and not pipe_path.is_symlink():
-            if canon_path.is_symlink() or canon_path.exists():
-                canon_path.unlink()
-            shutil.copy2(pipe_path, canon_path)
-            pipe_path.unlink()
-            pipe_path.symlink_to(step_def["file"])
-        elif canon_path.exists() and not pipe_path.exists():
-            pipe_path.symlink_to(step_def["file"])
-
-        # Also copy canonical file to examples/jobs/default_sample/steps/
-        ex_dest = EXAMPLES_STEPS_DIR / step_def["file"]
-        shutil.copy2(canon_path.resolve(), ex_dest)
-
-    # 3. Create rich metrics.json compatible with viewer/app.js & server.mjs
     step_metrics_map = {}
-    for step_entry in result.get("steps", []):
-        s_idx = step_entry["step"]
-        step_def = CANONICAL_STEPS[s_idx]
-        m = step_entry["metrics"]
+    for step_entry in result["steps"]:
+        index = step_entry["step"]
+        name, description = STEP_LABELS[index]
+        metrics = step_entry["metrics"]
+        if step_entry["skipped"]:
+            step_metrics_map[str(index)] = {
+                "step": index, "stepName": name, "name": name, "description": description,
+                "file": None, "glbUrl": None, "skipped": True
+            }
+            continue
 
-        step_metrics_map[str(s_idx)] = {
-            "step": s_idx,
-            "stepName": step_def["name"],
-            "name": step_def["name"],
-            "description": step_def["desc"],
-            "file": step_def["file"],
-            "glbUrl": f"/workspaces/default_sample/{step_def['file']}",
-            "fileSize": m.get("fileSizeBytes", 0),
-            "fileSizeFormatted": m.get("fileSizeFormatted", ""),
-            "faces": m.get("faces", 0),
-            "vertices": m.get("vertices", 0),
-            "drawCalls": m.get("drawCalls", 1),
-            "meshes": m.get("meshes", 1),
-            "primitives": m.get("primitives", 1),
-            "bbox": m.get("boundingBox", {}).get("dimensions", [1.21, 1.6, 1.15]),
-            "textureFormat": m.get("textures", [{}])[0].get("format", "PNG/JPEG") if m.get("textures") else "PNG/JPEG",
-            "textureRes": m.get("textures", [{}])[0].get("resolutionFormatted", "1024x1024") if m.get("textures") else "1024x1024",
-            "gpuVramMb": round(m.get("totalGpuVramBytes", 0) / (1024 * 1024), 2),
-            "facesPreservedPercent": 100.0,
-            "palette": m.get("palette", []),
-            "paletteDetails": m.get("paletteDetails", []),
-            "primaryColor": m.get("primaryColor", None),
-            "materials": m.get("materials", [])
+        textures = metrics.get("textures") or [{}]
+        step_metrics_map[str(index)] = {
+            "step": index,
+            "stepName": name,
+            "name": name,
+            "description": description,
+            "file": step_entry["file"],
+            "glbUrl": f"/workspaces/default_sample/{step_entry['file']}",
+            "skipped": False,
+            "fileSize": metrics.get("fileSizeBytes", 0),
+            "fileSizeFormatted": metrics.get("fileSizeFormatted", ""),
+            "faces": metrics.get("faces", 0),
+            "vertices": metrics.get("vertices", 0),
+            "drawCalls": metrics.get("drawCalls", 1),
+            "meshes": metrics.get("meshes", 1),
+            "primitives": metrics.get("primitives", 1),
+            "bbox": metrics.get("boundingBox", {}).get("dimensions", []),
+            # null for a step whose GLB carries no texture (Step 3 after a collapse): the viewer
+            # then shows the texture that step still carries in, instead of an invented one
+            "textureFormat": textures[0].get("format"),
+            "textureRes": textures[0].get("resolutionFormatted"),
+            "gpuVramMb": round(metrics.get("totalGpuVramBytes", 0) / (1024 * 1024), 2),
+            "palette": metrics.get("palette", []),
+            "paletteDetails": metrics.get("paletteDetails", []),
+            "primaryColor": metrics.get("primaryColor"),
+            "materials": metrics.get("materials", []),
+            "details": step_entry.get("details", {})
         }
+        shutil.copy2(WORKSPACE_DIR / step_entry["file"], EXAMPLES_STEPS_DIR / step_entry["file"])
 
     metrics_payload = {
         "jobId": "default_sample",
         "status": "completed",
         "modelName": "Dinoki Sample Showcase",
-        "totalSteps": 7,
-        "currentStep": 6,
+        "totalSteps": StepPipeline.TOTAL_STEPS,
+        "currentStep": StepPipeline.TOTAL_STEPS - 1,
+        "skippedSteps": result["summary"]["skippedSteps"],
         "config": {
-            "resolution": 1024,
             "format": "ktx2",
-            "uvMode": "direct"
+            "uvMode": "xatlas",
+            "downscale": "on",
+            "sizeMode": "exact",
+            "reduceEngine": pipeline.reduce_engine,
+            "reduceOps": list(pipeline.reduce_ops),
+            "reduceQualityBudget": pipeline.reduce_quality_budget,
+            "reduceNormalBudget": pipeline.reduce_normal_budget
         },
         "steps": step_metrics_map,
-        "summary": result.get("summary", {})
+        "summary": result["summary"]
     }
+    (WORKSPACE_DIR / "metrics.json").write_text(json.dumps(metrics_payload, indent=2))
 
-    metrics_json_path = WORKSPACE_DIR / "metrics.json"
-    metrics_json_path.write_text(json.dumps(metrics_payload, indent=2))
-
+    reduction = result["summary"]["faceReduction"]
     print("✅ default_sample regeneration complete!")
     print(f"   Workspace: {WORKSPACE_DIR}")
     print(f"   Examples: {EXAMPLES_STEPS_DIR}")
+    print(
+        f"   Step 3 ({reduction['engine']}): {reduction['facesBefore']:,} -> {reduction['facesAfter']:,} faces "
+        f"(-{reduction['percent']}%) at {reduction['deviationPercent']}% deviation"
+    )
 
 
 if __name__ == "__main__":

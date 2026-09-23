@@ -5,7 +5,8 @@ Unit and integration tests for scripts/benchmark_runner.py:
 - Verifies profiler CLI invocation and argument parsing.
 - Verifies high-precision time.perf_counter() metrics capture.
 - Verifies Step 1 & Step 2 elapsed times and intermediate file metrics.
-- Verifies Rule 11 Zero-Decimation geometric integrity check across steps.
+- Verifies the Rule 11 geometric integrity check: Step 3 is the only step allowed to remove
+  triangles (within its quality budget), every other step preserves 100% of what it is given.
 - Verifies Texture resolution & GPU VRAM reduction calculations.
 - Verifies structured JSON generation and disk output.
 - Verifies a failing model is recorded (reason, errorType, step) and the run continues.
@@ -20,6 +21,9 @@ import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 from unittest import mock
+from optimizer.core.face_reduce import DEFAULT_QUALITY_BUDGET_PERCENT, ENGINES as REDUCE_ENGINES
+
+DEFAULT_REDUCE_ENGINE = REDUCE_ENGINES[0]
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / "scripts" / "benchmark_runner.py"
@@ -74,53 +78,75 @@ class TestBenchmarkRunner(unittest.TestCase):
 
             remaining = timing["remaining_step_durations"]
             self.assertIn("step_00_raw", remaining)
-            self.assertIn("step_03_texture_baked", remaining)
-            self.assertIn("step_04_palette_tagged", remaining)
-            self.assertIn("step_05_meshopt", remaining)
-            self.assertIn("step_06_final", remaining)
+            self.assertIn("step_03_face_reduced", remaining)
+            self.assertIn("step_04_texture_baked", remaining)
+            self.assertIn("step_05_palette_tagged", remaining)
+            self.assertIn("step_06_meshopt", remaining)
+            self.assertIn("step_07_final", remaining)
 
-            self.assertEqual(len(timing["all_steps"]), 7)
+            self.assertEqual(len(timing["all_steps"]), 8)
 
             # 2. File size metrics
             fs = res["file_size"]
             self.assertEqual(fs["raw_input_bytes"], 2026696)
             self.assertEqual(fs["step_01_intermediate_file"], "step_01_cleaned_grounded.glb")
             self.assertGreater(fs["step_01_intermediate_bytes"], 1000000)
-            # Dinoki keeps its 1536x1536 texture (1:1 fit is larger); its 12 MB texture VRAM is below the
-            # 20 MB KTX2 threshold, so Step 6 keeps the JPEG and the file shrinks (KTX2 UASTC would grow it).
+            # Step 3 drops most of dinoki's triangles and Step 7 keeps the (small) texture
+            # uncompressed, so the final file is smaller than the raw input.
             self.assertGreater(fs["final_output_bytes"], 0)
             self.assertLess(fs["final_output_bytes"], fs["raw_input_bytes"])
             self.assertEqual(fs["saved_bytes"], fs["raw_input_bytes"] - fs["final_output_bytes"])
 
-            # 3. Rule 11 Zero-Decimation geometric integrity check
+            # 3. Rule 11: Step 3 is the only step that may remove triangles, within its budget
             geo = res["geometry_rule11"]
             self.assertEqual(geo["raw_triangles"], 45000)
             self.assertEqual(geo["step_01_triangles"], 45000)
             self.assertEqual(geo["step_02_triangles"], 45000)
-            self.assertEqual(geo["final_triangles"], 45000)
+            self.assertTrue(geo["step_03_enabled"])
+            self.assertEqual(geo["step_03_engine"], DEFAULT_REDUCE_ENGINE)
+            self.assertEqual(geo["step_03_triangles_before"], 45000)
+            self.assertLess(geo["step_03_triangles_after"], 45000)
+            self.assertEqual(geo["step_03_triangles_removed"],
+                             geo["step_03_triangles_before"] - geo["step_03_triangles_after"])
+            self.assertGreater(geo["step_03_reduction_percent"], 0.0)
+            self.assertEqual(geo["step_03_quality_budget_percent"], DEFAULT_QUALITY_BUDGET_PERCENT)
+            self.assertLessEqual(geo["step_03_deviation_percent"], geo["step_03_quality_budget_percent"])
+            self.assertTrue(geo["step_03_within_quality_budget"])
+            # Every step after Step 3 keeps 100% of the triangles Step 3 left
+            self.assertEqual(geo["final_triangles"], geo["step_03_triangles_after"])
             self.assertTrue(geo["zero_decimation_verified"])
             self.assertEqual(geo["triangles_preserved_percent"], 100.0)
 
             # 4. Textures and GPU VRAM before vs after
+            metrics_data = json.loads((workdir / "metrics.json").read_text())
+            step4_metrics = metrics_data["steps"][4]["metrics"]
+            step7_metrics = metrics_data["steps"][7]["metrics"]
             tv = res["textures_and_vram"]
             self.assertEqual(tv["texture_resolution_before"], "1536x1536")
-            # Dinoki's 1:1 fit is larger than its 1536x1536 texture, so Step 3 keeps the original
-            self.assertEqual(tv["texture_resolution_after"], "1536x1536")
             self.assertEqual(tv["texture_format_before"], "JPEG")
-            # KTX2 skipped (texture VRAM < 20 MB): the final texture stays JPEG, its VRAM unchanged
-            self.assertEqual(tv["texture_format_after"], "JPEG")
-            self.assertEqual(tv["texture_vram_after_bytes"], tv["texture_vram_before_bytes"])
-            self.assertEqual(tv["texture_vram_saved_percent"], 0.0)
-            step6_metrics = json.loads((workdir / "metrics.json").read_text())["steps"][6]["metrics"]
-            self.assertIs(step6_metrics["gpuCompressionSkipped"], True)
-            self.assertEqual(step6_metrics["gpuCompressionReason"], "texture VRAM 12.00 MB < 20 MB")
+            # Step 4 bakes a PNG onto its 1:1 fit canvas rather than keeping the original texture
+            # Step 4 re-charts either way here: on its own because the 1:1 canvas is smaller than
+            # the original texture, or forced when Step 3's merge left the model without UVs
+            self.assertTrue(step4_metrics["decision"].startswith("rechart"), step4_metrics["decision"])
+            self.assertTrue(step4_metrics["downscaled"])
+            fit = step4_metrics["fitResolution"]
+            self.assertEqual(tv["texture_resolution_after"], f"{fit}x{fit}")
+            self.assertEqual(tv["texture_format_after"], "PNG")
+            # That canvas still costs less than the 20 MB KTX2 threshold, so Step 7 keeps it as is
+            self.assertLess(tv["texture_vram_after_bytes"], 20 * 1024 * 1024)
+            self.assertIs(step7_metrics["gpuCompressionSkipped"], True)
+            self.assertTrue(step7_metrics["gpuCompressionReason"].startswith("texture VRAM "),
+                            step7_metrics["gpuCompressionReason"])
+            self.assertIn("< 20 MB", step7_metrics["gpuCompressionReason"])
 
             # 5. Intermediate files preservation check
             step1_file = workdir / "step_01_cleaned_grounded.glb"
             self.assertTrue(step1_file.exists())
             step2_file = workdir / "step_02_oriented.glb"
             self.assertTrue(step2_file.exists())
-            final_file = workdir / "step_06_final.glb"
+            step3_file = workdir / "step_03_face_reduced.glb"
+            self.assertTrue(step3_file.exists())
+            final_file = workdir / "step_07_final.glb"
             self.assertTrue(final_file.exists())
 
     def test_cli_json_only(self):

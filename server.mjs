@@ -21,18 +21,34 @@ function parsePort(raw) {
 const PORT = parsePort(process.env.PORT);
 const WORKSPACES_DIR = path.join(__dirname, 'workspaces');
 const PYTHON_BIN = path.join(__dirname, '.venv', 'bin', 'python');
-// Output files of the 7 pipeline steps (optimizer/step_pipeline.py StepPipeline.STEP_DEFINITIONS)
+// Output files of the 8 pipeline steps (optimizer/step_pipeline.py StepPipeline.STEP_DEFINITIONS)
 const STEP_FILES = [
   'step_00_raw.glb',
   'step_01_cleaned_grounded.glb',
   'step_02_oriented.glb',
-  'step_03_texture_baked.glb',
-  'step_04_palette_tagged.glb',
-  'step_05_meshopt.glb',
-  'step_06_final.glb'
+  'step_03_face_reduced.glb',
+  'step_04_texture_baked.glb',
+  'step_05_palette_tagged.glb',
+  'step_06_meshopt.glb',
+  'step_07_final.glb'
 ];
+const TOTAL_STEPS = STEP_FILES.length;
 const INTERRUPTED_REASON = 'interrupted (server restarted)';
 const STDERR_TAIL_CHARS = 4000;
+
+// Step files a run must have produced: a skipped step writes none (optimizer/step_pipeline.py)
+function missingStepFiles(wsDir, skipSteps) {
+  const skipped = new Set(skipSteps);
+  return STEP_FILES.filter((file, step) => !skipped.has(step) && !fs.existsSync(path.join(wsDir, file)));
+}
+
+// The steps a stored run skipped: a pipeline-written metrics.json lists them in `skippedSteps`, and
+// every `steps` entry of a skipped step carries `skipped: true` with `file: null`
+function storedSkippedSteps(data) {
+  if (Array.isArray(data.skippedSteps)) return data.skippedSteps;
+  const steps = Array.isArray(data.steps) ? data.steps : (data.steps ? Object.values(data.steps) : []);
+  return steps.filter(s => s && s.skipped === true).map(s => s.step);
+}
 
 // Ensure workspaces directory and gitignore
 if (!fs.existsSync(WORKSPACES_DIR)) {
@@ -205,8 +221,29 @@ const UV_MODE_ALIASES = { rechart: 'xatlas' };
 const ALLOWED_FORMATS = ['ktx2', 'webp', 'original', ...Object.keys(FORMAT_ALIASES)];
 const ALLOWED_UV_MODES = ['xatlas', 'uvatlas', ...Object.keys(UV_MODE_ALIASES)];
 const ALLOWED_DOWNSCALE = ['on', 'off'];
+const ALLOWED_MERGE_UV_ISLANDS = ['on', 'off'];
 const ALLOWED_SIZE_MODES = ['exact', 'pot-up', 'pot-down'];
-const OPTION_FIELDS = ['format', 'uvMode', 'downscale', 'sizeMode'];
+const ALLOWED_FLAT_SWATCH = ['on', 'off'];
+const ALLOWED_SMOOTH_NORMALS = ['on', 'off'];
+const ALLOWED_REDUCE_ENGINES = ['cgal', 'meshlab'];
+const ALLOWED_REDUCE_OPS = ['repair', 'self_intersection', 'isolated', 'hidden', 'merge'];
+const DEFAULT_REDUCE_OPS = ['repair', 'isolated', 'hidden', 'merge'];
+// Step 3 reads the shading budget off the model unless a number is sent instead
+const AUTO_NORMAL_BUDGET = 'auto';
+// Only these steps are optional; Step 0 (raw) and Step 7 (final) always run
+const SKIPPABLE_STEPS = [1, 2, 3, 4, 5, 6];
+// The options each optional step owns: sending one of them for a skipped step is a 400
+const STEP_OPTION_FIELDS = {
+  3: ['reduceEngine', 'reduceOps', 'reduceQualityBudget', 'reduceNormalBudget', 'reduceNormalFactor', 'reduceIsolatedMinFaces'],
+  4: ['uvMode', 'downscale', 'sizeMode', 'mergeUvIslands', 'flatSwatch', 'flatTolerance', 'flatMinGroupFaces'],
+  6: ['smoothNormals']
+};
+const OPTION_FIELDS = [
+  'format', 'uvMode', 'downscale', 'sizeMode', 'mergeUvIslands',
+  'flatSwatch', 'flatTolerance', 'flatMinGroupFaces', 'smoothNormals',
+  'skipSteps', 'reduceEngine', 'reduceOps', 'reduceQualityBudget', 'reduceNormalBudget', 'reduceNormalFactor',
+  'reduceIsolatedMinFaces'
+];
 const MULTIPART_FIELDS = ['file', 'samplePath', ...OPTION_FIELDS];
 const JSON_FIELDS = ['samplePath', ...OPTION_FIELDS];
 
@@ -219,15 +256,112 @@ function validateChoice(name, value, allowed, defaultValue) {
   return value;
 }
 
-function sanitizeOptimizationOptions({ format, uvMode, downscale, sizeMode } = {}) {
+// Absent field -> default; otherwise a JSON array or a comma-separated string (multipart carries
+// text fields only). Every item is validated by `parseItem` and may not be repeated.
+function validateList(name, value, parseItem, defaultValue) {
+  if (value === undefined) return defaultValue;
+  let items;
+  if (Array.isArray(value)) {
+    items = value;
+  } else if (typeof value === 'string') {
+    items = value.split(',').map(item => item.trim()).filter(item => item !== '');
+  } else {
+    throw new BadRequestError(`Unsupported ${name} '${value}' (expected an array or a comma-separated string)`);
+  }
+  const parsed = items.map(parseItem);
+  const duplicates = [...new Set(parsed.filter((item, i) => parsed.indexOf(item) !== i))];
+  if (duplicates.length > 0) {
+    throw new BadRequestError(`Duplicate ${name} value(s): ${duplicates.join(', ')}`);
+  }
+  return parsed;
+}
+
+// Absent field -> default; otherwise a number, or the text of one (multipart), that passes `check`
+function validateNumber(name, value, defaultValue, check, expected) {
+  if (value === undefined) return defaultValue;
+  let num;
+  if (typeof value === 'number') {
+    num = value;
+  } else if (typeof value === 'string' && value.trim() !== '' && Number.isFinite(Number(value))) {
+    num = Number(value);
+  } else {
+    throw new BadRequestError(`Unsupported ${name} '${value}' (expected ${expected})`);
+  }
+  if (!check(num)) {
+    throw new BadRequestError(`Unsupported ${name} '${value}' (expected ${expected})`);
+  }
+  return num;
+}
+
+function parseSkipStep(item) {
+  const step = typeof item === 'number' ? item : (/^\d+$/.test(item) ? Number(item) : NaN);
+  if (!Number.isInteger(step) || !SKIPPABLE_STEPS.includes(step)) {
+    throw new BadRequestError(`Unsupported skipSteps value '${item}' (allowed: ${SKIPPABLE_STEPS.join(', ')})`);
+  }
+  return step;
+}
+
+const parseReduceOp = (item) => validateChoice('reduceOps value', item, ALLOWED_REDUCE_OPS, undefined);
+
+// An option belongs to the step that reads it: it must not be sent for a step this run skips.
+// `fields` are the raw request fields, so a defaulted option is not counted as sent.
+function rejectSkippedStepOptions(options, fields) {
+  const skipped = new Set(options.skipSteps);
+  for (const step of Object.keys(STEP_OPTION_FIELDS).map(Number)) {
+    if (!skipped.has(step)) continue;
+    const sent = STEP_OPTION_FIELDS[step].filter(name => fields[name] !== undefined);
+    if (sent.length > 0) {
+      throw new BadRequestError(`Step ${step} is skipped, so its option(s) must not be sent: ${sent.join(', ')}`);
+    }
+  }
+  // Step 3's edge collapse throws the model's UVs away and only Step 4 re-charts them
+  if (skipped.has(4) && !skipped.has(3) && options.reduceOps.includes('merge')) {
+    throw new BadRequestError(
+      "Step 3's reduceOps 'merge' invalidates the model's UVs, which only Step 4 can re-chart: " +
+      'either keep Step 4 or drop merge from reduceOps'
+    );
+  }
+}
+
+// The shading budget is either an angle or 'auto', which lets Step 3 read one off the model.
+// An empty field means the same as an absent one: the viewer leaves it blank to ask for 'auto'.
+function validateNormalBudget(value) {
+  if (value === undefined || (typeof value === 'string' && value.trim() === '')) return AUTO_NORMAL_BUDGET;
+  if (value === AUTO_NORMAL_BUDGET) return AUTO_NORMAL_BUDGET;
+  return validateNumber('reduceNormalBudget', value, AUTO_NORMAL_BUDGET, n => n > 0 && n <= 90,
+    `'${AUTO_NORMAL_BUDGET}' or an angle above 0 and at most 90`);
+}
+
+function sanitizeOptimizationOptions(fields = {}) {
+  const { format, uvMode, downscale, sizeMode, mergeUvIslands, flatSwatch, flatTolerance,
+    flatMinGroupFaces, smoothNormals, skipSteps, reduceEngine, reduceOps,
+    reduceQualityBudget, reduceNormalBudget, reduceNormalFactor, reduceIsolatedMinFaces } = fields;
   const fmt = validateChoice('format', format, ALLOWED_FORMATS, 'ktx2');
   const uv = validateChoice('uvMode', uvMode, ALLOWED_UV_MODES, 'xatlas');
-  return {
+  const options = {
     format: FORMAT_ALIASES[fmt] || fmt,
     uvMode: UV_MODE_ALIASES[uv] || uv,
     downscale: validateChoice('downscale', downscale, ALLOWED_DOWNSCALE, 'on'),
-    sizeMode: validateChoice('sizeMode', sizeMode, ALLOWED_SIZE_MODES, 'exact')
+    sizeMode: validateChoice('sizeMode', sizeMode, ALLOWED_SIZE_MODES, 'exact'),
+    mergeUvIslands: validateChoice('mergeUvIslands', mergeUvIslands, ALLOWED_MERGE_UV_ISLANDS, 'on'),
+    flatSwatch: validateChoice('flatSwatch', flatSwatch, ALLOWED_FLAT_SWATCH, 'off'),
+    flatTolerance: validateNumber('flatTolerance', flatTolerance, 8, n => n > 0 && n <= 64,
+      'a number within (0, 64]'),
+    flatMinGroupFaces: validateNumber('flatMinGroupFaces', flatMinGroupFaces, 16,
+      n => Number.isInteger(n) && n >= 1, 'an integer of at least 1'),
+    smoothNormals: validateChoice('smoothNormals', smoothNormals, ALLOWED_SMOOTH_NORMALS, 'on'),
+    skipSteps: validateList('skipSteps', skipSteps, parseSkipStep, []),
+    reduceEngine: validateChoice('reduceEngine', reduceEngine, ALLOWED_REDUCE_ENGINES, 'cgal'),
+    reduceOps: validateList('reduceOps', reduceOps, parseReduceOp, DEFAULT_REDUCE_OPS),
+    reduceQualityBudget: validateNumber('reduceQualityBudget', reduceQualityBudget, 0.1, n => n > 0, 'a number greater than 0'),
+    reduceNormalBudget: validateNormalBudget(reduceNormalBudget),
+    reduceNormalFactor: validateNumber('reduceNormalFactor', reduceNormalFactor, 1, n => n > 0 && n <= 30,
+      'a number above 0 and at most 30'),
+    reduceIsolatedMinFaces: validateNumber('reduceIsolatedMinFaces', reduceIsolatedMinFaces, 25,
+      n => Number.isInteger(n) && n >= 0, 'a non-negative integer')
   };
+  rejectSkippedStepOptions(options, fields);
+  return options;
 }
 
 function rejectUnexpectedFields(names, allowed) {
@@ -322,9 +456,13 @@ function emitJobEvent(job, eventName, data) {
         ...(data.metrics ? data.metrics : data),
         ...(durSec !== undefined ? { durationSeconds: durSec, durationFormatted: durFmt } : {}),
         ...(totDurSec !== undefined ? { totalDurationSeconds: totDurSec } : {}),
-        ...(data.step === 3 && job.textureClamped ? { clamped: true, clampedMessage: job.textureClampedMessage } : {})
+        ...(data.step === 4 && job.textureClamped ? { clamped: true, clampedMessage: job.textureClampedMessage } : {})
       };
     }
+    saveWorkspaceMetrics(job);
+  } else if (normalizedEvent === 'step_skipped') {
+    job.currentStep = data.step;
+    job.metrics[data.step] = { step: data.step, stepName: data.stepName, file: null, skipped: true };
     saveWorkspaceMetrics(job);
   } else if (normalizedEvent === 'texture_clamped') {
     job.textureClamped = true;
@@ -395,7 +533,7 @@ function handlePipelineEvent(job, line) {
     emitJobEvent(job, 'texture_clamped', {
       jobId: job.id,
       message: clampMsg,
-      step: payload.step || 3,
+      step: payload.step || 4,
       details: payload.metrics || payload
     });
   }
@@ -408,6 +546,14 @@ function handlePipelineEvent(job, line) {
         return;
       }
       emitJobEvent(job, 'step_complete', payload);
+      return;
+    case 'step_skipped':
+      if (!Number.isInteger(payload.step) || payload.step < 0 || payload.step >= job.totalSteps ||
+          payload.file !== null) {
+        failJobProtocol(job, `malformed step_skipped event (needs an integer step 0-${job.totalSteps - 1} and a null file): ${excerpt}`);
+        return;
+      }
+      emitJobEvent(job, 'step_skipped', { ...payload, jobId: job.id });
       return;
     case 'pipeline_complete':
       // Completed only once the process exits 0 with all step files on disk (see the 'close' handler)
@@ -428,9 +574,9 @@ function handlePipelineEvent(job, line) {
 
 // A plain-text stdout line: forwarded to SSE clients as a log event
 function handlePipelineLogLine(job, trimmed) {
-  // Check text logs for NO-UPSCALE policy (e.g. "[Step 3] Original texture... clamped to... (NO-UPSCALE policy)")
+  // Check text logs for NO-UPSCALE policy (e.g. "[Step 4] Original texture... clamped to... (NO-UPSCALE policy)")
   const isClampedLog = trimmed.includes('NO-UPSCALE') ||
-                       (trimmed.includes('[Step 3]') && trimmed.toLowerCase().includes('clamped')) ||
+                       (trimmed.includes('[Step 4]') && trimmed.toLowerCase().includes('clamped')) ||
                        trimmed.toLowerCase().includes('clamped to');
 
   if (isClampedLog) {
@@ -440,7 +586,7 @@ function handlePipelineLogLine(job, trimmed) {
     emitJobEvent(job, 'texture_clamped', {
       jobId: job.id,
       message: trimmed,
-      step: 3
+      step: 4
     });
   } else {
     console.log(`[Job ${job.id}] ${trimmed}`);
@@ -456,14 +602,22 @@ function handlePipelineLogLine(job, trimmed) {
 }
 
 // Options must already be validated (sanitizeOptimizationOptions) and doubleSided detected
-function startPipelineJob({ jobId, rawGlbPath, workspaceDir, format, uvMode, downscale, sizeMode, doubleSided }) {
+function startPipelineJob({ jobId, rawGlbPath, workspaceDir, format, uvMode, downscale, sizeMode,
+  mergeUvIslands, flatSwatch, flatTolerance, flatMinGroupFaces, smoothNormals,
+  skipSteps, reduceEngine, reduceOps,
+  reduceQualityBudget, reduceNormalBudget, reduceNormalFactor, reduceIsolatedMinFaces,
+  doubleSided }) {
   const job = {
     id: jobId,
     workspaceDir,
     status: 'started',
-    config: { format, uvMode, downscale, sizeMode, doubleSided },
+    config: {
+      format, uvMode, downscale, sizeMode, mergeUvIslands, flatSwatch, flatTolerance,
+      flatMinGroupFaces, smoothNormals, skipSteps, reduceEngine, reduceOps,
+      reduceQualityBudget, reduceNormalBudget, reduceNormalFactor, reduceIsolatedMinFaces, doubleSided
+    },
     startTime: Date.now(),
-    totalSteps: 7,
+    totalSteps: TOTAL_STEPS,
     currentStep: 0,
     events: [],
     metrics: {},
@@ -480,7 +634,17 @@ function startPipelineJob({ jobId, rawGlbPath, workspaceDir, format, uvMode, dow
   };
   jobs.set(jobId, job);
 
-  console.log(`[Job ${jobId}] Initialized with downscale=${downscale}, sizeMode=${sizeMode}, format=${format}, uvMode=${uvMode}`);
+  console.log(
+    `[Job ${jobId}] Initialized with downscale=${downscale}, sizeMode=${sizeMode}, format=${format}, ` +
+    `uvMode=${uvMode}, mergeUvIslands=${mergeUvIslands}, flatSwatch=${flatSwatch}, ` +
+    `flatTolerance=${flatTolerance}, flatMinGroupFaces=${flatMinGroupFaces}, ` +
+    `smoothNormals=${smoothNormals}, ` +
+    `skipSteps=${skipSteps.join(',') || 'none'}, ` +
+    `reduceEngine=${reduceEngine}, reduceOps=${reduceOps.join(',') || 'none'}, ` +
+    `reduceQualityBudget=${reduceQualityBudget}, reduceNormalBudget=${reduceNormalBudget}, ` +
+    `reduceNormalFactor=${reduceNormalFactor}, ` +
+    `reduceIsolatedMinFaces=${reduceIsolatedMinFaces}`
+  );
   if (doubleSided) {
     console.log(`[Job ${jobId}] Auto-detected doubleSided: true in input model: enabling --double-sided flag`);
   }
@@ -488,7 +652,7 @@ function startPipelineJob({ jobId, rawGlbPath, workspaceDir, format, uvMode, dow
   emitJobEvent(job, 'job_start', {
     jobId,
     status: 'started',
-    totalSteps: 7,
+    totalSteps: TOTAL_STEPS,
     config: job.config
   });
 
@@ -504,8 +668,22 @@ function startPipelineJob({ jobId, rawGlbPath, workspaceDir, format, uvMode, dow
     '--format', format,
     '--downscale', downscale,
     '--size-mode', sizeMode,
-    '--uv-mode', uvMode
+    '--uv-mode', uvMode,
+    '--merge-uv-islands', mergeUvIslands,
+    '--flat-swatch', flatSwatch,
+    '--flat-tolerance', String(flatTolerance),
+    '--flat-min-group-faces', String(flatMinGroupFaces),
+    smoothNormals === 'on' ? '--smooth-normals' : '--no-smooth-normals',
+    '--reduce-engine', reduceEngine,
+    '--reduce-ops', reduceOps.join(','),
+    '--reduce-quality-budget', String(reduceQualityBudget),
+    '--reduce-normal-budget', String(reduceNormalBudget),
+    '--reduce-normal-factor', String(reduceNormalFactor),
+    '--reduce-isolated-min-faces', String(reduceIsolatedMinFaces)
   ];
+  if (skipSteps.length > 0) {
+    args.push('--skip-steps', skipSteps.join(','));
+  }
   if (doubleSided) {
     args.push('--double-sided');
   }
@@ -554,7 +732,7 @@ function startPipelineJob({ jobId, rawGlbPath, workspaceDir, format, uvMode, dow
       emitJobEvent(job, 'texture_clamped', {
         jobId,
         message: trimmed,
-        step: 3
+        step: 4
       });
     }
   });
@@ -576,7 +754,7 @@ function startPipelineJob({ jobId, rawGlbPath, workspaceDir, format, uvMode, dow
       } else if (!job.pipelineComplete) {
         failJob(job, { error: `Step pipeline ${exit} without a pipeline_complete event` });
       } else {
-        const missing = STEP_FILES.filter(file => !fs.existsSync(path.join(job.workspaceDir, file)));
+        const missing = missingStepFiles(job.workspaceDir, skipSteps);
         if (missing.length > 0) {
           failJob(job, { error: `Pipeline reported completion but step files are missing: ${missing.join(', ')}` });
         } else {
@@ -584,7 +762,7 @@ function startPipelineJob({ jobId, rawGlbPath, workspaceDir, format, uvMode, dow
           emitJobEvent(job, 'job_complete', {
             jobId,
             status: 'completed',
-            totalSteps: 7,
+            totalSteps: TOTAL_STEPS,
             summary: job.pipelineComplete.summary,
             metrics: job.metrics,
             textureClamped: Boolean(job.textureClamped),
@@ -625,7 +803,7 @@ function loadStoredJob(jobId) {
   if (data.status === undefined) {
     // Written by the Python pipeline itself (a CLI run, or a server that died while the pipeline
     // kept running): only its final payload with all step files on disk is a completed run
-    const missing = STEP_FILES.filter(file => !fs.existsSync(path.join(wsDir, file)));
+    const missing = missingStepFiles(wsDir, storedSkippedSteps(data));
     if (data.success === true && data.summary && missing.length === 0) {
       stored.status = 'completed';
     } else if (data.success === true && data.summary) {
@@ -775,7 +953,7 @@ const server = http.createServer(async (req, res) => {
       jobStarted = true;
 
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ jobId, status: job.status, totalSteps: 7, config: job.config }));
+      res.end(JSON.stringify({ jobId, status: job.status, totalSteps: TOTAL_STEPS, config: job.config }));
     } catch (err) {
       if (!jobStarted) fs.rmSync(wsDir, { recursive: true, force: true });
       const status = err instanceof BadRequestError ? 400 : 500;
@@ -829,11 +1007,20 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
-      res.write(`event: job_start\ndata: ${JSON.stringify({ jobId, totalSteps: 7, status: stored.status })}\n\n`);
+      res.write(`event: job_start\ndata: ${JSON.stringify({ jobId, totalSteps: TOTAL_STEPS, status: stored.status })}\n\n`);
       const steps = Array.isArray(stored.steps)
         ? stored.steps
         : (stored.steps ? Object.values(stored.steps) : []);
       for (const s of steps) {
+        if (s.skipped === true) {
+          res.write(`event: step_skipped\ndata: ${JSON.stringify({
+            jobId,
+            step: s.step,
+            stepName: s.stepName,
+            file: null
+          })}\n\n`);
+          continue;
+        }
         const durSec = s.durationSeconds !== undefined ? s.durationSeconds : s.metrics?.durationSeconds;
         const durFmt = s.durationFormatted || s.metrics?.durationFormatted;
         const totDurSec = s.totalDurationSeconds !== undefined ? s.totalDurationSeconds : s.metrics?.totalDurationSeconds;

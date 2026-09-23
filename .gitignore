@@ -27,3 +27,7 @@ examples/optimized/
 # Logs
 *.log
 npm-debug.log*
+
+# Vendored C++ deps & CGAL helper build output
+third_party/
+optimizer/cgal/build/

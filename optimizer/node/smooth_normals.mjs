@@ -6,6 +6,12 @@
  * Snaps positions to a spatial tolerance grid and remaps them (meshoptimizer's generatePositionRemap)
  * so that vertices split by UV seams share continuous, seamless smooth normals without seam creases,
  * dimples, or inverted normals.
+ *
+ * A hard edge is encoded the same way a UV seam is - one position carrying several vertices - and the
+ * only thing that tells them apart is the normals those vertices arrive with: a seam's agree, a
+ * crease's do not. So the grid cell is subdivided by incoming normal direction, and only vertices
+ * that already agree to within `hardEdgeDegrees` are welded. Welding a cell whole flattens every
+ * crease in the model (measured on dinoki: 5,195 creased positions in, 0 out).
  */
 
 import { Primitive } from '@gltf-transform/core';
@@ -17,6 +23,9 @@ export function computeStandardSmoothNormals(doc, options = {}) {
   const smoothAcrossUvSeams = options.smoothAcrossUvSeams !== false;
   const spatialTol = options.spatialTolerance || 1e-5;
   const invTol = 1.0 / spatialTol;
+  // Matches HARD_EDGE_DEGREES in optimizer/core/face_reduce.py, which is where Step 3 rebuilds the
+  // creases this must not undo.
+  const cosHardEdge = Math.cos(((options.hardEdgeDegrees ?? 15) * Math.PI) / 180);
 
   for (const mesh of doc.getRoot().listMeshes()) {
     for (const prim of mesh.listPrimitives()) {
@@ -46,6 +55,39 @@ export function computeStandardSmoothNormals(doc, options = {}) {
         const snapped = new Float32Array(vCount * 3);
         for (let i = 0; i < vCount * 3; i++) snapped[i] = Math.round(posArr[i] * invTol);
         vertToSpatial = MeshoptSimplifier.generatePositionRemap(snapped, 3);
+
+        // Split each cell again by the direction its vertices already point in, so the two sides
+        // of a crease stay apart while the two sides of a UV seam are welded. Without an incoming
+        // NORMAL there is nothing to tell the two cases apart and the cell is welded whole.
+        const inNormAcc = prim.getAttribute('NORMAL');
+        if (inNormAcc) {
+          const subgroups = new Map();   // cell representative -> vertex indices representing it
+          const n = [0, 0, 0];
+          const normals = new Float64Array(vCount * 3);
+          for (let i = 0; i < vCount; i++) {
+            inNormAcc.getElement(i, n);
+            const len = Math.hypot(n[0], n[1], n[2]) || 1;
+            normals[i * 3] = n[0] / len;
+            normals[i * 3 + 1] = n[1] / len;
+            normals[i * 3 + 2] = n[2] / len;
+          }
+          const refined = new Int32Array(vCount);
+          for (let i = 0; i < vCount; i++) {
+            const cell = vertToSpatial[i];
+            let reps = subgroups.get(cell);
+            if (reps === undefined) { reps = []; subgroups.set(cell, reps); }
+            let found = -1;
+            for (const r of reps) {
+              const d = normals[i * 3] * normals[r * 3]
+                      + normals[i * 3 + 1] * normals[r * 3 + 1]
+                      + normals[i * 3 + 2] * normals[r * 3 + 2];
+              if (d >= cosHardEdge) { found = r; break; }
+            }
+            if (found < 0) { reps.push(i); found = i; }
+            refined[i] = found;
+          }
+          vertToSpatial = refined;
+        }
       } else {
         vertToSpatial = new Int32Array(vCount);
         for (let i = 0; i < vCount; i++) vertToSpatial[i] = i;

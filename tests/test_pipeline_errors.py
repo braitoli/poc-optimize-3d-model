@@ -5,7 +5,8 @@ The single error path of the pipeline:
 - optimizer/core/errors.py (PipelineAbort)
 - StepPipeline.run attaches the failing step number to any exception that escapes
 - `python -m optimizer.step_pipeline` reports a failure as one `pipeline_error` NDJSON line on
-  stdout (full traceback on stderr) and exits 1; the success path keeps its NDJSON events.
+  stdout (full traceback on stderr) and exits 1; the success path keeps its NDJSON events
+  (one per step, `step_skipped` for a step switched off with --skip-steps).
 """
 
 import json
@@ -53,14 +54,15 @@ class TestRunAttachesStep(unittest.TestCase):
             self.assertEqual(ctx.exception.step, 0)
 
     def test_failure_in_a_later_step_carries_that_step(self):
-        with tempfile.TemporaryDirectory(prefix="test_run_step4_") as tmpdir:
+        with tempfile.TemporaryDirectory(prefix="test_run_step5_") as tmpdir:
             tmp = Path(tmpdir)
             glb = tmp / "mock.glb"
             create_mock_glb(glb)
             with mock.patch("optimizer.step_pipeline.extract_palette", side_effect=PipelineAbort("palette boom")):
                 with self.assertRaises(PipelineAbort) as ctx:
-                    StepPipeline(texture_format="webp", verbose=False, stream_events=False).run(glb, tmp / "out")
-            self.assertEqual(ctx.exception.step, 4)
+                    StepPipeline(texture_format="webp", verbose=False, stream_events=False,
+                                 skip_steps=[3]).run(glb, tmp / "out")
+            self.assertEqual(ctx.exception.step, 5)
             self.assertEqual(ctx.exception.reason, "palette boom")
 
 
@@ -103,11 +105,14 @@ class TestCliPipelineError(unittest.TestCase):
             tmp = Path(tmpdir)
             glb = tmp / "mock.glb"
             create_mock_glb(glb)
-            proc = run_cli(glb, tmp / "out", "--format", "webp", "--quiet")
+            proc = run_cli(glb, tmp / "out", "--format", "webp", "--skip-steps", "3", "--quiet")
             self.assertEqual(proc.returncode, 0, proc.stderr)
             events = stdout_events(proc.stdout)
-            self.assertEqual([e["event"] for e in events], ["step_complete"] * 7 + ["pipeline_complete"])
-            self.assertEqual([e["step"] for e in events[:7]], list(range(7)))
+            self.assertEqual(
+                [e["event"] for e in events],
+                ["step_complete"] * 3 + ["step_skipped"] + ["step_complete"] * 4 + ["pipeline_complete"]
+            )
+            self.assertEqual([e["step"] for e in events[:8]], list(range(8)))
 
 
 if __name__ == "__main__":

@@ -4,7 +4,7 @@
 #
 # Unified CLI entrypoint for 3D model (.glb) optimization pipeline.
 # Runs optimizer.step_pipeline into a temp dir and copies its final step
-# (step_06_final.glb) to <output.glb>.
+# (step_07_final.glb) to <output.glb>.
 # Usage: ./bin/optimize-3d <input.glb> <output.glb> [options]
 # ==============================================================================
 
@@ -35,7 +35,7 @@ usage() {
     cat <<'EOF'
 Usage: optimize-3d <input.glb> <output.glb> [options]
 
-Zero-decimation .glb optimizer (runs optimizer.step_pipeline).
+.glb optimizer (runs optimizer.step_pipeline).
 
 Options:
   -f, --format FMT      Texture format: ktx2, webp, original (default: ktx2)
@@ -47,6 +47,29 @@ Options:
       --size-mode MODE  Canvas size when downscale is on: exact (smallest square,
                         multiple of 4), pot-up (power of two, 1:1 or better),
                         pot-down (power of two, islands scaled down) (default: exact)
+      --merge-uv-islands on|off
+                        Merge UV islands that can be merged, to spend less of the
+                        canvas on gutter padding (default: on)
+      --skip-steps LIST Comma-separated steps to skip, e.g. 3,5 (steps 1-6 are
+                        optional; step 0 and the final step always run)
+      --reduce-engine E Step 3 face reduction engine: cgal, meshlab (default: cgal)
+      --reduce-ops LIST Step 3 operations: repair, self_intersection, isolated,
+                        hidden, merge (default: repair,isolated,hidden,merge)
+      --reduce-quality-budget PCT
+                        How far step 3 may move the visible surface, in percent of
+                        the bounding box diagonal (default: 0.1)
+      --reduce-normal-budget DEG|auto
+                        How far step 3 may let the surface turn, in degrees at the
+                        99th percentile - keeps sharp edges and narrow slots, which
+                        a position-only budget cannot see. 'auto' reads the angle
+                        off the model: how far it already turns from one face to
+                        the next, floored at 3 (default: auto)
+      --reduce-normal-factor K
+                        Only with --reduce-normal-budget auto: budget = K x how far
+                        the model already turns per edge. Higher cuts more; measured,
+                        vosiruto suits ~7 and zelvaron ~1 (default: 1)
+      --reduce-isolated-min-faces N
+                        Step 3 drops components with fewer faces than this (default: 25)
       --double-sided    Keep double-sided materials (default: single-sided FrontSide)
   -q, --quiet           Suppress progress logs
   -h, --help            Show this help and exit
@@ -63,7 +86,9 @@ while [[ $# -gt 0 ]]; do
             usage
             exit 0
             ;;
-        -f|--format|--uv-mode|--downscale|--size-mode)
+        -f|--format|--uv-mode|--downscale|--size-mode|--merge-uv-islands|--skip-steps|\
+        --reduce-engine|--reduce-ops|--reduce-quality-budget|--reduce-normal-budget|--reduce-normal-factor|\
+        --reduce-isolated-min-faces)
             if [[ $# -lt 2 ]]; then
                 echo "Error: $1 requires a value." >&2
                 exit 2
@@ -115,7 +140,7 @@ export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
     ${PIPELINE_ARGS[@]+"${PIPELINE_ARGS[@]}"} > /dev/null
 
 mkdir -p "$(dirname "${OUTPUT}")"
-cp "${TMP_DIR}/step_06_final.glb" "${OUTPUT}"
+cp "${TMP_DIR}/step_07_final.glb" "${OUTPUT}"
 
 if [[ "${QUIET}" -eq 0 ]]; then
     echo "Output written to: ${OUTPUT}" >&2

@@ -61,7 +61,77 @@
           </select>
         </div>
 
-        <!-- UV Mode (Step 3) -->
+        <!-- Face Repair &amp; Reduction (Step 3) -->
+        <div class="config-step3" id="step3Config">
+          <div class="config-item config-item-reduce-engine">
+            <label class="config-label" for="reduceEngineSelect">
+              Reduction Engine
+              <span class="policy-tooltip-trigger" title="MeshLab (pymeshlab filters) hoặc CGAL Polygon Mesh Processing: sửa lỗi và cắt bớt mặt trong ngân sách chất lượng">Step 3 ⓘ</span>
+            </label>
+            <select class="config-select" id="reduceEngineSelect">
+              <option value="cgal" selected>CGAL PMP</option>
+              <option value="meshlab" title="Ở ngân sách chất lượng chặt (≤0.5%) MeshLab giảm được ít hơn CGAL rất nhiều">MeshLab</option>
+            </select>
+          </div>
+
+          <div class="config-item config-item-reduce-ops">
+            <label class="config-label">
+              Repair &amp; Reduce Ops
+              <span class="policy-tooltip-trigger" title="self_intersection tắt mặc định: trên mesh AI nó có thể xóa tới một nửa số mặt">ⓘ</span>
+            </label>
+            <div class="checkbox-row" id="reduceOpsRow">
+              <label class="checkbox-chip" title="Mặt suy biến, trùng lặp và non-manifold">
+                <input type="checkbox" class="reduce-op" value="repair" checked /> repair
+              </label>
+              <label class="checkbox-chip" title="Chỉ cắt mặt tự giao mà không camera nào thấy, nên không bao giờ đục thủng model. Khi &quot;hidden&quot; đang bật thì nó không xoá thêm được gì (đo trên 10/10 model: face count y hệt); chỉ có ích khi bạn tắt &quot;hidden&quot;">
+                <input type="checkbox" class="reduce-op" value="self_intersection" /> self_intersection
+              </label>
+              <label class="checkbox-chip" title="Thành phần rời rạc nhỏ hơn ngưỡng bên dưới">
+                <input type="checkbox" class="reduce-op" value="isolated" checked /> isolated
+              </label>
+              <label class="checkbox-chip" title="Mặt không camera nào nhìn thấy">
+                <input type="checkbox" class="reduce-op" value="hidden" checked /> hidden
+              </label>
+              <label class="checkbox-chip" title="Edge collapse — phá UV của model, bắt buộc phải giữ Step 4 để re-chart">
+                <input type="checkbox" class="reduce-op" value="merge" checked /> merge
+              </label>
+            </div>
+          </div>
+
+          <div class="config-item config-item-reduce-budget">
+            <label class="config-label" for="reduceQualityBudgetInput">
+              Quality Budget %
+              <span class="policy-tooltip-trigger" title="Bề mặt nhìn thấy được phép xê dịch tối đa bao nhiêu % đường chéo bounding box">ⓘ</span>
+            </label>
+            <input class="config-input" type="number" id="reduceQualityBudgetInput" value="0.1" min="0.01" step="0.05" />
+          </div>
+
+          <div class="config-item config-item-reduce-normal">
+            <label class="config-label" for="reduceNormalBudgetInput">
+              Shading Budget °
+              <span class="policy-tooltip-trigger" title="Bề mặt được phép xoay tối đa bao nhiêu độ (bách phân vị 99). Gộp face có thể bo tròn một cạnh sắc mà gần như không dịch chuyển bề mặt, nên đây mới là thứ giữ được khe hẹp và cạnh sắc. Để trống = tự đọc từ chính model: đúng bằng góc mà bề mặt đã xoay sẵn mỗi cạnh (tối thiểu 3°), nên cùng một thiết lập có cùng ý nghĩa trên mọi model">ⓘ</span>
+            </label>
+            <input class="config-input" type="number" id="reduceNormalBudgetInput" value="" placeholder="auto" min="0.5" max="90" step="0.5" />
+          </div>
+
+          <div class="config-item config-item-reduce-normal-factor">
+            <label class="config-label" for="reduceNormalFactorInput">
+              Auto k
+              <span class="policy-tooltip-trigger" title="Chỉ dùng khi ô Shading Budget để trống: ngân sách = k × góc mà bề mặt model đã xoay sẵn mỗi cạnh. k càng lớn càng giảm nhiều face. Đo được: vosiruto hợp k≈7 (1,2 triệu → 44k face vẫn nét), zelvaron hợp k≈1. Không có đặc trưng nào của lưới đoán được con số này, nên nó là thiết lập theo từng model">ⓘ</span>
+            </label>
+            <input class="config-input" type="number" id="reduceNormalFactorInput" value="1" min="0.1" max="30" step="0.5" />
+          </div>
+
+          <div class="config-item config-item-reduce-isolated">
+            <label class="config-label" for="reduceIsolatedMinFacesInput">
+              Isolated Min Faces
+              <span class="policy-tooltip-trigger" title="Thành phần rời rạc ít mặt hơn ngưỡng này sẽ bị xóa">ⓘ</span>
+            </label>
+            <input class="config-input" type="number" id="reduceIsolatedMinFacesInput" value="25" min="0" step="1" />
+          </div>
+        </div>
+
+        <!-- UV Mode (Step 4) -->
         <div class="config-item config-item-uv">
           <label class="config-label" for="uvModeSelect">
             UV Unwrap Mode
@@ -73,7 +143,7 @@
           </select>
         </div>
 
-        <!-- GPU Format (Step 6) -->
+        <!-- GPU Format (Step 7) -->
         <div class="config-item config-item-format">
           <label class="config-label" for="formatSelect">Texture &amp; GPU Format</label>
           <select class="config-select" id="formatSelect">
@@ -83,7 +153,7 @@
           </select>
         </div>
 
-        <!-- Downscale (Step 3) -->
+        <!-- Downscale (Step 4) -->
         <div class="config-item config-item-downscale">
           <label class="config-label" for="downscaleSelect">
             Downscale
@@ -95,7 +165,61 @@
           </select>
         </div>
 
-        <!-- Canvas Size Mode (Step 3) -->
+        <!-- Merge UV Islands (Step 4) -->
+        <div class="config-item config-item-merge-islands">
+          <label class="config-label" for="mergeIslandsSelect">
+            Merge UV Islands
+            <span class="policy-tooltip-trigger" title="Gộp các đảo UV có thể gộp để giảm chiều dài đường biên, nhờ đó bớt diện tích canvas dành cho gutter padding. Step 4 chart mesh ở nhiều mức gộp và giữ mức có canvas nhỏ nhất ở mật độ texel 1:1">ⓘ</span>
+          </label>
+          <select class="config-select" id="mergeIslandsSelect">
+            <option value="on" selected>Bật</option>
+            <option value="off" title="Giữ nguyên phân mảnh đảo UV mặc định của bộ unwrap">Tắt</option>
+          </select>
+        </div>
+
+        <!-- Flat colour swatches (Step 4) -->
+        <div class="config-item config-item-flat-swatch">
+          <label class="config-label" for="flatSwatchSelect">
+            Flat Swatch
+            <span class="policy-tooltip-trigger" title="Mặt nào có màu nguồn đồng đều thì không cần texel riêng: giữ chúng ngoài lượt chart và cho mỗi màu một ô swatch nhỏ, nhờ đó canvas chỉ phải chứa phần thật sự có chi tiết. Một mặt chỉ được coi là phẳng khi mọi slot texture được bake lại đều phẳng">ⓘ</span>
+          </label>
+          <select class="config-select" id="flatSwatchSelect">
+            <option value="off" selected>Tắt</option>
+            <option value="on" title="Gom vùng màu trơn về swatch dùng chung">Bật</option>
+          </select>
+        </div>
+
+        <!-- Flat tolerance (Step 4) -->
+        <div class="config-item config-item-flat-tolerance">
+          <label class="config-label" for="flatToleranceInput">
+            Ngưỡng phẳng τ
+            <span class="policy-tooltip-trigger" title="Biên độ tối đa (0..255, mỗi kênh) mà màu nguồn của một mặt được phép dao động mà vẫn tính là phẳng. Mặt bị gom về swatch không bao giờ lệch quá τ so với màu gốc của nó. τ càng lớn, canvas càng nhỏ nhưng sai màu càng tăng">ⓘ</span>
+          </label>
+          <input class="config-input" type="number" id="flatToleranceInput" value="8" min="1" max="64" step="1" />
+        </div>
+
+        <!-- Flat min group (Step 4) -->
+        <div class="config-item config-item-flat-min-group">
+          <label class="config-label" for="flatMinGroupInput">
+            Nhóm phẳng tối thiểu
+            <span class="policy-tooltip-trigger" title="Nhóm mặt phẳng nhỏ hơn số này vẫn đi theo lượt chart bình thường: khoét một lỗ nhỏ khỏi mesh sinh thêm đường biên tốn nhiều gutter hơn số texel tiết kiệm được">ⓘ</span>
+          </label>
+          <input class="config-input" type="number" id="flatMinGroupInput" value="16" min="1" step="1" />
+        </div>
+
+        <!-- Smooth Normals (Step 6) -->
+        <div class="config-item config-item-smooth-normals">
+          <label class="config-label" for="smoothNormalsSelect">
+            Smooth Normals
+            <span class="policy-tooltip-trigger" title="Step 6: tính normal đỉnh theo trọng số góc (Thürmer &amp; Wüthrich) và hàn các đỉnh bị tách bởi UV seam, nhờ đó bề mặt hiển thị liền mượt thay vì lộ mảng đa giác, đồng thời bớt đỉnh nên file nhẹ hơn. Chỉ hàn những đỉnh có normal đã gần nhau, nên cạnh sắc của model vẫn được giữ">ⓘ</span>
+          </label>
+          <select class="config-select" id="smoothNormalsSelect">
+            <option value="on" selected>Bật</option>
+            <option value="off" title="Giữ normal thô từ bước trước">Tắt</option>
+          </select>
+        </div>
+
+        <!-- Canvas Size Mode (Step 4) -->
         <div class="config-item config-item-size">
           <label class="config-label" for="sizeModeSelect">Canvas Size</label>
           <select class="config-select" id="sizeModeSelect">
@@ -107,25 +231,28 @@
       </div>
 
       <!-- Action Button -->
-      <button class="btn-primary" id="startBtn">
-        ⚡ Start Optimization
-      </button>
+      <div class="start-cell">
+        <button class="btn-primary" id="startBtn">
+          ⚡ Start Optimization
+        </button>
+        <div class="start-guard" id="startGuard" hidden></div>
+      </div>
     </div>
   </section>
 
-  <!-- Interactive Pipeline Stepper (7 Steps) -->
+  <!-- Interactive Pipeline Stepper (8 Steps) -->
   <section class="stepper-section">
     <div class="stepper-header">
       <div class="stepper-title">
         <span>🚀 Interactive Pipeline Stepper</span>
         <span style="font-size: 0.7rem; font-weight: normal; color: var(--text-dim);">(Click any completed step to preview in 3D)</span>
       </div>
-      <div class="stepper-hint">
-        Step 0 (Raw) ➔ Step 1 (Clean/Ground) ➔ Step 2 (Orient) ➔ Step 3 (UV/Bake) ➔ Step 4 (Palette) ➔ Step 5 (Meshopt) ➔ Step 6 (KTX2)
+      <div class="stepper-hint" title="Bỏ chọn một bước để pipeline bỏ qua bước đó (Step 0 và Step 7 bắt buộc)">
+        Step 0 (Raw) ➔ 1 (Clean/Ground) ➔ 2 (Orient) ➔ 3 (Face Reduce) ➔ 4 (UV/Bake) ➔ 5 (Palette) ➔ 6 (Meshopt) ➔ 7 (Final)
       </div>
     </div>
     <div class="stepper-track" id="stepperTrack">
-      <!-- 7 step cards dynamically generated by app.js -->
+      <!-- 8 step cards dynamically generated by app.js -->
     </div>
   </section>
 
@@ -135,7 +262,7 @@
     <section class="viewport-pane">
       <div class="viewport-toolbar">
         <div class="viewport-info">
-          <div class="viewport-step-badge" id="currentStepBadge">STEP 6: KTX2 GPU COMPRESSION</div>
+          <div class="viewport-step-badge" id="currentStepBadge">STEP 7: FINAL MODEL POLISH</div>
           <div class="viewport-title" id="currentModelTitle">Dinoki Sample Model</div>
         </div>
 
@@ -152,11 +279,11 @@
         <div class="viewer-window" id="pane1">
           <div class="window-header">
             <span class="window-dot" id="pane1Dot" style="background: var(--success);"></span>
-            <span id="pane1Label">Step 6: KTX2 GPU Compression</span>
+            <span id="pane1Label">Step 7: Final Model Polish</span>
           </div>
           <model-viewer
             id="mv1"
-            src="/workspaces/default_sample/step6_final.glb"
+            src="/workspaces/default_sample/step_07_final.glb"
             camera-controls
             auto-rotate
             shadow-intensity="1.5"
@@ -175,7 +302,7 @@
           </div>
           <model-viewer
             id="mv2"
-            src="/workspaces/default_sample/step0_raw.glb"
+            src="/workspaces/default_sample/step_00_raw.glb"
             camera-controls
             auto-rotate
             shadow-intensity="1.5"
@@ -217,7 +344,7 @@
             <span id="kpiFacesVal">45,000</span>
             <span class="kpi-delta positive" id="kpiFacesDelta">100%</span>
           </div>
-          <span class="kpi-sub">Strict Rule 11 (0 Decimation)</span>
+          <span class="kpi-sub" id="kpiFacesSub">Strict Rule 11 (0 Decimation)</span>
         </div>
 
         <div class="kpi-card">
@@ -270,7 +397,7 @@
       <!-- Deep Dive Tabs Section -->
       <div class="panel-block">
         <div class="tabs-nav" id="tabsNav">
-          <button class="tab-btn active" data-tab="tab-palette">🎨 10-Color Palette</button>
+          <button class="tab-btn active" id="tabPaletteBtn" data-tab="tab-palette">🎨 10-Color Palette</button>
           <button class="tab-btn" data-tab="tab-chart">📉 Waterfall Size Chart</button>
           <button class="tab-btn" data-tab="tab-geom">📐 Geometry &amp; Alignment</button>
           <button class="tab-btn" data-tab="tab-uv">🖼️ UV &amp; Texture Specs</button>
@@ -289,7 +416,7 @@
         <!-- Tab: Size Chart -->
         <div class="tab-pane" id="tab-chart">
           <div style="font-size: 0.75rem; color: var(--text-dim); margin-bottom: 12px;">
-            File size progression across all 7 pipeline steps (relative to raw input):
+            File size progression across the pipeline steps that actually ran (relative to raw input):
           </div>
           <div class="chart-container" id="chartContainer">
             <!-- Visual waterfall bar chart generated by app.js -->

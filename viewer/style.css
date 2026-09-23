@@ -47,6 +47,10 @@
   padding: 0;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
   background: var(--bg-primary);
@@ -315,6 +319,110 @@ header {
   min-width: 140px;
 }
 
+.config-item-merge-islands {
+  flex: 0.9;
+  min-width: 115px;
+}
+
+.config-item-flat-swatch {
+  flex: 0.8;
+  min-width: 100px;
+}
+
+.config-item-flat-tolerance {
+  flex: 0.7;
+  min-width: 105px;
+}
+
+.config-item-flat-min-group {
+  flex: 0.9;
+  min-width: 125px;
+}
+
+.config-item-smooth-normals {
+  flex: 0.9;
+  min-width: 120px;
+}
+
+/* Step 3 block: its items sit in the same row as the other config items */
+.config-step3 {
+  display: contents;
+}
+
+.config-item-reduce-engine {
+  flex: 1;
+  min-width: 125px;
+}
+
+.config-item-reduce-ops {
+  flex: 2.2;
+  min-width: 250px;
+}
+
+.config-item-reduce-budget,
+.config-item-reduce-normal,
+.config-item-reduce-normal-factor,
+.config-item-reduce-isolated {
+  flex: 0.7;
+  min-width: 95px;
+}
+
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.checkbox-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-highlight);
+  border-radius: var(--radius-sm);
+  padding: 4px 7px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: border-color 0.2s, color 0.2s;
+}
+
+.checkbox-chip:hover {
+  border-color: var(--accent);
+  color: var(--text-main);
+}
+
+.checkbox-chip input {
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.checkbox-chip:has(input:disabled) {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.start-cell {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+}
+
+.start-cell .btn-primary {
+  flex: 1;
+}
+
+.start-guard {
+  max-width: 260px;
+  font-size: 0.67rem;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--danger);
+}
+
 .config-label {
   font-size: 0.7rem;
   font-weight: 600;
@@ -370,7 +478,8 @@ header {
   border-color: var(--accent);
 }
 
-.config-select:disabled {
+.config-select:disabled,
+.config-input:disabled {
   opacity: 0.45;
   cursor: not-allowed;
 }
@@ -443,7 +552,7 @@ header {
 
 .stepper-track {
   display: grid;
-  grid-template-columns: repeat(7, 1fr);
+  grid-template-columns: repeat(8, 1fr);
   gap: 8px;
   position: relative;
 }
@@ -483,6 +592,39 @@ header {
   border-color: var(--accent);
   background: #1b223d;
   box-shadow: 0 0 0 1px var(--accent), 0 4px 16px var(--accent-glow);
+}
+
+.step-card.skipped {
+  opacity: 0.45;
+  border-style: dashed;
+  background: transparent;
+}
+
+.step-card.skipped:hover {
+  transform: none;
+  background: transparent;
+}
+
+.step-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 2px;
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.step-toggle input {
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.step-toggle.locked,
+.step-toggle input:disabled {
+  color: var(--text-dim);
+  cursor: not-allowed;
 }
 
 .step-card.active::before {
@@ -528,6 +670,12 @@ header {
 .step-badge.error {
   background: rgba(239, 68, 68, 0.2);
   color: var(--danger);
+}
+
+.step-badge.skipped {
+  background: rgba(107, 114, 128, 0.18);
+  color: var(--text-dim);
+  border: 1px dashed var(--border-highlight);
 }
 
 .step-error-msg {
@@ -640,12 +788,23 @@ header {
   flex: 1;
   display: grid;
   grid-template-columns: 1.15fr 0.85fr;
+  /* Fixed, not just a minimum: the analytics pane is taller on some steps (a palette, a reduction
+     breakdown), and a growing row would stretch the viewport with it. <model-viewer> frames the
+     model to its viewport, so the same statue would then appear bigger or smaller from one step
+     to the next - the pane now scrolls inside itself and the viewport never changes size. */
+  /* max-height, because `flex: 1` inside the page's flex column would otherwise stretch this row
+     to the content height and ignore a plain `height`; the grid row may shrink so the analytics
+     pane scrolls within it */
+  grid-template-rows: minmax(0, 1fr);
   min-height: calc(100vh - 240px);
+  max-height: calc(100vh - 240px);
 }
 
 @media (max-width: 1024px) {
   .app-content {
     grid-template-columns: 1fr;
+    grid-template-rows: auto;
+    max-height: none;
   }
 }
 
@@ -820,6 +979,8 @@ model-viewer {
   background: var(--bg-secondary);
   padding: 20px;
   overflow-y: auto;
+  /* Lets the pane scroll inside the grid row instead of making the row grow */
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 20px;

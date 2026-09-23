@@ -227,6 +227,22 @@ def _rasterize_votes(
     return vote, seen_px, vis_count, vote_front, vote_back
 
 
+def face_visibility(
+    vertices: np.ndarray,
+    faces: np.ndarray,
+    views: int = DEFAULT_VIEWS,
+    resolution: int = DEFAULT_RESOLUTION,
+    max_workers: Optional[int] = None,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Per-face visibility from `views` Fibonacci sphere directions, without changing the mesh:
+    (seen_px, vis_count) of the z-buffer rasterization. A face with seen_px == 0 is never the
+    closest surface in any view, i.e. no camera can see it (used by the face reduction step).
+    """
+    _, seen_px, vis_count, _, _ = _rasterize_votes(vertices, faces, views, resolution, max_workers)
+    return seen_px, vis_count
+
+
 def _find_connected_components(
     vertices: np.ndarray, faces: np.ndarray, weld: bool = True
 ) -> Tuple[int, np.ndarray]:

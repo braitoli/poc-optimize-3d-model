@@ -3,7 +3,7 @@ test_step_pipeline.py
 
 Unit and integration tests for:
 - optimizer/inspect_metrics.mjs (Comprehensive 3D Metrics Engine)
-- optimizer/step_pipeline.py (Step-by-Step 7-stage Pipeline & Metrics)
+- optimizer/step_pipeline.py (Step-by-Step 8-stage Pipeline & Metrics)
 """
 
 import json
@@ -89,7 +89,8 @@ class TestMetricsEngine(unittest.TestCase):
 
 class TestStepPipeline(unittest.TestCase):
     def test_full_step_pipeline_execution(self):
-        """Verify all 7 GLB files are generated with 100% Zero-Decimation preservation."""
+        """Verify all 7 GLB files are generated with 100% Zero-Decimation preservation (Step 3, the
+        only step allowed to remove triangles, is skipped)."""
         with tempfile.TemporaryDirectory(prefix="test_step_pipeline_") as tmpdir:
             out_dir = Path(tmpdir)
             pipeline = StepPipeline(
@@ -97,7 +98,8 @@ class TestStepPipeline(unittest.TestCase):
                 smooth_normals=True,
                 double_sided=False,
                 verbose=False,
-                stream_events=False
+                stream_events=False,
+                skip_steps=[3]
             )
 
             result = pipeline.run(SAMPLE_DINOKI, out_dir)
@@ -108,24 +110,30 @@ class TestStepPipeline(unittest.TestCase):
             self.assertTrue(metrics_file.exists())
             metrics_data = json.loads(metrics_file.read_text())
 
-            self.assertEqual(len(metrics_data["steps"]), 7)
+            self.assertEqual(len(metrics_data["steps"]), 8)
             expected_files = [
                 "step_00_raw.glb",
                 "step_01_cleaned_grounded.glb",
                 "step_02_oriented.glb",
-                "step_03_texture_baked.glb",
-                "step_04_palette_tagged.glb",
-                "step_05_meshopt.glb",
-                "step_06_final.glb"
+                None,  # Step 3 (face reduction) is skipped: no GLB, no metrics
+                "step_04_texture_baked.glb",
+                "step_05_palette_tagged.glb",
+                "step_06_meshopt.glb",
+                "step_07_final.glb"
             ]
 
             for idx, expected_file in enumerate(expected_files):
+                step_info = metrics_data["steps"][idx]
+                self.assertEqual(step_info["file"], expected_file)
+                if expected_file is None:
+                    self.assertTrue(step_info["skipped"], "Step 3 must be recorded as skipped")
+                    self.assertIsNone(step_info["metrics"])
+                    self.assertFalse((out_dir / "step_03_face_reduced.glb").exists())
+                    continue
+
                 fpath = out_dir / expected_file
                 self.assertTrue(fpath.exists(), f"Missing step file: {expected_file}")
                 self.assertGreater(fpath.stat().st_size, 100000, f"File too small: {expected_file}")
-
-                step_info = metrics_data["steps"][idx]
-                self.assertEqual(step_info["file"], expected_file)
                 # Rule 11 Verification: 100% triangles preserved across all steps
                 self.assertEqual(step_info["metrics"]["faces"], 45000)
 
@@ -139,75 +147,79 @@ class TestStepPipeline(unittest.TestCase):
             self.assertLess(metrics_data["steps"][2]["metrics"]["fileSizeBytes"], 3 * 1024 * 1024)
 
             # Final step keeps meshopt; dinoki's 1536x1536 texture (12 MB VRAM < 20 MB default) skips KTX2
-            final_step = metrics_data["steps"][6]["metrics"]
+            final_step = metrics_data["steps"][7]["metrics"]
             self.assertIn("EXT_meshopt_compression", final_step["extensions"]["used"])
             self.assertNotIn("KHR_texture_basisu", final_step["extensions"]["used"])
             self.assertIs(final_step["gpuCompressionSkipped"], True)
             self.assertEqual(final_step["textures"][0]["format"], "JPEG")
             self.assertGreater(len(final_step["palette"]), 0)
 
-            # Step 3 must have FrontSide rendering (doubleSided=False) when double_sided=False
-            step3_metrics = metrics_data["steps"][3]["metrics"]
-            self.assertFalse(step3_metrics["materials"][0]["doubleSided"], "Step 3 material must be doubleSided=False for FrontSide")
+            # Step 4 must have FrontSide rendering (doubleSided=False) when double_sided=False
+            step4_metrics = metrics_data["steps"][4]["metrics"]
+            self.assertFalse(step4_metrics["materials"][0]["doubleSided"], "Step 4 material must be doubleSided=False for FrontSide")
 
     def test_default_downscale_keeps_original_when_fit_not_smaller(self):
         """Default (downscale on, exact): Dinoki's source UVs overlap (per-face UV area ~123% of its
-        1536x1536 canvas), so the 1:1 fit is larger than the original and Step 3 keeps it."""
+        1536x1536 canvas), so the 1:1 fit is larger than the original and Step 4 keeps it."""
         with tempfile.TemporaryDirectory(prefix="test_default_downscale_pipeline_") as tmpdir:
             out_dir = Path(tmpdir)
-            StepPipeline(texture_format="webp", verbose=False, stream_events=False).run(SAMPLE_DINOKI, out_dir)
+            StepPipeline(texture_format="webp", verbose=False, stream_events=False,
+                         skip_steps=[3]).run(SAMPLE_DINOKI, out_dir)
             metrics_data = json.loads((out_dir / "metrics.json").read_text())
-            self.assertEqual(len(metrics_data["steps"]), 7)
+            self.assertEqual(len(metrics_data["steps"]), 8)
 
-            m3 = metrics_data["steps"][3]["metrics"]
-            self.assertIs(m3["downscale"], True)
-            self.assertEqual(m3["sizeMode"], "exact")
-            self.assertEqual(m3["uvMode"], "xatlas")
-            self.assertEqual(m3["fitResolution"] % 4, 0)
-            self.assertGreaterEqual(m3["fitResolution"] ** 2, 1536 * 1536)
-            self.assertEqual(m3["originalResolution"], "1536x1536")
-            self.assertEqual(m3["finalResolution"], "1536x1536")
-            self.assertIs(m3["downscaled"], False)
-            self.assertTrue(m3["decision"].startswith("kept_original"), m3["decision"])
-            self.assertEqual(m3["texelDensityRatio"], 1.0)
-            self.assertFalse(m3["materials"][0]["doubleSided"])
+            m4 = metrics_data["steps"][4]["metrics"]
+            self.assertIs(m4["downscale"], True)
+            self.assertEqual(m4["sizeMode"], "exact")
+            self.assertEqual(m4["uvMode"], "xatlas")
+            self.assertEqual(m4["fitResolution"] % 4, 0)
+            self.assertGreaterEqual(m4["fitResolution"] ** 2, 1536 * 1536)
+            self.assertEqual(m4["originalResolution"], "1536x1536")
+            self.assertEqual(m4["finalResolution"], "1536x1536")
+            self.assertIs(m4["downscaled"], False)
+            self.assertTrue(m4["decision"].startswith("kept_original"), m4["decision"])
+            self.assertEqual(m4["texelDensityRatio"], 1.0)
+            self.assertFalse(m4["materials"][0]["doubleSided"])
 
-            # Original texture bitstream kept, never resized in Steps 5-6
-            self.assertEqual(_glb_image_bytes(out_dir / "step_03_texture_baked.glb"),
+            # Original texture bitstream kept, never resized in Steps 6-7
+            self.assertEqual(_glb_image_bytes(out_dir / "step_04_texture_baked.glb"),
                              _glb_image_bytes(out_dir / "step_00_raw.glb"))
-            for step in (5, 6):
+            for step in (6, 7):
                 self.assertEqual(metrics_data["steps"][step]["metrics"]["textures"][0]["resolutionFormatted"], "1536x1536")
             for step_info in metrics_data["steps"]:
+                if step_info["skipped"]:
+                    continue
                 self.assertEqual(step_info["metrics"]["faces"], 45000)
 
     def test_downscale_off_keeps_original_uvs_and_texture(self):
-        """downscale off: Step 3 exports the Step 2 mesh unchanged (UVs, faces) with the original
-        texture bitstream; Steps 5-6 keep the original texture dimensions."""
+        """downscale off: Step 4 exports the Step 2 mesh unchanged (UVs, faces) with the original
+        texture bitstream; Steps 6-7 keep the original texture dimensions."""
         with tempfile.TemporaryDirectory(prefix="test_downscale_off_pipeline_") as tmpdir:
             out_dir = Path(tmpdir)
-            StepPipeline(downscale=False, texture_format="webp", verbose=False, stream_events=False).run(SAMPLE_DINOKI, out_dir)
+            StepPipeline(downscale=False, texture_format="webp", verbose=False, stream_events=False,
+                         skip_steps=[3]).run(SAMPLE_DINOKI, out_dir)
             metrics_data = json.loads((out_dir / "metrics.json").read_text())
 
-            m3 = metrics_data["steps"][3]["metrics"]
-            self.assertIs(m3["downscale"], False)
-            self.assertIsNone(m3["fitResolution"])
-            self.assertEqual(m3["decision"], "kept_original: downscale off")
-            self.assertIs(m3["downscaled"], False)
-            self.assertEqual(m3["texelDensityRatio"], 1.0)
-            self.assertEqual(m3["originalResolution"], "1536x1536")
-            self.assertEqual(m3["finalResolution"], "1536x1536")
-            self.assertFalse(m3["materials"][0]["doubleSided"], "Step 3 material must be FrontSide")
+            m4 = metrics_data["steps"][4]["metrics"]
+            self.assertIs(m4["downscale"], False)
+            self.assertIsNone(m4["fitResolution"])
+            self.assertEqual(m4["decision"], "kept_original: downscale off")
+            self.assertIs(m4["downscaled"], False)
+            self.assertEqual(m4["texelDensityRatio"], 1.0)
+            self.assertEqual(m4["originalResolution"], "1536x1536")
+            self.assertEqual(m4["finalResolution"], "1536x1536")
+            self.assertFalse(m4["materials"][0]["doubleSided"], "Step 4 material must be FrontSide")
 
             step2 = trimesh.load(str(out_dir / "step_02_oriented.glb"), force="mesh", process=False)
-            step3 = trimesh.load(str(out_dir / "step_03_texture_baked.glb"), force="mesh", process=False)
-            self.assertTrue(np.array_equal(step2.faces, step3.faces))
-            self.assertTrue(np.array_equal(step2.visual.uv, step3.visual.uv))
-            self.assertEqual(_glb_image_bytes(out_dir / "step_03_texture_baked.glb"),
+            step4 = trimesh.load(str(out_dir / "step_04_texture_baked.glb"), force="mesh", process=False)
+            self.assertTrue(np.array_equal(step2.faces, step4.faces))
+            self.assertTrue(np.array_equal(step2.visual.uv, step4.visual.uv))
+            self.assertEqual(_glb_image_bytes(out_dir / "step_04_texture_baked.glb"),
                              _glb_image_bytes(out_dir / "step_00_raw.glb"))
 
-            for step in (5, 6):
+            for step in (6, 7):
                 self.assertEqual(metrics_data["steps"][step]["metrics"]["textures"][0]["resolutionFormatted"], "1536x1536")
-            self.assertEqual(metrics_data["steps"][6]["metrics"]["faces"], 45000)
+            self.assertEqual(metrics_data["steps"][7]["metrics"]["faces"], 45000)
 
     def test_invalid_options_raise(self):
         with self.assertRaises(ValueError):
@@ -228,7 +240,7 @@ class TestStepPipeline(unittest.TestCase):
                 self.assertEqual(list(Path(tmpdir).iterdir()), [], f"{extra}: pipeline must not run")
 
     def test_auto_detect_double_sided_input(self):
-        """Verify a doubleSided=true source keeps doubleSided on Step 3 and Step 6 without --double-sided."""
+        """Verify a doubleSided=true source keeps doubleSided on Step 4 and Step 7 without --double-sided."""
         with tempfile.TemporaryDirectory(prefix="test_double_sided_pipeline_") as tmpdir:
             tmp = Path(tmpdir)
             ds_input = tmp / "sample_dinoki_double_sided.glb"
@@ -240,13 +252,14 @@ class TestStepPipeline(unittest.TestCase):
                 smooth_normals=True,
                 double_sided=False,
                 verbose=False,
-                stream_events=False
+                stream_events=False,
+                skip_steps=[3]
             )
 
             result = pipeline.run(ds_input, out_dir)
             self.assertTrue(result["success"])
 
-            for step_file in ("step_03_texture_baked.glb", "step_06_final.glb"):
+            for step_file in ("step_04_texture_baked.glb", "step_07_final.glb"):
                 materials = _read_glb_json(out_dir / step_file).get("materials", [])
                 self.assertTrue(len(materials) > 0, f"No materials in {step_file}")
                 for mat in materials:
@@ -254,14 +267,17 @@ class TestStepPipeline(unittest.TestCase):
 
             # 100% triangles preserved across all steps
             metrics_data = json.loads((out_dir / "metrics.json").read_text())
-            self.assertEqual(len(metrics_data["steps"]), 7)
+            self.assertEqual(len(metrics_data["steps"]), 8)
             initial_faces = metrics_data["steps"][0]["metrics"]["faces"]
             for step_info in metrics_data["steps"]:
+                if step_info["skipped"]:
+                    continue
                 self.assertEqual(step_info["metrics"]["faces"], initial_faces, f"Face count changed at {step_info['file']}")
 
 
 class TestStepPipelineMockGlb(unittest.TestCase):
-    """Synthetic textured icosphere (the CI smoke-test input) run through all 7 steps."""
+    """Synthetic textured icosphere (the CI smoke-test input) run through all 8 steps, with the
+    Step 3 face reduction skipped so every triangle survives."""
 
     @classmethod
     def setUpClass(cls):
@@ -272,9 +288,10 @@ class TestStepPipelineMockGlb(unittest.TestCase):
         StepPipeline(
             texture_format="webp",
             verbose=False,
-            stream_events=False
+            stream_events=False,
+            skip_steps=[3]
         ).run(raw_glb, tmp / "out")
-        cls.final_gltf = _read_glb_json(tmp / "out" / "step_06_final.glb")
+        cls.final_gltf = _read_glb_json(tmp / "out" / "step_07_final.glb")
 
     @classmethod
     def tearDownClass(cls):
@@ -308,10 +325,12 @@ class TestStepPipelineRechart(unittest.TestCase):
         cls.orig_faces = create_sphere_grid_glb(cls.raw_glb, src_res=2048)
         cls.exact_dir = tmp / "exact"
         # ktx2_min_vram_mb=0: the fit canvas is below the 20 MB VRAM threshold, force the KTX2 path
-        StepPipeline(texture_format="ktx2", ktx2_min_vram_mb=0, verbose=False, stream_events=False).run(cls.raw_glb, cls.exact_dir)
+        StepPipeline(texture_format="ktx2", ktx2_min_vram_mb=0, verbose=False, stream_events=False,
+                     skip_steps=[3]).run(cls.raw_glb, cls.exact_dir)
         cls.exact = json.loads((cls.exact_dir / "metrics.json").read_text())
         cls.pot_up_dir = tmp / "pot_up"
-        StepPipeline(size_mode="pot-up", texture_format="webp", verbose=False, stream_events=False).run(cls.raw_glb, cls.pot_up_dir)
+        StepPipeline(size_mode="pot-up", texture_format="webp", verbose=False, stream_events=False,
+                     skip_steps=[3]).run(cls.raw_glb, cls.pot_up_dir)
         cls.pot_up = json.loads((cls.pot_up_dir / "metrics.json").read_text())
 
     @classmethod
@@ -319,36 +338,38 @@ class TestStepPipelineRechart(unittest.TestCase):
         cls._tmp.cleanup()
 
     def test_exact_recharts_at_fit_resolution(self):
-        m3 = self.exact["steps"][3]["metrics"]
-        fit = m3["fitResolution"]
+        m4 = self.exact["steps"][4]["metrics"]
+        fit = m4["fitResolution"]
         self.assertEqual(fit % 4, 0)
         self.assertLess(fit, 2048)
-        self.assertIs(m3["downscaled"], True)
-        self.assertTrue(m3["decision"].startswith("rechart"), m3["decision"])
-        self.assertEqual(m3["originalResolution"], "2048x2048")
-        self.assertEqual(m3["finalResolution"], f"{fit}x{fit}")
-        self.assertEqual(m3["textures"][0]["resolutionFormatted"], f"{fit}x{fit}")
-        self.assertGreaterEqual(m3["texelDensityRatio"], 0.97)
+        self.assertIs(m4["downscaled"], True)
+        self.assertTrue(m4["decision"].startswith("rechart"), m4["decision"])
+        self.assertEqual(m4["originalResolution"], "2048x2048")
+        self.assertEqual(m4["finalResolution"], f"{fit}x{fit}")
+        self.assertEqual(m4["textures"][0]["resolutionFormatted"], f"{fit}x{fit}")
+        self.assertGreaterEqual(m4["texelDensityRatio"], 0.97)
         for step_info in self.exact["steps"]:
+            if step_info["skipped"]:
+                continue
             self.assertEqual(step_info["metrics"]["faces"], self.orig_faces, step_info["file"])
 
     def test_exact_ktx2_keeps_fit_resolution(self):
-        """Step 6 compresses the non power-of-two canvas to KTX2 without resizing it."""
-        fit = self.exact["steps"][3]["metrics"]["fitResolution"]
-        final = self.exact_dir / "step_06_final.glb"
+        """Step 7 compresses the non power-of-two canvas to KTX2 without resizing it."""
+        fit = self.exact["steps"][4]["metrics"]["fitResolution"]
+        final = self.exact_dir / "step_07_final.glb"
         self.assertIn("KHR_texture_basisu", _read_glb_json(final)["extensionsUsed"])
         self.assertEqual(_ktx2_dimensions(_glb_image_bytes(final)), (fit, fit))
 
     def test_pot_up_keeps_original_when_canvas_not_smaller(self):
-        m3 = self.pot_up["steps"][3]["metrics"]
-        self.assertEqual(m3["sizeMode"], "pot-up")
-        self.assertLess(m3["fitResolution"], 2048)
-        self.assertIs(m3["downscaled"], False)
-        self.assertTrue(m3["decision"].startswith("kept_original"), m3["decision"])
-        self.assertIn("2048x2048 >= original 2048x2048", m3["decision"])
-        self.assertEqual(m3["finalResolution"], "2048x2048")
-        self.assertEqual(m3["texelDensityRatio"], 1.0)
-        self.assertEqual(_glb_image_bytes(self.pot_up_dir / "step_03_texture_baked.glb"),
+        m4 = self.pot_up["steps"][4]["metrics"]
+        self.assertEqual(m4["sizeMode"], "pot-up")
+        self.assertLess(m4["fitResolution"], 2048)
+        self.assertIs(m4["downscaled"], False)
+        self.assertTrue(m4["decision"].startswith("kept_original"), m4["decision"])
+        self.assertIn("2048x2048 >= original 2048x2048", m4["decision"])
+        self.assertEqual(m4["finalResolution"], "2048x2048")
+        self.assertEqual(m4["texelDensityRatio"], 1.0)
+        self.assertEqual(_glb_image_bytes(self.pot_up_dir / "step_04_texture_baked.glb"),
                          _glb_image_bytes(self.pot_up_dir / "step_00_raw.glb"))
 
 

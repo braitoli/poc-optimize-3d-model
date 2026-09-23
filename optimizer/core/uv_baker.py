@@ -7,10 +7,11 @@ Ensures zero black edge bleeding during GPU texture mipmapping.
 """
 
 import math
-from typing import Tuple, Optional, Dict, Any
+from typing import Callable, Tuple, Optional, Dict, List, Any
 import numpy as np
 from PIL import Image
 from scipy import ndimage
+from scipy.sparse import csgraph, csr_matrix
 import trimesh
 import xatlas
 from optimizer.core.errors import PipelineAbort
@@ -222,10 +223,17 @@ def dilate_texture(image_rgb: np.ndarray, mask_covered: np.ndarray, padding: int
     return out
 
 
-def get_adaptive_chart_options(n_faces: int) -> xatlas.ChartOptions:
+def get_adaptive_chart_options(n_faces: int, merge_level: int = 0) -> xatlas.ChartOptions:
     """
     Configures xatlas.ChartOptions with adaptive iterations and micro-chart merging
     to achieve ultra-fast unwrapping even on large meshes (>200k faces like Gravilux).
+
+    `merge_level` above 0 lets xatlas grow charts further before it cuts a new one: the cost
+    ceiling doubles per level while the penalties that stop a chart from spreading (normal
+    deviation, straightness, both seam weights) are halved. Fewer, larger islands mean less chart
+    boundary, so less of the canvas goes into gutter padding - at the price of more UV distortion,
+    which _fit_xatlas answers by packing at a higher texel density. plan_uv_canvas charts at
+    several levels and keeps the one that needs the smallest canvas.
     """
     c_opts = xatlas.ChartOptions()
     if n_faces > 100_000:
@@ -255,6 +263,14 @@ def get_adaptive_chart_options(n_faces: int) -> xatlas.ChartOptions:
         c_opts.normal_seam_weight = 4.0
         c_opts.texture_seam_weight = 0.5
         c_opts.fix_winding = True
+
+    if merge_level > 0:
+        factor = float(2 ** merge_level)
+        c_opts.max_cost *= factor
+        c_opts.normal_deviation_weight /= factor
+        c_opts.straightness_weight /= factor
+        c_opts.normal_seam_weight /= factor
+        c_opts.texture_seam_weight /= factor
     return c_opts
 
 
@@ -283,6 +299,9 @@ CANVAS_MARGIN_PX = 4          # border kept free around the islands by maximize_
 XATLAS_PADDING_PX = 2         # xatlas chart padding (+1 bilinear texel) in final-canvas pixels
 MIN_TEXEL_DENSITY_RATIO = 0.97  # exact / pot-up must keep T_new / T_src >= this
 MAX_PACK_PASSES = 4           # bound on every sizing loop (xatlas re-packs, UVAtlas passes)
+ISLAND_MERGE_LEVELS = 3       # chart aggressiveness levels tried when merging islands (0 = as-is)
+# UVAtlas merges charts by tolerating more stretch instead; one value per merge level
+UVATLAS_MERGE_STRETCH = (0.1667, 0.3333, 0.5)
 UVATLAS_INITIAL_FILL = 0.5    # first guess of the UV area fraction UVAtlas fills (gutter 4 px)
 
 
@@ -306,6 +325,35 @@ def _check_no_nan(values: np.ndarray, what: str) -> np.ndarray:
     if nan.any():
         raise PipelineAbort(f"Sampling the {what} produced {int(nan.any(axis=-1).sum())} NaN texels")
     return values
+
+
+def uv_boundary_length(uv: np.ndarray, faces: np.ndarray) -> float:
+    """
+    Total length of the atlas's island outlines, in the units `uv` is given in (texels when the
+    UVs are in atlas pixels). An edge used by a single triangle is an island border: it is where
+    the packer has to spend gutter padding and where the GPU sees a seam, so the smaller this is,
+    the less of the canvas is wasted on padding.
+    """
+    edges = np.sort(np.concatenate([faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]]), axis=1)
+    _, counts = np.unique(edges, axis=0, return_counts=True)
+    unique_edges = np.unique(edges, axis=0)[counts == 1]
+    if len(unique_edges) == 0:
+        return 0.0
+    segments = uv[unique_edges[:, 0]] - uv[unique_edges[:, 1]]
+    return float(np.linalg.norm(segments, axis=1).sum())
+
+
+def _count_uv_islands(faces: np.ndarray) -> int:
+    """Number of connected components of the UV layout: one per island the packer has to place."""
+    n_vertices = int(faces.max()) + 1 if len(faces) else 0
+    if n_vertices == 0:
+        return 0
+    edges = np.concatenate([faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]])
+    graph = csr_matrix(
+        (np.ones(len(edges), dtype=bool), (edges[:, 0], edges[:, 1])),
+        shape=(n_vertices, n_vertices)
+    )
+    return int(csgraph.connected_components(graph, directed=False)[0])
 
 
 def _uv_triangle_areas(uv: np.ndarray, faces: np.ndarray) -> np.ndarray:
@@ -353,13 +401,17 @@ def _layout_texel_density(layout: Dict[str, Any]) -> float:
     return texel_density(layout["vertices"], layout["faces"], layout["uv"], canvas, canvas)
 
 
-def _xatlas_natural_atlas(mesh: trimesh.Trimesh, texels_per_unit: float) -> Dict[str, Any]:
+def _xatlas_natural_atlas(
+    mesh: trimesh.Trimesh,
+    texels_per_unit: float,
+    merge_level: int = 0
+) -> Dict[str, Any]:
     """
     Charts and packs the mesh with xatlas at `texels_per_unit` and resolution 0, i.e. one atlas
     whose size xatlas grows until every chart fits. Returns the layout in atlas pixels.
     """
     n_faces = len(mesh.faces)
-    c_opts = get_adaptive_chart_options(n_faces)
+    c_opts = get_adaptive_chart_options(n_faces, merge_level)
     p_opts = get_adaptive_pack_options(n_faces, target_res=0, padding=XATLAS_PADDING_PX)
     p_opts.texels_per_unit = float(texels_per_unit)
 
@@ -392,6 +444,7 @@ def _xatlas_natural_atlas(mesh: trimesh.Trimesh, texels_per_unit: float) -> Dict
             "xatlas_atlas_size": f"{int(atlas.width)}x{int(atlas.height)}",
             "xatlas_texels_per_unit": round(float(texels_per_unit), 4),
             "xatlas_utilization_percent": round(float(atlas.utilization * 100.0), 2),
+            "xatlas_merge_level": int(merge_level),
         }
     }
 
@@ -410,12 +463,19 @@ def _place_on_canvas(natural: Dict[str, Any], canvas: int) -> Dict[str, Any]:
     }
 
 
-def _uvatlas_layout(mesh: trimesh.Trimesh, canvas: int, gutter: float) -> Dict[str, Any]:
-    """Microsoft UVAtlas unwrap packed into a canvas x canvas square (gutter in canvas pixels)."""
+def _uvatlas_layout(
+    mesh: trimesh.Trimesh,
+    canvas: int,
+    gutter: float,
+    merge_level: int = 0
+) -> Dict[str, Any]:
+    """Microsoft UVAtlas unwrap packed into a canvas x canvas square (gutter in canvas pixels).
+    UVAtlas merges charts by tolerating more stretch, so that is what the merge level raises."""
     vertices, faces, uv, vmapping, meta = unwrap_mesh_uvatlas(
         mesh=mesh,
         target_res=canvas,
-        gutter=max(4.0, float(gutter))
+        gutter=max(4.0, float(gutter)),
+        max_stretch=UVATLAS_MERGE_STRETCH[merge_level]
     )
     uv = maximize_uv_bounds(np.asarray(uv, dtype=np.float64), target_res=canvas, padding_px=CANVAS_MARGIN_PX)
     return {
@@ -424,11 +484,11 @@ def _uvatlas_layout(mesh: trimesh.Trimesh, canvas: int, gutter: float) -> Dict[s
         "vmapping": np.asarray(vmapping, dtype=np.int64),
         "uv": uv,
         "canvas": canvas,
-        "meta": dict(meta),
+        "meta": {**dict(meta), "uvatlas_merge_level": int(merge_level)},
     }
 
 
-def _fit_xatlas(mesh: trimesh.Trimesh, t_src: float) -> Dict[str, Any]:
+def _fit_xatlas(mesh: trimesh.Trimesh, t_src: float, merge_level: int = 0) -> Dict[str, Any]:
     """
     Exact fit with xatlas: pack at texels_per_unit = T_src (xatlas scales every chart to that
     density) into a single atlas sized to fit, then S = max(atlas side) + border margins, rounded
@@ -438,7 +498,7 @@ def _fit_xatlas(mesh: trimesh.Trimesh, t_src: float) -> Dict[str, Any]:
     tpu = t_src
     tried = []
     for _ in range(MAX_PACK_PASSES):
-        natural = _xatlas_natural_atlas(mesh, tpu)
+        natural = _xatlas_natural_atlas(mesh, tpu, merge_level)
         fit = _round_up_to_block(natural["extent"] + 2 * CANVAS_MARGIN_PX)
         layout = _place_on_canvas(natural, fit)
         ratio = _layout_texel_density(layout) / t_src
@@ -452,7 +512,13 @@ def _fit_xatlas(mesh: trimesh.Trimesh, t_src: float) -> Dict[str, Any]:
     )
 
 
-def _fit_uvatlas(mesh: trimesh.Trimesh, t_src: float, source_px_area: float, gutter: float) -> Dict[str, Any]:
+def _fit_uvatlas(
+    mesh: trimesh.Trimesh,
+    t_src: float,
+    source_px_area: float,
+    gutter: float,
+    merge_level: int = 0
+) -> Dict[str, Any]:
     """
     Exact fit with UVAtlas. UVAtlas always scales its charts to fill the square it is given, so the
     density grows about linearly with S; the fixed-pixel gutter makes the filled fraction grow
@@ -463,7 +529,7 @@ def _fit_uvatlas(mesh: trimesh.Trimesh, t_src: float, source_px_area: float, gut
     layouts: Dict[int, Dict[str, Any]] = {}
     ratios: Dict[int, float] = {}
     for _ in range(MAX_PACK_PASSES):
-        layout = _uvatlas_layout(mesh, canvas, gutter)
+        layout = _uvatlas_layout(mesh, canvas, gutter, merge_level)
         ratio = _layout_texel_density(layout) / t_src
         if ratio <= 0.0:
             raise RuntimeError(f"UVAtlas produced a layout with zero UV area at {canvas}x{canvas}")
@@ -483,13 +549,284 @@ def _fit_uvatlas(mesh: trimesh.Trimesh, t_src: float, source_px_area: float, gut
     return {"fit": min(fitting), "layouts": layouts, "passes": len(ratios)}
 
 
+# ---------------------------------------------------------------------------
+# Flat-colour swatches: faces whose source colour is uniform need no texels of
+# their own. They are kept out of the chart pass and share one small swatch per
+# colour, so the canvas only has to hold the faces that actually carry detail.
+# ---------------------------------------------------------------------------
+
+FLAT_SWATCH_PX = 8            # side of one colour swatch, in final-canvas pixels
+# Gutter around every swatch. With the swatch side this makes the cell pitch a multiple of the KTX2
+# block size and every cell block-aligned, so no 4x4 block ever straddles two swatch colours.
+FLAT_SWATCH_GUTTER_PX = 4
+FLAT_SAMPLES_PER_EDGE = 4     # barycentric grid per face: (n+1)(n+2)/2 = 15 samples
+
+
+def _barycentric_grid(n: int = FLAT_SAMPLES_PER_EDGE) -> np.ndarray:
+    """(S, 3) barycentric weights of a regular grid over a triangle, corners included."""
+    pts = [(i / n, j / n, (n - i - j) / n) for i in range(n + 1) for j in range(n + 1 - i)]
+    return np.asarray(pts, dtype=np.float64)
+
+
+def _face_sample_uv(
+    mesh: trimesh.Trimesh,
+    source_uv: np.ndarray,
+    bary: np.ndarray,
+    source_uv_sampler: Optional[Callable[[np.ndarray], np.ndarray]]
+) -> np.ndarray:
+    """(F, S, 2) source UV of every sample point: interpolated, or looked up on the textured
+    original surface when Step 3 collapsed the edges this mesh is made of."""
+    faces = np.asarray(mesh.faces, dtype=np.int64)
+    if source_uv_sampler is None:
+        return np.einsum("sk,fkj->fsj", bary, source_uv[faces])
+    pos = np.einsum("sk,fkj->fsj", bary, np.asarray(mesh.vertices, dtype=np.float64)[faces])
+    return np.clip(source_uv_sampler(pos.reshape(-1, 3)), 0.0, 1.0).reshape(len(faces), len(bary), 2)
+
+
+def _slot_images(mat: Any) -> Dict[str, np.ndarray]:
+    """Every texture slot the bake re-creates, as (H, W, 3) uint8. A face counts as flat only if
+    it is flat in all of them: a flat base colour over a detailed normal map is not flat."""
+    imgs: Dict[str, np.ndarray] = {}
+    for slot in ("baseColorTexture", "normalTexture") + _RESAMPLED_TEXTURE_SLOTS:
+        rgb = _slot_rgb(mat, slot)
+        if rgb is not None:
+            imgs[slot] = rgb
+    return imgs
+
+
+def classify_flat_faces(
+    mesh: trimesh.Trimesh,
+    source_image: Image.Image,
+    source_uv: np.ndarray,
+    tolerance: float,
+    min_group_faces: int,
+    material: Any = None,
+    source_uv_sampler: Optional[Callable[[np.ndarray], np.ndarray]] = None
+) -> Dict[str, Any]:
+    """
+    Finds the faces whose source colour is uniform and groups them.
+
+    A face is flat when, over a barycentric grid of samples, every re-baked texture slot varies by
+    at most `tolerance` (0..255, per channel). Adjacent flat faces whose mean colours are within
+    `tolerance` grow into one group, and groups whose colours agree share a swatch. The guarantee
+    is then enforced directly rather than argued from those steps: every sample of every swatched
+    face is compared against the swatch colour it would get, and a face with a sample further than
+    `tolerance` away is put back with the detailed faces. So no point of a swatched face ever moves
+    further than `tolerance`, whatever region growing did.
+    Groups smaller than `min_group_faces` are left to the chart pass
+    (cutting a tiny hole out of the mesh adds more chart boundary than the texels it saves).
+
+    Returns {flat, group, cluster, cluster_colors, stats}: per-face masks / ids over `mesh.faces`
+    (-1 = not flat), one colour per cluster and slot, and the numbers Step 4 reports.
+    """
+    faces = np.asarray(mesh.faces, dtype=np.int64)
+    n_faces = len(faces)
+    slots = _slot_images(material) if material is not None else {}
+    if "baseColorTexture" not in slots:
+        slots = {"baseColorTexture": np.asarray(source_image.convert("RGB"), dtype=np.uint8), **slots}
+
+    bary = _barycentric_grid()
+    sample_uv = _face_sample_uv(mesh, source_uv, bary, source_uv_sampler)
+    flat = np.ones(n_faces, dtype=bool)
+    means: Dict[str, np.ndarray] = {}
+    means_samples: Dict[str, np.ndarray] = {}
+    for slot, rgb in slots.items():
+        values = _sample_texture_bilinear(rgb, sample_uv.reshape(-1, 2)).reshape(n_faces, len(bary), 3)
+        flat &= (values.max(axis=1) - values.min(axis=1)).max(axis=1) <= tolerance
+        means[slot] = values.mean(axis=1)
+        means_samples[slot] = values.astype(np.float32)  # kept for the enforcement pass below
+
+    base_mean = means["baseColorTexture"]
+    group = np.full(n_faces, -1, dtype=np.int64)
+    adjacency = np.asarray(mesh.face_adjacency, dtype=np.int64)
+    if len(adjacency) and flat.any():
+        same = (
+            flat[adjacency[:, 0]] & flat[adjacency[:, 1]]
+            & (np.abs(base_mean[adjacency[:, 0]] - base_mean[adjacency[:, 1]]).max(axis=1) <= tolerance)
+        )
+        edges = adjacency[same]
+        graph = csr_matrix(
+            (np.ones(len(edges), dtype=bool), (edges[:, 0], edges[:, 1])),
+            shape=(n_faces, n_faces)
+        )
+        _, labels = csgraph.connected_components(graph, directed=False)
+
+        # Keep the groups tight before they are clustered; the hard bound is enforced afterwards
+        n_labels = int(labels.max()) + 1
+        for _ in range(2):
+            counts = np.bincount(labels[flat], minlength=n_labels)
+            centre = np.stack([
+                np.bincount(labels[flat], weights=base_mean[flat][:, channel], minlength=n_labels)
+                for channel in range(3)
+            ], axis=1) / np.maximum(counts, 1)[:, None]
+            drift = np.abs(base_mean - centre[labels]).max(axis=1)
+            keep = flat & (drift <= tolerance / 2.0)
+            if keep.sum() == flat.sum():
+                break
+            flat = keep
+
+        sizes = np.bincount(labels[flat], minlength=n_labels)
+        big_enough = flat & (sizes[labels] >= max(1, int(min_group_faces)))
+        flat = big_enough
+        if flat.any():
+            group[flat] = np.unique(labels[flat], return_inverse=True)[1]
+
+    n_groups = int(group.max()) + 1 if flat.any() else 0
+    cluster = np.full(n_faces, -1, dtype=np.int64)
+    cluster_colors: Dict[str, List[List[int]]] = {slot: [] for slot in slots}
+    if n_groups:
+        group_size = np.bincount(group[flat], minlength=n_groups)
+        group_mean = {
+            slot: np.stack([
+                np.bincount(group[flat], weights=values[flat][:, channel], minlength=n_groups)
+                for channel in range(3)
+            ], axis=1) / np.maximum(group_size, 1)[:, None]
+            for slot, values in means.items()
+        }
+        group_cluster = np.full(n_groups, -1, dtype=np.int64)
+        centres: List[Dict[str, np.ndarray]] = []
+        for g in np.argsort(-group_size):          # biggest group defines a cluster's colour
+            for c, centre in enumerate(centres):
+                if all(
+                    np.abs(group_mean[slot][g] - centre[slot]).max() <= tolerance / 2.0
+                    for slot in slots
+                ):
+                    group_cluster[g] = c
+                    break
+            else:
+                centres.append({slot: group_mean[slot][g] for slot in slots})
+                group_cluster[g] = len(centres) - 1
+        cluster[flat] = group_cluster[group[flat]]
+        colour = {
+            slot: np.clip(np.round(np.stack([c[slot] for c in centres])), 0, 255)
+            for slot in slots
+        }
+
+        # Hard guarantee: drop any face that has a sample further than `tolerance` from the colour
+        # its swatch would paint. Whatever the grouping did, what is left respects the promise.
+        over = np.zeros(n_faces, dtype=bool)
+        for slot, values in means_samples.items():
+            deviation = np.abs(values[flat] - colour[slot][cluster[flat]][:, None, :]).max(axis=(1, 2))
+            over[np.where(flat)[0][deviation > tolerance]] = True
+        if over.any():
+            flat = flat & ~over
+            group[over] = -1
+            cluster[over] = -1
+            # A group that fell below the minimum, and a swatch nothing points at any more, go too
+            if flat.any():
+                sizes = np.bincount(group[flat], minlength=n_groups)
+                too_small = flat & (sizes[group] < max(1, int(min_group_faces)))
+                flat = flat & ~too_small
+                group[too_small] = -1
+                cluster[too_small] = -1
+            used = np.unique(cluster[flat]) if flat.any() else np.array([], dtype=np.int64)
+            renumber = np.full(len(centres), -1, dtype=np.int64)
+            renumber[used] = np.arange(len(used))
+            cluster[flat] = renumber[cluster[flat]]
+            colour = {slot: colour[slot][used] for slot in slots}
+
+        cluster_colors = {
+            slot: colour[slot].astype(np.uint8).tolist() for slot in slots
+        }
+
+    n_clusters = len(cluster_colors.get("baseColorTexture", []))
+    area = trimesh.triangles.area(np.asarray(mesh.vertices, dtype=np.float64)[faces])
+    return {
+        "flat": flat,
+        "group": group,
+        "cluster": cluster,
+        "cluster_colors": cluster_colors,
+        "stats": {
+            "tolerance": float(tolerance),
+            "minGroupFaces": int(min_group_faces),
+            "slotsChecked": list(slots),
+            "flatFaces": int(flat.sum()),
+            "faces": int(n_faces),
+            "flatFacesPercent": round(float(flat.mean()) * 100.0, 2),
+            "flatAreaPercent": round(float(area[flat].sum() / max(area.sum(), 1e-12)) * 100.0, 2),
+            "groups": int(n_groups),
+            "swatches": int(n_clusters),
+        }
+    }
+
+
+def _swatch_strip_px(n_clusters: int, island_side: int) -> int:
+    """Height of the strip that holds `n_clusters` swatches under an island_side-wide atlas."""
+    if n_clusters <= 0:
+        return 0
+    cell = FLAT_SWATCH_PX + 2 * FLAT_SWATCH_GUTTER_PX
+    columns = max(1, (island_side - 2 * CANVAS_MARGIN_PX) // cell)
+    rows = int(math.ceil(n_clusters / columns))
+    return rows * cell + CANVAS_MARGIN_PX
+
+
+def swatch_cells(n_clusters: int, canvas: int, strip_px: int) -> np.ndarray:
+    """
+    (C, 4) pixel rectangles [x0, y0, x1, y1) of every swatch, laid out in the strip along the
+    bottom of the canvas (y grows downwards, as the baked image is indexed).
+    """
+    cell = FLAT_SWATCH_PX + 2 * FLAT_SWATCH_GUTTER_PX
+    columns = max(1, (canvas - 2 * CANVAS_MARGIN_PX) // cell)
+    out = np.zeros((n_clusters, 4), dtype=np.int64)
+    for c in range(n_clusters):
+        col, row = c % columns, c // columns
+        x0 = CANVAS_MARGIN_PX + col * cell + FLAT_SWATCH_GUTTER_PX
+        y0 = canvas - strip_px + row * cell + FLAT_SWATCH_GUTTER_PX
+        out[c] = (x0, y0, x0 + FLAT_SWATCH_PX, y0 + FLAT_SWATCH_PX)
+    return out
+
+
+def _swatch_uv(cells: np.ndarray, canvas: int) -> np.ndarray:
+    """(C, 2) UV of each swatch centre, in the v-up space the baked mesh uses."""
+    centre_x = (cells[:, 0] + cells[:, 2]) / 2.0
+    centre_y = (cells[:, 1] + cells[:, 3]) / 2.0
+    return np.stack([centre_x / canvas, 1.0 - centre_y / canvas], axis=1)
+
+
+def _submesh_for_charting(mesh: trimesh.Trimesh, keep: np.ndarray) -> Tuple[trimesh.Trimesh, np.ndarray]:
+    """The mesh the chart pass sees when the flat faces are held out, plus the vertex index map
+    back to `mesh` (so every layout can still be read against the original vertices / UVs)."""
+    kept_faces = np.asarray(mesh.faces, dtype=np.int64)[keep]
+    used = np.unique(kept_faces)
+    remap = np.full(len(mesh.vertices), -1, dtype=np.int64)
+    remap[used] = np.arange(len(used))
+    sub = trimesh.Trimesh(
+        vertices=np.asarray(mesh.vertices, dtype=np.float64)[used],
+        faces=remap[kept_faces],
+        process=False
+    )
+    return sub, used
+
+
+def _place_in_box(layout: Dict[str, Any], canvas: int, strip_px: int) -> Dict[str, Any]:
+    """Moves an island layout packed for a `canvas - strip_px` square into the top of a
+    `canvas` square, leaving the bottom strip free for the swatches. The islands keep their pixel
+    size, so the texel density of the layout is unchanged."""
+    if strip_px <= 0:
+        return layout
+    box = canvas - strip_px
+    scale = box / float(canvas)
+    uv = np.asarray(layout["uv"], dtype=np.float64).copy()
+    uv[:, 0] *= scale
+    uv[:, 1] = strip_px / float(canvas) + uv[:, 1] * scale
+    return {**layout, "uv": uv, "canvas": canvas}
+
+
+
 def plan_uv_canvas(
     mesh: trimesh.Trimesh,
     source_image: Image.Image,
     source_uv: np.ndarray,
     size_mode: str = "exact",
     unwrap_method: str = "xatlas",
-    uvatlas_gutter: float = 4.0
+    uvatlas_gutter: float = 4.0,
+    density_mesh: Optional[trimesh.Trimesh] = None,
+    density_uv: Optional[np.ndarray] = None,
+    merge_islands: bool = True,
+    flat_swatch: bool = False,
+    flat_tolerance: float = 8.0,
+    flat_min_group_faces: int = 16,
+    source_uv_sampler: Optional[Callable[[np.ndarray], np.ndarray]] = None
 ) -> Dict[str, Any]:
     """
     Sizes the square re-chart canvas at the source's 1:1 average texel density (see
@@ -498,6 +835,16 @@ def plan_uv_canvas(
       - final_resolution: exact -> fit; pot-up -> smallest power of two >= fit;
         pot-down -> largest power of two <= fit (islands scaled down, lossy).
     Charts and packs at the fit size; the final canvas is packed by bake_uv_plan.
+
+    `density_mesh` / `density_uv` measure the source texel density on another mesh than the one
+    being charted. Step 3 passes the mesh it collapsed: `mesh`'s UVs are then projected onto
+    triangles that never existed in the source atlas, so their area says nothing about how many
+    texels per world unit the source texture actually holds.
+
+    `merge_islands` charts the mesh once per merge level (see get_adaptive_chart_options) and keeps
+    the level whose islands fit the smallest canvas at 1:1 density. Merging islands removes chart
+    boundary, and boundary is what costs gutter padding; where merging instead distorts the UVs so
+    much that the packer needs a bigger canvas, the smaller canvas of a lower level wins on its own.
     """
     if size_mode not in SIZE_MODES:
         raise ValueError(f"Unsupported size_mode '{size_mode}' (expected one of {', '.join(SIZE_MODES)})")
@@ -506,27 +853,122 @@ def plan_uv_canvas(
 
     source_uv = _check_source_uv(mesh, source_uv)
     src_w, src_h = source_image.size
-    t_src = texel_density(mesh.vertices, mesh.faces, source_uv, src_w, src_h)
+    if density_mesh is None:
+        density_mesh, density_uv = mesh, source_uv
+    else:
+        density_uv = _check_source_uv(density_mesh, density_uv)
+    t_src = texel_density(density_mesh.vertices, density_mesh.faces, density_uv, src_w, src_h)
     if t_src <= 0.0:
         raise ValueError("Source UVs have zero area: the canvas cannot be sized at 1:1 texel density")
 
-    if unwrap_method == "xatlas":
-        fit_info = _fit_xatlas(mesh, t_src)
-    else:
-        source_px_area = float(_uv_triangle_areas(source_uv, mesh.faces).sum()) * src_w * src_h
-        fit_info = _fit_uvatlas(mesh, t_src, source_px_area, uvatlas_gutter)
+    source_px_area = float(_uv_triangle_areas(density_uv, density_mesh.faces).sum()) * src_w * src_h
 
-    fit = fit_info["fit"]
+    def chart_levels(chart_mesh: trimesh.Trimesh, px_area: float) -> Tuple[Dict[str, Any], int, List[Dict[str, Any]]]:
+        """Charts at every merge level and keeps the level whose islands fit the smallest canvas."""
+        attempts: List[Dict[str, Any]] = []
+        best: Optional[Dict[str, Any]] = None
+        best_level = 0
+        for merge_level in (range(ISLAND_MERGE_LEVELS) if merge_islands else range(1)):
+            if unwrap_method == "xatlas":
+                candidate = _fit_xatlas(chart_mesh, t_src, merge_level)
+            else:
+                candidate = _fit_uvatlas(chart_mesh, t_src, px_area, uvatlas_gutter, merge_level)
+            layout = candidate["layouts"][candidate["fit"]]
+            # Boundary and canvas in the same units for every level: texels of that level's own canvas
+            attempts.append({
+                "level": merge_level,
+                "canvas": candidate["fit"],
+                "islands": _count_uv_islands(layout["faces"]),
+                "boundaryTexels": round(uv_boundary_length(layout["uv"] * candidate["fit"], layout["faces"]), 1)
+            })
+            if best is None or candidate["fit"] < best["fit"]:
+                best, best_level = candidate, merge_level
+            elif merge_level > 0:
+                # This level already needs a bigger canvas than the best one: merging further only
+                # distorts the islands more, so there is nothing to gain from another charting pass
+                break
+        return best, best_level, attempts
+
+    # Flat-colour faces need no texels of their own: hold them out of the chart pass and give each
+    # colour one swatch, so the canvas is sized for the faces that actually carry detail. Charting
+    # without them cuts holes into the mesh, which adds chart boundary, so the two canvases are
+    # measured against each other and the smaller one wins - as with the island merge levels.
+    flat_info: Optional[Dict[str, Any]] = None
+    flat_disabled: Optional[str] = None
+    chart_vertex_map = None
+    fit_info, chosen, attempts = chart_levels(mesh, source_px_area)
+
+    if flat_swatch:
+        flat_info = classify_flat_faces(
+            mesh,
+            source_image=source_image,
+            source_uv=source_uv,
+            tolerance=flat_tolerance,
+            min_group_faces=flat_min_group_faces,
+            material=getattr(getattr(mesh, "visual", None), "material", None),
+            source_uv_sampler=source_uv_sampler
+        )
+        detailed = ~flat_info["flat"]
+        if not detailed.any():
+            flat_disabled = "every face is flat: the chart pass needs at least one detailed face"
+        elif flat_info["stats"]["swatches"] == 0:
+            flat_disabled = (
+                f"no flat group reached {flat_min_group_faces} faces at tolerance {flat_tolerance:g}"
+            )
+        else:
+            sub_mesh, sub_vertex_map = _submesh_for_charting(mesh, detailed)
+            sub_px_area = float(
+                _uv_triangle_areas(source_uv, np.asarray(mesh.faces, dtype=np.int64)[detailed]).sum()
+            ) * src_w * src_h
+            sub_fit, sub_chosen, sub_attempts = chart_levels(sub_mesh, sub_px_area)
+            strip = _swatch_strip_px(flat_info["stats"]["swatches"], sub_fit["fit"])
+            swatched_canvas = _round_up_to_block(sub_fit["fit"] + strip)
+            if swatched_canvas >= fit_info["fit"]:
+                # Cutting the flat faces out added more chart boundary than the swatches saved
+                flat_disabled = (
+                    f"canvas would not shrink: {swatched_canvas} with swatches vs {fit_info['fit']} without"
+                )
+            else:
+                fit_info, chosen, attempts = sub_fit, sub_chosen, sub_attempts
+                chart_vertex_map = sub_vertex_map
+        if flat_disabled is not None:
+            flat_info = None
+
+    island_merge = {
+        "enabled": bool(merge_islands),
+        "method": unwrap_method,
+        "chosenLevel": chosen,
+        "levels": attempts,
+        "islandsBefore": attempts[0]["islands"],
+        "islandsAfter": attempts[chosen]["islands"],
+        "boundaryTexelsBefore": attempts[0]["boundaryTexels"],
+        "boundaryTexelsAfter": attempts[chosen]["boundaryTexels"],
+        "boundaryReductionPercent": round(
+            (1.0 - attempts[chosen]["boundaryTexels"] / attempts[0]["boundaryTexels"]) * 100.0, 2
+        ) if attempts[0]["boundaryTexels"] > 0 else 0.0,
+        "canvasBefore": attempts[0]["canvas"],
+        "canvasAfter": attempts[chosen]["canvas"]
+    }
+
+    island_fit = fit_info["fit"]
+    strip_px = _swatch_strip_px(flat_info["stats"]["swatches"], island_fit) if flat_info else 0
+    fit = _round_up_to_block(island_fit + strip_px)
     final = {"exact": fit, "pot-up": _pow2_at_least(fit), "pot-down": _pow2_at_most(fit)}[size_mode]
     return {
         "size_mode": size_mode,
         "unwrap_method": unwrap_method,
+        "flat": flat_info,
+        "flat_disabled": flat_disabled,
+        "swatch_strip_px": strip_px,
+        "island_fit_resolution": island_fit,
+        "chart_vertex_map": chart_vertex_map,
         "uvatlas_gutter": float(uvatlas_gutter),
         "source_resolution": (src_w, src_h),
         "texel_density_source": t_src,
         "fit_resolution": fit,
         "final_resolution": final,
         "fit_passes": fit_info["passes"],
+        "island_merge": island_merge,
         # Layouts already packed, by canvas size (reused when the final canvas equals one of them)
         "layouts": fit_info["layouts"],
         # xatlas pixel layout at 1:1 (pot-up re-uses it on the larger canvas)
@@ -535,31 +977,48 @@ def plan_uv_canvas(
 
 
 def _final_layout(mesh: trimesh.Trimesh, plan: Dict[str, Any]) -> Tuple[Dict[str, Any], bool]:
-    """Layout packed for the plan's final canvas. Returns (layout, repacked_at_final_resolution)."""
+    """
+    Layout packed for the plan's final canvas. Returns (layout, repacked_at_final_resolution).
+    With flat swatches the islands are packed for the canvas minus the swatch strip, on the mesh
+    without its flat faces; the layout's vmapping is mapped back to the original vertices.
+    """
     canvas = plan["final_resolution"]
-    if canvas in plan["layouts"]:
-        return plan["layouts"][canvas], False
+    strip_px = plan.get("swatch_strip_px", 0)
+    box = canvas - strip_px
+    flat_info = plan.get("flat")
+    chart_mesh = mesh if flat_info is None else _submesh_for_charting(mesh, ~flat_info["flat"])[0]
+    merge_level = plan["island_merge"]["chosenLevel"]
+
+    def finish(layout: Dict[str, Any], repacked: bool) -> Tuple[Dict[str, Any], bool]:
+        layout = _place_in_box(layout, canvas, strip_px)
+        vertex_map = plan.get("chart_vertex_map")
+        if vertex_map is not None:
+            layout = {**layout, "vmapping": np.asarray(vertex_map, dtype=np.int64)[layout["vmapping"]]}
+        return layout, repacked
+
+    if box in plan["layouts"]:
+        return finish(plan["layouts"][box], False)
 
     if plan["unwrap_method"] == "uvatlas":
-        return _uvatlas_layout(mesh, canvas, plan["uvatlas_gutter"]), True
+        return finish(_uvatlas_layout(chart_mesh, box, plan["uvatlas_gutter"], merge_level), True)
 
     natural = plan["xatlas_natural"]
-    if canvas > plan["fit_resolution"]:
+    if box > plan["island_fit_resolution"]:
         # pot-up: the 1:1 packing fits the larger canvas as is (padding already in final pixels);
         # maximize_uv_bounds scales the islands and gutters up to fill it.
-        return _place_on_canvas(natural, canvas), False
+        return finish(_place_on_canvas(natural, box), False)
 
     # pot-down: re-pack at a lower density so the atlas fits the smaller canvas and the padding
     # stays in final-canvas pixels (scaling the 1:1 layout down would shrink the gutters).
     tried = []
     for _ in range(MAX_PACK_PASSES):
-        tpu = natural["texels_per_unit"] * (canvas - 2 * CANVAS_MARGIN_PX) / natural["extent"] * 0.99
-        natural = _xatlas_natural_atlas(mesh, tpu)
+        tpu = natural["texels_per_unit"] * (box - 2 * CANVAS_MARGIN_PX) / natural["extent"] * 0.99
+        natural = _xatlas_natural_atlas(chart_mesh, tpu, merge_level)
         tried.append((round(tpu, 3), natural["extent"]))
-        if natural["extent"] + 2 * CANVAS_MARGIN_PX <= canvas:
-            return _place_on_canvas(natural, canvas), True
+        if natural["extent"] + 2 * CANVAS_MARGIN_PX <= box:
+            return finish(_place_on_canvas(natural, box), True)
     raise RuntimeError(
-        f"xatlas could not fit the charts into {canvas}x{canvas} within {MAX_PACK_PASSES} passes "
+        f"xatlas could not fit the charts into {box}x{box} within {MAX_PACK_PASSES} passes "
         f"(texels/unit, atlas side): {tried}"
     )
 
@@ -701,7 +1160,8 @@ def _rebake_material_slots(
     bary: np.ndarray,
     src_uv: np.ndarray,
     covered: np.ndarray,
-    padding: int
+    padding: int,
+    swatch: Optional[Tuple[np.ndarray, Dict[str, List[List[int]]]]] = None
 ) -> Tuple[Dict[str, Image.Image], int]:
     """
     Re-bakes every non-base-colour texture slot of the PBRMaterial `mat` into the new UV layout with the base
@@ -734,9 +1194,58 @@ def _rebake_material_slots(
             background = np.mean(values, axis=0).astype(np.uint8)
         canvas = np.tile(background, (res * res, 1))
         canvas[sel] = np.clip(values, 0.0, 255.0).astype(np.uint8)
+        canvas = canvas.reshape(res, res, 3)
+        if swatch is not None:
+            cells, colors = swatch
+            # This slot is flat over every swatched face too, so one colour per swatch holds it
+            _paint_swatches(canvas, np.zeros_like(covered), cells, colors[slot])
         # New PIL images: no _fast_save_data / _is_bitstream_passthrough, so the GLB gets these pixels
-        rebaked[slot] = Image.fromarray(dilate_texture(canvas.reshape(res, res, 3), covered, padding=padding), mode="RGB")
+        rebaked[slot] = Image.fromarray(dilate_texture(canvas, covered, padding=padding), mode="RGB")
     return rebaked, degenerate
+
+
+def _paint_swatches(image: np.ndarray, covered: np.ndarray, cells: np.ndarray, colors: List[List[int]]) -> None:
+    """Fills every swatch cell with its colour and marks it covered, so the dilation leaves it be."""
+    channels = image.shape[2]
+    for c, (x0, y0, x1, y1) in enumerate(cells):
+        rgb = np.asarray(colors[c], dtype=np.uint8)
+        image[y0:y1, x0:x1, :3] = rgb
+        if channels == 4:
+            image[y0:y1, x0:x1, 3] = 255
+        covered[y0:y1, x0:x1] = True
+
+
+def _append_flat_faces(
+    mesh: trimesh.Trimesh,
+    flat_info: Dict[str, Any],
+    layout: Dict[str, Any],
+    cells: np.ndarray,
+    canvas: int
+) -> Dict[str, np.ndarray]:
+    """
+    Adds the flat faces back to the charted mesh, every vertex pinned to the centre of its
+    colour's swatch. Their UV triangles are a point, which is what a constant colour needs: the
+    GPU samples that one texel whatever the mip level, so nothing from a neighbouring island can
+    bleed in. A vertex shared by two colours is duplicated, one copy per colour.
+    """
+    faces = np.asarray(mesh.faces, dtype=np.int64)[flat_info["flat"]]
+    cluster = flat_info["cluster"][flat_info["flat"]]
+    n_clusters = len(cells)
+    uv_centre = _swatch_uv(cells, canvas)
+
+    key = faces * n_clusters + cluster[:, None]      # one vertex per (original vertex, colour)
+    unique_key, inverse = np.unique(key, return_inverse=True)
+    vertex_source = unique_key // n_clusters
+    vertex_cluster = unique_key % n_clusters
+
+    offset = len(layout["vertices"])
+    return {
+        "vertices": np.vstack([layout["vertices"], np.asarray(mesh.vertices, dtype=np.float64)[vertex_source]]),
+        "faces": np.vstack([layout["faces"], inverse.reshape(-1, 3) + offset]),
+        "uv": np.vstack([layout["uv"], uv_centre[vertex_cluster]]),
+        "vmapping": np.concatenate([np.asarray(layout["vmapping"], dtype=np.int64), vertex_source]),
+    }
+
 
 
 def bake_uv_plan(
@@ -745,12 +1254,18 @@ def bake_uv_plan(
     source_image: Image.Image,
     source_uv: np.ndarray,
     dilation_padding: int = 16,
-    double_sided: bool = False
+    double_sided: bool = False,
+    source_uv_sampler: Optional[Callable[[np.ndarray], np.ndarray]] = None
 ) -> Tuple[trimesh.Trimesh, Image.Image, Dict[str, Any]]:
     """
     Packs the charts for the plan's final canvas (see plan_uv_canvas) and bakes the source texture
     into it: barycentric sampling, EDT dilation into the gutters, FrontSide material
     (doubleSided=double_sided). Returns (recharted_mesh, baked_image, stats).
+
+    `source_uv_sampler` reads the source texture's UV at arbitrary 3D points instead of
+    interpolating `source_uv` over the triangle being baked. Step 3 passes one when it collapsed
+    edges: `mesh` is then a mesh whose triangles never existed in the textured original, so each
+    texel is looked up on the original surface rather than between this triangle's corners.
     """
     source_uv = _check_source_uv(mesh, source_uv)
     # The baked material is the source glTF PBR material with the new textures: nothing is invented
@@ -804,8 +1319,13 @@ def bake_uv_plan(
 
     # Map recharted faces through vmapping back to exact original mesh vertices
     orig_face_verts = np.asarray(vmapping, dtype=np.int64)[faces_recharted]  # (N, 3)
-    raw_tri_uv = source_uv[orig_face_verts[fid]]  # (len(sel), 3, 2)
-    src_uv = (raw_tri_uv * bary[:, :, None]).sum(axis=1)
+    if source_uv_sampler is None:
+        raw_tri_uv = source_uv[orig_face_verts[fid]]  # (len(sel), 3, 2)
+        src_uv = (raw_tri_uv * bary[:, :, None]).sum(axis=1)
+    else:
+        # Where each baked texel sits on the mesh, looked up on the textured original surface
+        tri_pos = np.asarray(mesh.vertices, dtype=np.float64)[orig_face_verts[fid]]
+        src_uv = source_uv_sampler((tri_pos * bary[:, :, None]).sum(axis=1))
     src_uv = np.clip(src_uv, 0.0, 1.0)
 
     colors = _check_no_nan(_sample_texture_bilinear(src_img, src_uv), "base colour texture")
@@ -830,6 +1350,14 @@ def bake_uv_plan(
     covered[sel] = True
     covered = covered.reshape(target_res, target_res)
 
+    # Flat faces: one swatch per colour, painted and marked covered so the dilation keeps it intact
+    flat_info = plan.get("flat")
+    swatch: Optional[Tuple[np.ndarray, Dict[str, List[List[int]]]]] = None
+    if flat_info is not None:
+        cells = swatch_cells(flat_info["stats"]["swatches"], target_res, plan["swatch_strip_px"])
+        swatch = (cells, flat_info["cluster_colors"])
+        _paint_swatches(base_img, covered, cells, flat_info["cluster_colors"]["baseColorTexture"])
+
     # Mandatory EDT boundary dilation: expand edge pixels into the gutter buffer so GPU bilinear filtering
     # and mipmapping sample valid colors instead of the background canvas.
     # For UVAtlas, charts have gutter >= 4.0 px, so we mandatorily apply at least padding=8
@@ -843,13 +1371,20 @@ def bake_uv_plan(
     # normal / metallicRoughness / occlusion / emissive maps re-baked into the NEW layout as well
     rebaked_textures, normal_degenerate_px = _rebake_material_slots(
         orig_mat, mesh, source_uv, orig_face_verts, uv_recharted[faces_recharted],
-        sel, fid, bary, src_uv, covered, eff_dilation_padding
+        sel, fid, bary, src_uv, covered, eff_dilation_padding, swatch=swatch
     )
     mat = orig_mat.copy()
     mat.baseColorTexture = dilated_pil
     mat.doubleSided = double_sided
     for slot, img in rebaked_textures.items():
         setattr(mat, slot, img)
+
+    if flat_info is not None:
+        combined = _append_flat_faces(mesh, flat_info, layout, swatch[0], target_res)
+        vertices_recharted = combined["vertices"]
+        faces_recharted = combined["faces"]
+        uv_recharted = combined["uv"]
+        vmapping = combined["vmapping"]
 
     # Preserve smooth vertex normals
     normals_recharted = None
@@ -904,6 +1439,11 @@ def bake_uv_plan(
         "texel_density_area": texel_density_area,
         "mesh_surface_area": round(mesh_area, 4),
         "dilation_padding": eff_dilation_padding,
+        "flat_swatch": (
+            {**flat_info["stats"], "stripPx": plan["swatch_strip_px"],
+             "islandCanvas": target_res - plan["swatch_strip_px"]}
+            if flat_info is not None else None
+        ),
         "rebaked_texture_slots": ["baseColorTexture"] + list(rebaked_textures),
         "normal_rebake_degenerate_pixels": normal_degenerate_px,
         "double_sided": double_sided

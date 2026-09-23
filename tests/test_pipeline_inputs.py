@@ -7,7 +7,7 @@ optimizer/step_pipeline.py refuses what it cannot process instead of substitutin
   primitives, no material / baseColorTexture / TEXCOORD_0, UV count != vertex count, undecodable
   texture; non-finite vertices stop Step 1 (cleaner);
 - Node sub-step failures are reported as one concise line (full output stays in the traceback);
-- Step 6 requires the Node summary to report encoded textures.
+- Step 7 requires the Node summary to report encoded textures.
 """
 
 import json
@@ -236,11 +236,11 @@ class TestNodeSubStepReasons(_Tmp):
                    "Error: texture 0: basisu KTX2 encoding failed: ERROR: load_png failed\n"
                    "    at processTextureItem (file:///x/optimize_meshopt.mjs:210:15)\n"
         )
-        err = step_pipeline.node_step_failure("Step 6: KTX2 texture compression failed", proc)
+        err = step_pipeline.node_step_failure("Step 7: KTX2 texture compression failed", proc)
         self.assertIsInstance(err, PipelineAbort)
         self.assertEqual(
             err.reason,
-            "Step 6: KTX2 texture compression failed: texture 0: basisu KTX2 encoding failed: ERROR: load_png failed"
+            "Step 7: KTX2 texture compression failed: texture 0: basisu KTX2 encoding failed: ERROR: load_png failed"
         )
         self.assertIn("    at processTextureItem", str(err.__cause__), "full output kept on the cause")
 
@@ -254,7 +254,7 @@ class TestNodeSubStepReasons(_Tmp):
         self.assertIn("Cannot read the size of texture 0", ctx.exception.reason)
         self.assertNotIn("Failed to inspect GLB metrics", ctx.exception.reason)
 
-    def test_step6_summary_must_report_encoded_textures(self):
+    def test_step7_summary_must_report_encoded_textures(self):
         def proc(summary):
             return subprocess.CompletedProcess(["node"], 0, stdout="noise\n" + json.dumps(summary) + "\n", stderr="")
 

@@ -23,14 +23,24 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..
 const SAMPLE = '/examples/sample_dinoki.glb';
 const INTERRUPTED = 'interrupted (server restarted)';
 const SANDBOX_LINKS = ['examples', 'viewer', 'optimizer', '.venv'];
+// The 8 step files of optimizer/step_pipeline.py (a skipped step writes none)
+const STEP_FILES = [
+  'step_00_raw.glb',
+  'step_01_cleaned_grounded.glb',
+  'step_02_oriented.glb',
+  'step_03_face_reduced.glb',
+  'step_04_texture_baked.glb',
+  'step_05_palette_tagged.glb',
+  'step_06_meshopt.glb',
+  'step_07_final.glb'
+];
 
 // Fake optimizer.step_pipeline: plays the scenario stored in the input GLB's extras.scenario
 const FAKE_PIPELINE = `
 import json, os, struct, sys, time
 from pathlib import Path
 
-FILES = ["step_00_raw.glb", "step_01_cleaned_grounded.glb", "step_02_oriented.glb",
-         "step_03_texture_baked.glb", "step_04_palette_tagged.glb", "step_05_meshopt.glb", "step_06_final.glb"]
+FILES = ${JSON.stringify(STEP_FILES)}
 
 
 def emit(obj):
@@ -49,15 +59,21 @@ def main():
     data = src.read_bytes()
     json_len = struct.unpack("<I", data[12:16])[0]
     scenario = json.loads(data[20:20 + json_len]).get("extras", {}).get("scenario", "ok")
+    skipped = set()
+    if "--skip-steps" in sys.argv:
+        skipped = {int(n) for n in sys.argv[sys.argv.index("--skip-steps") + 1].split(",") if n}
 
     def step(i, write=True):
+        if i in skipped:
+            emit({"event": "step_skipped", "step": i, "stepName": "s%d" % i, "file": None})
+            return
         if write:
             (out / FILES[i]).write_bytes(b"fake")
         emit({"event": "step_complete", "step": i, "stepName": "s%d" % i, "file": FILES[i], "metrics": {"faces": 1}})
 
     if scenario in ("ok", "missing_final", "nonzero_after_complete"):
-        for i in range(7):
-            step(i, write=not (scenario == "missing_final" and i == 6))
+        for i in range(len(FILES)):
+            step(i, write=not (scenario == "missing_final" and i == len(FILES) - 1))
         emit({"event": "pipeline_complete", "summary": {"elapsedSeconds": 0.1}})
         return 3 if scenario == "nonzero_after_complete" else 0
     if scenario == "pipeline_error":
@@ -280,7 +296,35 @@ describe('upload parameter validation', () => {
       [{ samplePath: SAMPLE, format: '' }, /Unsupported format ''/],
       [{ samplePath: SAMPLE, uvMode: 'bogus' }, /Unsupported uvMode 'bogus'.*allowed: xatlas, uvatlas, rechart/],
       [{ samplePath: SAMPLE, downscale: 'maybe' }, /Unsupported downscale 'maybe'/],
+      [{ samplePath: SAMPLE, mergeUvIslands: 'maybe' }, /Unsupported mergeUvIslands 'maybe' \(allowed: on, off\)/],
+      [{ samplePath: SAMPLE, mergeUvIslands: 'ON' }, /Unsupported mergeUvIslands 'ON'/],
       [{ samplePath: SAMPLE, resolution: '512' }, /Unexpected field\(s\): resolution/],
+      [{ samplePath: SAMPLE, skipSteps: '0' }, /Unsupported skipSteps value '0' \(allowed: 1, 2, 3, 4, 5, 6\)/],
+      [{ samplePath: SAMPLE, skipSteps: '7' }, /Unsupported skipSteps value '7'/],
+      [{ samplePath: SAMPLE, skipSteps: '1.5' }, /Unsupported skipSteps value '1\.5'/],
+      [{ samplePath: SAMPLE, skipSteps: 'two' }, /Unsupported skipSteps value 'two'/],
+      [{ samplePath: SAMPLE, skipSteps: '2,2' }, /Duplicate skipSteps value\(s\): 2/],
+      [{ samplePath: SAMPLE, reduceEngine: 'bogus' }, /Unsupported reduceEngine 'bogus' \(allowed: cgal, meshlab\)/],
+      [{ samplePath: SAMPLE, reduceOps: 'repair,bogus' }, /Unsupported reduceOps value 'bogus' \(allowed: repair, self_intersection, isolated, hidden, merge\)/],
+      [{ samplePath: SAMPLE, reduceOps: 'repair,repair' }, /Duplicate reduceOps value\(s\): repair/],
+      [{ samplePath: SAMPLE, reduceQualityBudget: '0' }, /Unsupported reduceQualityBudget '0' \(expected a number greater than 0\)/],
+      [{ samplePath: SAMPLE, reduceQualityBudget: 'abc' }, /Unsupported reduceQualityBudget 'abc' \(expected a number greater than 0\)/],
+      [{ samplePath: SAMPLE, reduceNormalBudget: '0' }, /Unsupported reduceNormalBudget '0' \(expected 'auto' or an angle above 0 and at most 90\)/],
+      [{ samplePath: SAMPLE, reduceNormalBudget: '91' }, /Unsupported reduceNormalBudget '91' \(expected 'auto' or an angle above 0 and at most 90\)/],
+      [{ samplePath: SAMPLE, reduceNormalBudget: 'AUTO' }, /Unsupported reduceNormalBudget 'AUTO' \(expected 'auto' or an angle above 0 and at most 90\)/],
+      [{ samplePath: SAMPLE, reduceNormalFactor: '0' }, /Unsupported reduceNormalFactor '0' \(expected a number above 0 and at most 30\)/],
+      [{ samplePath: SAMPLE, reduceNormalFactor: '31' }, /Unsupported reduceNormalFactor '31' \(expected a number above 0 and at most 30\)/],
+      [{ samplePath: SAMPLE, reduceIsolatedMinFaces: '-1' }, /Unsupported reduceIsolatedMinFaces '-1' \(expected a non-negative integer\)/],
+      [{ samplePath: SAMPLE, reduceIsolatedMinFaces: '2.5' }, /Unsupported reduceIsolatedMinFaces '2\.5' \(expected a non-negative integer\)/],
+      [{ samplePath: SAMPLE, skipSteps: '3', reduceEngine: 'cgal' }, /Step 3 is skipped, so its option\(s\) must not be sent: reduceEngine/],
+      [{ samplePath: SAMPLE, skipSteps: '3', reduceOps: 'repair', reduceQualityBudget: '1' }, /must not be sent: reduceOps, reduceQualityBudget/],
+      [{ samplePath: SAMPLE, skipSteps: '4', uvMode: 'uvatlas' }, /Step 4 is skipped, so its option\(s\) must not be sent: uvMode/],
+      [{ samplePath: SAMPLE, skipSteps: '4', downscale: 'off', sizeMode: 'pot-up' }, /must not be sent: downscale, sizeMode/],
+      [{ samplePath: SAMPLE, skipSteps: '4', mergeUvIslands: 'off' }, /Step 4 is skipped, so its option\(s\) must not be sent: mergeUvIslands/],
+      [{ samplePath: SAMPLE, skipSteps: '6', smoothNormals: 'off' }, /Step 6 is skipped, so its option\(s\) must not be sent: smoothNormals/],
+      [{ samplePath: SAMPLE, smoothNormals: 'maybe' }, /Unsupported smoothNormals 'maybe' \(allowed: on, off\)/],
+      [{ samplePath: SAMPLE, skipSteps: '4' }, /'merge' invalidates the model's UVs, which only Step 4 can re-chart/],
+      [{ samplePath: SAMPLE, skipSteps: '4', reduceOps: 'repair,merge' }, /'merge' invalidates the model's UVs/],
       [{ samplePath: '/etc/passwd' }, /samplePath '\/etc\/passwd' is not one of the models listed by \/api\/models/],
       [{ samplePath: '/package.json' }, /is not one of the models listed/],
       [{ samplePath: '/examples/../server.mjs' }, /is not one of the models listed/],
@@ -303,7 +347,20 @@ describe('upload parameter validation', () => {
       [{ samplePath: SAMPLE, format: 'jpg' }, /Unsupported format 'jpg'/],
       [{ samplePath: SAMPLE, uvMode: 'rechart2' }, /Unsupported uvMode/],
       [{ samplePath: SAMPLE, format: null }, /Unsupported format 'null'/],
-      [{ sampleUrl: SAMPLE }, /Unexpected field\(s\): sampleUrl/]
+      [{ sampleUrl: SAMPLE }, /Unexpected field\(s\): sampleUrl/],
+      [{ samplePath: SAMPLE, skipSteps: [0] }, /Unsupported skipSteps value '0' \(allowed: 1, 2, 3, 4, 5, 6\)/],
+      [{ samplePath: SAMPLE, skipSteps: [1, 1] }, /Duplicate skipSteps value\(s\): 1/],
+      [{ samplePath: SAMPLE, skipSteps: [2.5] }, /Unsupported skipSteps value '2\.5'/],
+      [{ samplePath: SAMPLE, skipSteps: 3 }, /Unsupported skipSteps '3' \(expected an array or a comma-separated string\)/],
+      [{ samplePath: SAMPLE, reduceOps: ['repair', 3] }, /Unsupported reduceOps value '3'/],
+      [{ samplePath: SAMPLE, reduceQualityBudget: null }, /Unsupported reduceQualityBudget 'null' \(expected a number greater than 0\)/],
+      [{ samplePath: SAMPLE, reduceQualityBudget: -1 }, /Unsupported reduceQualityBudget '-1' \(expected a number greater than 0\)/],
+      [{ samplePath: SAMPLE, reduceIsolatedMinFaces: 1.5 }, /Unsupported reduceIsolatedMinFaces '1\.5' \(expected a non-negative integer\)/],
+      [{ samplePath: SAMPLE, skipSteps: [3], reduceQualityBudget: 1 }, /Step 3 is skipped, so its option\(s\) must not be sent: reduceQualityBudget/],
+      [{ samplePath: SAMPLE, mergeUvIslands: null }, /Unsupported mergeUvIslands 'null'/],
+      [{ samplePath: SAMPLE, skipSteps: [4], sizeMode: 'pot-up' }, /Step 4 is skipped, so its option\(s\) must not be sent: sizeMode/],
+      [{ samplePath: SAMPLE, skipSteps: [4], mergeUvIslands: 'on' }, /Step 4 is skipped, so its option\(s\) must not be sent: mergeUvIslands/],
+      [{ samplePath: SAMPLE, skipSteps: [4], reduceOps: ['merge'] }, /'merge' invalidates the model's UVs/]
     ];
     for (const [body, message] of jsonCases) {
       const res = await postJson(server.url, body);
@@ -320,6 +377,65 @@ describe('upload parameter validation', () => {
     assert.equal(body.config.uvMode, 'xatlas');
     const job = await waitForJobEnd(server.url, body.jobId);
     assert.equal(job.status, 'completed', JSON.stringify(job));
+  });
+
+  test('the step & face-reduction options default when absent and are echoed in the job config', async () => {
+    const { status, body } = await postJson(server.url, { samplePath: SAMPLE });
+    assert.equal(status, 200, JSON.stringify(body));
+    assert.equal(body.totalSteps, 8);
+    assert.equal(body.config.mergeUvIslands, 'on');
+    assert.deepEqual(body.config.skipSteps, []);
+    assert.equal(body.config.reduceEngine, 'cgal');
+    assert.deepEqual(body.config.reduceOps, ['repair', 'isolated', 'hidden', 'merge']);
+    assert.equal(body.config.reduceQualityBudget, 0.1);
+    assert.equal(body.config.reduceNormalBudget, 'auto');
+    assert.equal(body.config.reduceNormalFactor, 1);
+    assert.equal(body.config.reduceIsolatedMinFaces, 25);
+    assert.equal((await waitForJobEnd(server.url, body.jobId)).status, 'completed');
+  });
+
+  test('the step & face-reduction options are accepted as JSON values and as multipart text', async () => {
+    const json = await postJson(server.url, {
+      samplePath: SAMPLE,
+      mergeUvIslands: 'off',
+      skipSteps: [2, 5],
+      reduceEngine: 'cgal',
+      reduceOps: ['repair', 'hidden'],
+      reduceQualityBudget: 1.5,
+      reduceNormalBudget: 12,
+      reduceNormalFactor: 7,
+      reduceIsolatedMinFaces: 0
+    });
+    assert.equal(json.status, 200, JSON.stringify(json.body));
+    assert.equal(json.body.config.mergeUvIslands, 'off');
+    assert.deepEqual(json.body.config.skipSteps, [2, 5]);
+    assert.equal(json.body.config.reduceEngine, 'cgal');
+    assert.deepEqual(json.body.config.reduceOps, ['repair', 'hidden']);
+    assert.equal(json.body.config.reduceQualityBudget, 1.5);
+    assert.equal(json.body.config.reduceNormalBudget, 12);
+    assert.equal(json.body.config.reduceNormalFactor, 7);
+    assert.equal(json.body.config.reduceIsolatedMinFaces, 0);
+    assert.equal((await waitForJobEnd(server.url, json.body.jobId)).status, 'completed');
+
+    const form = await upload(server.url, {
+      samplePath: SAMPLE,
+      mergeUvIslands: 'off',
+      skipSteps: '1,6',
+      reduceEngine: 'meshlab',
+      reduceOps: 'repair,merge',
+      reduceQualityBudget: '0.5',
+      // The viewer sends an empty Shading Budget field as the literal 'auto'
+      reduceNormalBudget: 'auto',
+      reduceIsolatedMinFaces: '10'
+    });
+    assert.equal(form.status, 200, JSON.stringify(form.body));
+    assert.equal(form.body.config.mergeUvIslands, 'off');
+    assert.deepEqual(form.body.config.skipSteps, [1, 6]);
+    assert.deepEqual(form.body.config.reduceOps, ['repair', 'merge']);
+    assert.equal(form.body.config.reduceQualityBudget, 0.5);
+    assert.equal(form.body.config.reduceNormalBudget, 'auto');
+    assert.equal(form.body.config.reduceIsolatedMinFaces, 10);
+    assert.equal((await waitForJobEnd(server.url, form.body.jobId)).status, 'completed');
   });
 
   test('/api/models hides already-compressed GLBs, which are then refused as samplePath', async () => {
@@ -366,15 +482,35 @@ describe('pipeline outcome handling (fake pipeline)', () => {
     return { jobId: body.jobId, job: await waitForJobEnd(server.url, body.jobId) };
   }
 
-  test('a complete run with all 7 step files is completed', async () => {
+  test('a complete run with all 8 step files is completed', async () => {
     const { jobId, job } = await runScenario('ok');
     assert.equal(job.status, 'completed', JSON.stringify(job));
     assert.equal(job.error, null);
+    assert.equal(job.totalSteps, 8);
     const events = await readStream(server.url, jobId);
     assert.equal(events.at(-1).event, 'job_complete');
-    assert.equal(events.filter((e) => e.event === 'step_complete').length, 7);
+    assert.equal(events.filter((e) => e.event === 'step_complete').length, 8);
     const stored = JSON.parse(fs.readFileSync(path.join(dir, 'workspaces', jobId, 'metrics.json'), 'utf-8'));
     assert.equal(stored.status, 'completed');
+  });
+
+  test('a run with skipped steps completes although they wrote no file', async () => {
+    const { status, body } = await upload(server.url, { file: scenarioGlb('ok'), skipSteps: '2,5' });
+    assert.equal(status, 200, JSON.stringify(body));
+    const job = await waitForJobEnd(server.url, body.jobId);
+    assert.equal(job.status, 'completed', JSON.stringify(job));
+    const files = fs.readdirSync(path.join(dir, 'workspaces', body.jobId));
+    assert.ok(!files.includes(STEP_FILES[2]) && !files.includes(STEP_FILES[5]), files.join(', '));
+
+    const events = await readStream(server.url, body.jobId);
+    assert.equal(events.at(-1).event, 'job_complete');
+    assert.deepEqual(events.filter((e) => e.event === 'step_skipped').map((e) => e.data.step), [2, 5]);
+    assert.deepEqual(events.find((e) => e.event === 'step_skipped').data,
+      { event: 'step_skipped', step: 2, stepName: 's2', file: null, jobId: body.jobId });
+    assert.deepEqual(events.filter((e) => e.event === 'step_complete').map((e) => e.data.step), [0, 1, 3, 4, 6, 7]);
+    const stored = JSON.parse(fs.readFileSync(path.join(dir, 'workspaces', body.jobId, 'metrics.json'), 'utf-8'));
+    assert.equal(stored.status, 'completed');
+    assert.deepEqual(stored.steps['2'], { step: 2, stepName: 's2', file: null, skipped: true });
   });
 
   test('pipeline_error sets the concise reason, keeps stderr separately and never completes', async () => {
@@ -398,7 +534,7 @@ describe('pipeline outcome handling (fake pipeline)', () => {
 
   const failures = [
     ['exit0_no_complete', /exited with code 0 without a pipeline_complete event/],
-    ['missing_final', /step files are missing: step_06_final\.glb/],
+    ['missing_final', /step files are missing: step_07_final\.glb/],
     ['nonzero_after_complete', /exited with code 3 after pipeline_complete/],
     ['crash_without_event', /exited with code 1 without a pipeline_error event.*No module named 'fake_dependency'/],
     ['malformed_event', /unparseable event line/],
@@ -481,6 +617,51 @@ describe('replay from disk after a restart', () => {
 
     const missing = await getMetrics(server.url, 'job_does_not_exist');
     assert.equal(missing.status, 404);
+  });
+
+  test('skipped steps are replayed as step_skipped and never counted as missing files', async () => {
+    server ??= await startServer(dir);
+    // Written by the server: its steps are keyed by step index
+    writeStoredJob('job_stored_skipped', {
+      jobId: 'job_stored_skipped',
+      status: 'completed',
+      error: null,
+      steps: {
+        0: { step: 0, stepName: 'raw', file: STEP_FILES[0] },
+        1: { step: 1, stepName: 'cleaned_grounded', file: null, skipped: true }
+      }
+    });
+    const events = await readStream(server.url, 'job_stored_skipped');
+    assert.deepEqual(events.map((e) => e.event), ['job_start', 'step_complete', 'step_skipped', 'job_complete']);
+    assert.equal(events[0].data.totalSteps, 8);
+    assert.deepEqual(events[2].data,
+      { jobId: 'job_stored_skipped', step: 1, stepName: 'cleaned_grounded', file: null });
+
+    // Written by the Python pipeline itself: steps 1 & 2 skipped, so only the other files exist
+    const stepEntry = (step) => ([1, 2].includes(step)
+      ? { step, stepName: `s${step}`, file: null, skipped: true }
+      : { step, stepName: `s${step}`, file: STEP_FILES[step], skipped: false });
+    for (const [jobId, written] of [['job_pipeline_skipped', [0, 3, 4, 5, 6, 7]], ['job_pipeline_incomplete', [0, 3, 4, 5, 6]]]) {
+      writeStoredJob(jobId, {
+        success: true,
+        summary: { elapsedSeconds: 1 },
+        skippedSteps: [1, 2],
+        steps: STEP_FILES.map((_, step) => stepEntry(step))
+      });
+      for (const step of written) {
+        fs.writeFileSync(path.join(dir, 'workspaces', jobId, STEP_FILES[step]), 'fake');
+      }
+    }
+    const complete = await getMetrics(server.url, 'job_pipeline_skipped');
+    assert.equal(complete.body.status, 'completed', JSON.stringify(complete.body));
+    const completeEvents = await readStream(server.url, 'job_pipeline_skipped');
+    assert.equal(completeEvents.at(-1).event, 'job_complete');
+    assert.deepEqual(completeEvents.filter((e) => e.event === 'step_skipped').map((e) => e.data.step), [1, 2]);
+
+    // A step that was not skipped and still wrote no file is missing
+    const incomplete = await getMetrics(server.url, 'job_pipeline_incomplete');
+    assert.equal(incomplete.body.status, 'error');
+    assert.match(incomplete.body.error, /step files are missing: step_07_final\.glb/);
   });
 });
 
