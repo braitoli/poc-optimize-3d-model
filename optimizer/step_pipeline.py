@@ -305,8 +305,13 @@ class StepPipeline:
         reduce_ops: Sequence[str] = DEFAULT_REDUCE_OPS,
         reduce_quality_budget: float = DEFAULT_QUALITY_BUDGET_PERCENT,
         reduce_normal_budget: float = DEFAULT_NORMAL_BUDGET_DEGREES,
-        reduce_isolated_min_faces: int = DEFAULT_ISOLATED_MIN_FACES
+        reduce_isolated_min_faces: int = DEFAULT_ISOLATED_MIN_FACES,
+        max_faces: Optional[int] = None
     ):
+        if max_faces is not None:
+            if isinstance(max_faces, bool) or not isinstance(max_faces, int) or max_faces <= 0:
+                raise ValueError(f"max_faces must be a positive integer, got {max_faces!r}")
+        self.max_faces = max_faces
         self.texture_format = texture_format.lower()
         if self.texture_format not in TEXTURE_FORMATS:
             raise ValueError(f"Unsupported texture_format '{texture_format}' (expected one of {', '.join(TEXTURE_FORMATS)})")
@@ -705,6 +710,19 @@ class StepPipeline:
             # Single-sided rendering culls a face wound against its own normals, and the hole it
             # leaves reads as a black triangle stuck on the model
             reduce_stats["outwardFix"] = align_faces_outward(mesh)
+
+            # Enforce max_faces policy by level if requested and faces still exceed threshold
+            if self.max_faces and len(mesh.faces) > self.max_faces:
+                self.log(f"   Enforcing level policy: capping faces {len(mesh.faces):,} -> {self.max_faces:,}")
+                if self.reduce_engine == "meshlab":
+                    from optimizer.core.face_reduce import _meshlab_merge
+                    new_v, new_f = _meshlab_merge(mesh.vertices, mesh.faces, target_faces=self.max_faces)
+                else:
+                    from optimizer.core.face_reduce import _cgal_merge
+                    new_v, new_f = _cgal_merge(mesh.vertices, mesh.faces, target_faces=self.max_faces)
+                mesh = trimesh.Trimesh(vertices=new_v, faces=new_f, process=False)
+                reduce_stats["facesAfter"] = len(mesh.faces)
+                reduce_stats["faceReductionPercent"] = round(((faces_before_reduction - len(mesh.faces)) / faces_before_reduction) * 100, 2)
 
             step3_file = output_dir / self.STEP_DEFINITIONS[3]["file"]
             # A collapsed mesh has no UV, so its GLB shows the bare geometry the step produced
@@ -1244,6 +1262,12 @@ def main():
         default=DEFAULT_ISOLATED_MIN_FACES,
         help="Step 3 'isolated' operation: connected components with fewer faces than this are removed"
     )
+    parser.add_argument(
+        "--max-faces",
+        type=int,
+        default=None,
+        help="Step 3 maximum face cap (enforces level-based budget e.g. 50k for L1/L2, 100k for L3, 300k for L4/L5)"
+    )
     parser.add_argument("--quiet", "-q", action="store_true", help="Suppress stderr logs and only stream NDJSON events")
 
     args = parser.parse_args()
@@ -1274,7 +1298,8 @@ def main():
             reduce_ops=parse_list(args.reduce_ops),
             reduce_quality_budget=args.reduce_quality_budget,
             reduce_normal_budget=args.reduce_normal_budget,
-            reduce_isolated_min_faces=args.reduce_isolated_min_faces
+            reduce_isolated_min_faces=args.reduce_isolated_min_faces,
+            max_faces=args.max_faces
         )
         pipeline.run(Path(args.input), Path(args.output_dir))
     except Exception as e:
