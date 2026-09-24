@@ -91,48 +91,51 @@ def set_frontside_material(glb_bytes: bytes) -> bytes:
     return bytes(out)
 
 
+def has_meshopt_compression(path: Union[Path, str]) -> bool:
+    """Checks if input GLB has EXT_meshopt_compression in extensionsUsed or extensionsRequired."""
+    try:
+        data = Path(path).read_bytes()
+        if len(data) < 20:
+            return False
+        _, _, gltf = _parse_glb_json(data, str(path))
+        exts = gltf.get("extensionsUsed", []) + gltf.get("extensionsRequired", [])
+        return "EXT_meshopt_compression" in exts
+    except Exception:
+        return False
+
+
+def unpack_meshopt_glb(input_path: Path, output_path: Path) -> Path:
+    """Unpacks a meshopt-compressed and/or quantized GLB into standard uncompressed float32 GLB.
+    Uses optimizer/node/unpack_meshopt.mjs."""
+    node_script = Path(__file__).resolve().parent.parent / "node" / "unpack_meshopt.mjs"
+    output_path.unlink(missing_ok=True)
+    proc = subprocess.run(
+        ["node", str(node_script), str(input_path.resolve()), str(output_path.resolve())],
+        cwd=str(node_script.parent),
+        capture_output=True,
+        text=True
+    )
+    if proc.returncode != 0:
+        stderr = (proc.stderr or proc.stdout or "").strip()
+        raise PipelineAbort(
+            f"Meshopt decompression of {input_path.name} failed (node exit {proc.returncode}): {stderr}"
+        )
+    if not output_path.exists() or output_path.stat().st_size == 0:
+        raise PipelineAbort(
+            f"Meshopt decompression of {input_path.name} wrote no output ({output_path.name} missing)"
+        )
+    return output_path
+
+
 def _decompress_meshopt_if_needed(input_path: Path, tmp_dir: Path) -> Path:
     """If input GLB has EXT_meshopt_compression, decompress it using Node.js for trimesh compatibility.
     Raises PipelineAbort when the input is not a GLB, Node fails, or Node writes no output."""
-    _, _, gltf = _parse_glb_json(Path(input_path).read_bytes(), str(input_path))
-    exts = gltf.get("extensionsUsed", []) + gltf.get("extensionsRequired", [])
-    if "EXT_meshopt_compression" not in exts:
+    if not has_meshopt_compression(input_path):
         return input_path
 
     uncompressed_path = tmp_dir / f"unpacked_{input_path.name}"
-    uncompressed_path.unlink(missing_ok=True)  # a stale file must not pass for Node's output
-    node_script = f"""
-import {{ NodeIO }} from '@gltf-transform/core';
-import {{ ALL_EXTENSIONS }} from '@gltf-transform/extensions';
-import {{ MeshoptDecoder }} from 'meshoptimizer';
-import fs from 'fs';
+    return unpack_meshopt_glb(input_path, uncompressed_path)
 
-async function decompress() {{
-    await MeshoptDecoder.ready;
-    const io = new NodeIO().registerExtensions(ALL_EXTENSIONS).registerDependencies({{ 'meshopt.decoder': MeshoptDecoder }});
-    const doc = await io.read({json.dumps(str(input_path.resolve()))});
-    const ext = doc.getRoot().listExtensionsUsed().find(e => e.extensionName === 'EXT_meshopt_compression');
-    if (ext) ext.dispose();
-    const glb = await io.writeBinary(doc);
-    fs.writeFileSync({json.dumps(str(uncompressed_path.resolve()))}, glb);
-}}
-decompress();
-"""
-    proc = subprocess.run(
-        ["node", "-e", node_script],
-        cwd=str(REPO_ROOT),
-        capture_output=True
-    )
-    if proc.returncode != 0:
-        stderr = proc.stderr.decode("utf-8", errors="replace").strip()
-        raise PipelineAbort(
-            f"Meshopt decompression of {input_path} failed (node exit {proc.returncode}): {stderr}"
-        )
-    if not uncompressed_path.exists():
-        raise PipelineAbort(
-            f"Meshopt decompression of {input_path} wrote no output ({uncompressed_path} missing)"
-        )
-    return uncompressed_path
 
 
 def set_doublesided_material(glb_bytes: bytes) -> bytes:

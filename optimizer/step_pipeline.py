@@ -72,7 +72,9 @@ from optimizer.core.glb_utils import (
     read_glb,
     set_frontside_material,
     set_doublesided_material,
-    check_glb_double_sided
+    check_glb_double_sided,
+    has_meshopt_compression,
+    unpack_meshopt_glb
 )
 from optimizer.core.errors import PipelineAbort, describe_failure
 
@@ -198,7 +200,8 @@ def validate_input_glb(path: Path) -> None:
     """
     gltf, bin_chunk = read_glb(path)
     listed = [*gltf.get("extensionsRequired", []), *gltf.get("extensionsUsed", [])]
-    compressed = [ext for ext in COMPRESSED_INPUT_EXTENSIONS if ext in listed]
+    # EXT_meshopt_compression is automatically unpacked before Step 1
+    compressed = [ext for ext in COMPRESSED_INPUT_EXTENSIONS if ext in listed and ext != "EXT_meshopt_compression"]
     if compressed:
         raise PipelineAbort(
             f"Input is already optimized/compressed ({', '.join(compressed)}); upload the original uncompressed model."
@@ -598,22 +601,30 @@ class StepPipeline:
         initial_faces = m0["faces"]
         initial_verts = m0["vertices"]
         initial_bytes = m0["fileSizeBytes"]
-        orig_tex_info = extract_original_texture_info(step0_file)
+
+        working_file = step0_file
+        if has_meshopt_compression(step0_file):
+            self.log("   ℹ️ Detected EXT_meshopt_compression on input: auto-unpacking to standard uncompressed glTF before Step 1...")
+            unpacked_glb = output_dir / "step_00_unpacked.glb"
+            unpack_meshopt_glb(step0_file, unpacked_glb)
+            working_file = unpacked_glb
+
+        orig_tex_info = extract_original_texture_info(working_file)
         self.log(f"   ✓ Step 0 complete ({m0['durationFormatted']}): {initial_faces:,} faces, {initial_verts:,} verts, {m0['fileSizeFormatted']} (texture: {orig_tex_info.get('default_format')})")
 
         # The GLB the next step reads, and the metrics of the last step that produced one
-        current_file = step0_file
+        current_file = working_file
         last_metrics = m0
 
         # Auto-detect doubleSided from input materials (or CLI flag)
-        if check_glb_double_sided(input_path) and not self.double_sided:
+        if check_glb_double_sided(working_file) and not self.double_sided:
             self.log("   ℹ️ Auto-detected doubleSided=True from input materials (preserving thin shells & armor)")
             self.double_sided = True
 
         # Steps 1-5 work on the mesh itself; loaded once, then carried and transformed in place
         mesh_steps = (1, 2, 3, 4, 5)
         mesh = (
-            trimesh.load(str(input_path), force="mesh", process=False)
+            trimesh.load(str(working_file), force="mesh", process=False)
             if any(self.enabled(n) for n in mesh_steps) else None
         )
 
