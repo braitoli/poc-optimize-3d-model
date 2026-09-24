@@ -723,13 +723,6 @@ class StepPipeline:
                 mesh = trimesh.Trimesh(vertices=new_v, faces=new_f, process=False)
                 reduce_stats["facesAfter"] = len(mesh.faces)
                 reduce_stats["faceReductionPercent"] = round(((faces_before_reduction - len(mesh.faces)) / faces_before_reduction) * 100, 2)
-                reduce_stats["uvInvalidated"] = True
-                if uv_projector is None:
-                    density_source = textured_source
-                    uv_projector = SourceUVProjector(textured_source)
-                    mesh = restore_hard_edges(mesh, uv_projector)
-                    reduce_stats["hardEdgeVertices"] = int(len(mesh.vertices))
-                reduce_stats["outwardFix"] = align_faces_outward(mesh)
 
             step3_file = output_dir / self.STEP_DEFINITIONS[3]["file"]
             # A collapsed mesh has no UV, so its GLB shows the bare geometry the step produced
