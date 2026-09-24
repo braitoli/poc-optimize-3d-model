@@ -30,6 +30,7 @@ the removal operations keep every surviving face's vertices and UVs untouched.
 import json
 import math
 import os
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -82,7 +83,9 @@ MERGE_SEARCH_ITERATIONS = 6
 # The merge search never goes below this fraction of the input face count
 MERGE_MIN_RATIO = 0.01
 
-CGAL_HELPER = Path(__file__).resolve().parents[1] / "cgal" / "build" / "mesh_repair"
+_cgal_default = Path(__file__).resolve().parents[1] / "cgal" / "build" / "mesh_repair"
+_cgal_which = shutil.which("mesh_repair")
+CGAL_HELPER = _cgal_default if _cgal_default.exists() else (Path(_cgal_which) if _cgal_which else _cgal_default)
 CGAL_UNAVAILABLE = (
     f"The CGAL engine needs the mesh_repair helper at {CGAL_HELPER}: build it with "
     f"optimizer/cgal/build.sh (or run ./setup.sh), or switch the engine to 'meshlab' "
